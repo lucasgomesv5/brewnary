@@ -2,22 +2,18 @@
 @tailwind components;
 @tailwind utilities;
 
-/* Font smoothing + default transitions */
 body {
   @apply antialiased transition-colors duration-300;
 }
 
-/* Light theme (default) */
 body {
   @apply bg-background-light text-primary;
 }
 
-/* Dark theme */
 .dark body {
   @apply bg-background-dark text-text-dark;
 }
 
-/* Scrollbar personalizada (opcional) */
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;
