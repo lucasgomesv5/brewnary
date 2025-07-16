@@ -1,7 +1,8 @@
 import { createBrowserRouter } from 'react-router'
 import Layout from '@/layout'
 import LandingPage from '@/features/landing/landing-page'
-import SoloPage from '@/features/solo/solo-page'
+import SetupPage from '@/features/setup/setup-page'
+import QuizPage from '@/features/quiz/quiz-page'
 
 export const routes = createBrowserRouter([
   {
@@ -9,12 +10,16 @@ export const routes = createBrowserRouter([
     Component: Layout, 
     children: [
       {
-        path: '',
+        index: true,
         Component: LandingPage,
       },
       {
-        path: 'solo',
-        Component: SoloPage,
+        path: 'setup',
+        Component: SetupPage,
+      },
+      {
+        path: 'quiz',
+        Component: QuizPage
       }
     ],
   },

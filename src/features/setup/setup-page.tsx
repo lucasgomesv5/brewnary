@@ -1,14 +1,13 @@
 import { useState } from 'react'
 import { useNavigate } from 'react-router'
-import { Flame, Code2, CloudCog, Layers3 } from 'lucide-react'
+import { Code2, Layers3 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import Button from '@/components/Button'
+import { getDailyQuestions } from '@/api'
 
 const stacks = [
   { id: 'frontend', label: 'Frontend', icon: Code2 },
   { id: 'backend', label: 'Backend', icon: Layers3 },
-  { id: 'devops', label: 'DevOps', icon: CloudCog },
-  { id: 'general', label: 'Geral', icon: Flame },
 ]
 
 const difficulties = [
@@ -17,23 +16,25 @@ const difficulties = [
   { id: 'hard', label: 'Difícil' },
 ]
 
-export default function SoloPage() {
+export default function SetupPage() {
   const [selectedStack, setSelectedStack] = useState<string | null>(null)
   const [selectedDifficulty, setSelectedDifficulty] = useState<string | null>(null)
   const navigate = useNavigate()
 
   const handleStart = () => {
     if (selectedStack && selectedDifficulty) {
-      navigate(`/solo/play?stack=${selectedStack}&difficulty=${selectedDifficulty}`)
+      navigate('/quiz', {state: {stack: selectedStack, difficulty: selectedDifficulty}})
+
+      getDailyQuestions({stack: selectedStack, difficulty: selectedDifficulty})
     }
   }
 
   return (
-    <section className="min-h-screen flex items-center justify-center px-4 py-10 bg-background-light dark:bg-background-dark transition-colors">
-      <div className="w-full max-w-3xl space-y-10 text-center">
+    <section className="flex items-center justify-center">
+      <div className="w-full max-w-3xl space-y-16 text-center">
         <div className="space-y-2">
           <h1 className="text-4xl md:text-5xl font-bold text-primary dark:text-text-dark tracking-tight">
-            ☕ Modo Solo
+            ☕ Desafios
           </h1>
           <p className="text-lg text-primary/70 dark:text-text-dark/70">
             Escolha sua stack e dificuldade para enfrentar o desafio do dia.
