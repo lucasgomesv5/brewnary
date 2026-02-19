@@ -1,6 +1,7 @@
 ---
 import { ViewTransitions } from 'astro:transitions';
 import { getCollection } from 'astro:content';
+import Analytics from '@vercel/analytics/astro';
 import SearchPalette from '../components/react/SearchPalette';
 import { toSlug } from '../lib/tracks';
 import '../styles/global.css';
@@ -51,6 +52,8 @@ const searchItems = allLessons
     <meta name="twitter:card" content="summary_large_image" />
     <meta name="twitter:title" content={`${title} | Brewnary`} />
     <meta name="twitter:description" content={description} />
+
+    <Analytics />
 
     <script
       type="application/ld+json"
