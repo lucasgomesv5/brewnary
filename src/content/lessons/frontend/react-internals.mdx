@@ -1,0 +1,1153 @@
+---
+title: "React Internals e Hooks"
+description: "Virtual DOM, React Fiber, reconciliation, hooks internamente, concurrent features, Server Components e o React Compiler"
+track: "frontend"
+order: 12
+section: "React"
+priority: "high"
+tags: ["react", "virtual-dom", "hooks", "reconciliation", "fiber", "concurrent"]
+prerequisites: ["closures", "typescript"]
+keyTakeaways:
+  - "React Fiber representa a árvore de componentes como uma linked list de units of work, permitindo rendering interruptível"
+  - "Hooks são armazenados como uma linked list no fiber node — por isso as Rules of Hooks exigem ordem fixa"
+  - "useEffect roda após o paint e precisa de cleanup para evitar state updates em componentes desmontados"
+  - "useMemo/useCallback só ajudam quando combinados com React.memo ou como dependência de outros hooks"
+  - "Server Components eliminam JavaScript do client — o componente roda inteiramente no servidor"
+---
+
+> **Ponto chave:** React não é mágico. É um scheduler de UI que compara árvores de objetos e aplica mutações mínimas no DOM. Entender os internals te permite debugar problemas de performance que nenhum tutorial explica, prever comportamentos edge-case e tomar decisões arquiteturais fundamentadas.
+
+---
+
+## 1. Virtual DOM e o Algoritmo de Reconciliation
+
+### 1.1 O Problema Fundamental
+
+Manipular o DOM real é caro. Cada mutação pode disparar reflow e repaint. O React resolve isso com uma camada de abstração:
+
+```
+JSX → React.createElement() → React Element (objeto JS) → Virtual DOM
+
+// JSX:
+<div className="card">
+  <h1>Título</h1>
+  <p>Conteúdo</p>
+</div>
+
+// Compila para:
+React.createElement('div', { className: 'card' },
+  React.createElement('h1', null, 'Título'),
+  React.createElement('p', null, 'Conteúdo')
+)
+
+// Produz um React Element (plain object):
+{
+  type: 'div',
+  props: {
+    className: 'card',
+    children: [
+      { type: 'h1', props: { children: 'Título' } },
+      { type: 'p',  props: { children: 'Conteúdo' } }
+    ]
+  }
+}
+```
+
+### 1.2 O Custo do Diffing Genérico
+
+Comparar duas árvores genéricas tem complexidade **O(n³)** — para cada nó da árvore antiga, é preciso comparar com todos os nós da nova, e calcular as operações mínimas de transformação. Com 1000 elementos, isso significaria **1 bilhão** de comparações.
+
+O React usa duas heurísticas que reduzem para **O(n)**:
+
+```
+Heurística 1: Elementos de tipos diferentes produzem árvores diferentes.
+  → Se <div> vira <section>, React destrói a subárvore inteira e reconstrói.
+  → Não tenta "transformar" uma em outra.
+
+Heurística 2: O developer indica elementos estáveis com a prop "key".
+  → Em listas, key permite identificar qual item moveu, foi adicionado ou removido.
+  → Sem key, React compara por índice (errado quando itens reordenam).
+```
+
+```jsx
+// SEM key: React compara por índice
+// Se o primeiro item for removido, TODOS os componentes
+// recebem props diferentes → todos re-renderizam
+<ul>
+  {items.map((item, index) => (
+    <li key={index}>{item.name}</li>  // ERRADO: key={index}
+  ))}
+</ul>
+
+// COM key estável: React identifica cada item unicamente
+// Remove só o item certo, move os outros sem re-renderizar
+<ul>
+  {items.map(item => (
+    <li key={item.id}>{item.name}</li>  // CORRETO: key={item.id}
+  ))}
+</ul>
+```
+
+**Por que `key={index}` é problemático:**
+
+```
+Estado inicial:    [A(0), B(1), C(2)]
+Remover A:         [B(0), C(1)]
+
+Com key={index}:
+  key=0: era A, agora é B → React "atualiza" A para B (reusa DOM, state errado!)
+  key=1: era B, agora é C → React "atualiza" B para C
+  key=2: era C, sumiu     → React remove
+
+Com key={id}:
+  key="a": sumiu → React remove A
+  key="b": mesma key → React mantém B intacto
+  key="c": mesma key → React mantém C intacto
+```
+
+---
+
+## 2. React Fiber: A Arquitetura Interna
+
+O React 16 reescreveu completamente o engine interno. O antigo **Stack Reconciler** era síncrono — uma vez iniciado o diff, não podia parar até terminar. O **Fiber Reconciler** quebra o trabalho em unidades interruptíveis.
+
+### 2.1 O que É um Fiber
+
+Um Fiber é um **objeto JavaScript** que representa uma unidade de trabalho. Cada componente, elemento DOM ou fragment tem um fiber correspondente:
+
+```javascript
+// Estrutura simplificada de um Fiber Node
+{
+  // Identidade
+  tag: FunctionComponent | ClassComponent | HostComponent | ...,
+  type: MyComponent,          // Função/classe do componente, ou 'div', 'span'
+  key: 'unique-key',          // Key da reconciliation
+
+  // Árvore (linked list, NÃO árvore de ponteiros filhos)
+  child: Fiber | null,        // Primeiro filho
+  sibling: Fiber | null,      // Próximo irmão
+  return: Fiber | null,       // Pai (chamado "return" pois é para onde o controle volta)
+
+  // Estado
+  stateNode: DOMElement | ComponentInstance | null,
+  memoizedState: Hook | null, // Head da linked list de hooks
+  memoizedProps: Props,       // Props do último render
+
+  // Efeitos
+  flags: Placement | Update | Deletion | ...,  // Bitmask de efeitos pendentes
+  subtreeFlags: number,       // Flags agregadas dos filhos
+
+  // Scheduling
+  lanes: Lanes,               // Prioridade do update
+  childLanes: Lanes,          // Prioridade dos filhos
+
+  // Double buffering
+  alternate: Fiber | null,    // Ponteiro para o fiber na outra árvore (current ↔ workInProgress)
+}
+```
+
+### 2.2 Travessia da Árvore Fiber
+
+A árvore Fiber usa ponteiros `child`, `sibling` e `return` formando uma **linked list** que pode ser percorrida iterativamente (sem recursão, sem stack overflow):
+
+```
+Árvore de componentes:
+        App
+       /   \
+    Header  Main
+            /  \
+         List  Footer
+
+Linked List (child → sibling → return):
+
+App ─child→ Header ─sibling→ Main ─child→ List ─sibling→ Footer
+                                                            │
+                                          return ←──────────┘
+                                  return ←──┘
+                     return ←──────┘
+     return ←──────────┘
+
+Ordem de processamento (DFS iterativo):
+1. App       (child →)
+2. Header    (sem child, sibling →)
+3. Main      (child →)
+4. List      (sem child, sibling →)
+5. Footer    (sem child, sem sibling, return → Main)
+6. Main      (complete, sem sibling, return → App)
+7. App       (complete)
+```
+
+O loop principal do Fiber:
+
+```javascript
+// Pseudocódigo do workLoop
+function workLoop(deadline) {
+  while (workInProgress !== null && !shouldYield()) {
+    // Processar uma unidade de trabalho
+    workInProgress = performUnitOfWork(workInProgress);
+  }
+
+  if (workInProgress !== null) {
+    // Ainda tem trabalho — agenda continuação
+    requestIdleCallback(workLoop);
+  } else {
+    // Render phase completa — commit
+    commitRoot();
+  }
+}
+
+function performUnitOfWork(fiber) {
+  // BEGIN: processar este fiber (chamar render/function do componente)
+  beginWork(fiber);
+
+  if (fiber.child) {
+    return fiber.child;        // Desce para o filho
+  }
+
+  let current = fiber;
+  while (current) {
+    // COMPLETE: finalizar este fiber
+    completeWork(current);
+
+    if (current.sibling) {
+      return current.sibling;  // Vai para o irmão
+    }
+    current = current.return;  // Sobe para o pai
+  }
+  return null; // Árvore completa
+}
+```
+
+### 2.3 Duas Fases: Render e Commit
+
+O Fiber divide o trabalho em duas fases com características fundamentalmente diferentes:
+
+```
+┌─────────────────────────────────┐  ┌─────────────────────────────┐
+│        RENDER PHASE             │  │       COMMIT PHASE          │
+│                                 │  │                             │
+│  - Pura (sem side effects)      │  │  - Mutações no DOM real     │
+│  - Interruptível                │  │  - NÃO interruptível        │
+│  - Pode ser descartada          │  │  - Roda de uma vez          │
+│  - Roda em background           │  │  - Síncrona                 │
+│                                 │  │                             │
+│  Chama:                         │  │  3 sub-fases:               │
+│  - render() / function body     │  │  1. Before mutation         │
+│  - shouldComponentUpdate        │  │     (getSnapshotBeforeUpdate)│
+│  - getDerivedStateFromProps     │  │  2. Mutation                │
+│  - useMemo, useCallback         │  │     (appendChild, etc.)     │
+│                                 │  │  3. Layout                  │
+│  Resultado: lista de efeitos    │  │     (useLayoutEffect)       │
+│  (fiber flags)                  │  │                             │
+│                                 │  │  Depois, assíncronamente:   │
+│                                 │  │  - useEffect (passive)      │
+└─────────────────────────────────┘  └─────────────────────────────┘
+```
+
+**Double Buffering:** O React mantém duas árvores Fiber — `current` (o que está na tela) e `workInProgress` (o que está sendo construído). Quando o commit termina, o ponteiro `current` é trocado para o `workInProgress` — operação O(1), instantânea.
+
+---
+
+## 3. Hooks: Como Funcionam Internamente
+
+### 3.1 A Linked List de Hooks
+
+Cada fiber de um function component tem uma propriedade `memoizedState` que aponta para o **primeiro hook** de uma linked list:
+
+```
+Fiber {
+  memoizedState ──▶ Hook₁ { next ──▶ Hook₂ { next ──▶ Hook₃ { next: null }}}
+}
+
+// Cada hook node:
+{
+  memoizedState: any,     // Valor atual do hook
+  baseState: any,         // Estado base (para updates pendentes)
+  baseQueue: Update|null, // Fila de updates não processados
+  queue: UpdateQueue,     // Fila de novos updates
+  next: Hook | null,      // Próximo hook na lista
+}
+```
+
+### 3.2 Rules of Hooks: Por que Existem
+
+Os hooks são identificados **pela posição na linked list**, não por nome. Por isso:
+
+```javascript
+// ERRADO: hooks em condicional mudam a ordem da lista
+function Component({ show }) {
+  const [a, setA] = useState(0);      // Hook₁
+  if (show) {
+    const [b, setB] = useState(0);    // Hook₂ (às vezes)
+  }
+  const [c, setC] = useState(0);      // Hook₃ ou Hook₂ dependendo do show!
+
+  // Render 1 (show=true):  Hook₁=a, Hook₂=b, Hook₃=c  ✓
+  // Render 2 (show=false): Hook₁=a, Hook₂=c (LENDO O ESTADO DE b!) ✗
+}
+
+// CORRETO: hooks sempre na mesma ordem
+function Component({ show }) {
+  const [a, setA] = useState(0);
+  const [b, setB] = useState(0);     // Sempre existe
+  const [c, setC] = useState(0);
+  // Use 'b' condicionalmente no JSX, não na declaração
+}
+```
+
+O ESLint plugin `eslint-plugin-react-hooks` detecta essas violações em tempo de desenvolvimento.
+
+### 3.3 useState: Dispatcher e Batching
+
+```javascript
+// O que acontece quando você chama useState(initialValue)
+
+// No MOUNT (primeiro render):
+function mountState(initialState) {
+  const hook = mountWorkInProgressHook(); // Cria novo nó na linked list
+  hook.memoizedState = typeof initialState === 'function'
+    ? initialState()   // Lazy initialization
+    : initialState;
+  hook.queue = { pending: null, dispatch: null, ... };
+  const dispatch = dispatchSetState.bind(null, currentFiber, hook.queue);
+  hook.queue.dispatch = dispatch;
+  return [hook.memoizedState, dispatch];
+}
+
+// No UPDATE (re-renders subsequentes):
+function updateState() {
+  const hook = updateWorkInProgressHook(); // Avança para o próximo nó
+  // Processa a fila de updates pendentes
+  const newState = processUpdateQueue(hook);
+  hook.memoizedState = newState;
+  return [newState, hook.queue.dispatch];
+}
+```
+
+**Batching automático (React 18+):**
+
+```javascript
+// React 17: batching SÓ dentro de event handlers do React
+// React 18: batching AUTOMÁTICO em todos os contextos
+
+function handleClick() {
+  setCount(c => c + 1);    // Não re-renderiza ainda
+  setFlag(f => !f);         // Não re-renderiza ainda
+  setText('novo');           // Não re-renderiza ainda
+  // React re-renderiza UMA vez com todos os updates
+}
+
+// React 18: batching funciona até em setTimeout, fetch, etc.
+setTimeout(() => {
+  setCount(c => c + 1);    // Antes (React 17): re-renderizava aqui
+  setFlag(f => !f);         // Antes (React 17): re-renderizava aqui
+  // React 18: re-renderiza UMA vez
+}, 1000);
+
+// Se você PRECISA forçar uma re-renderização síncrona:
+import { flushSync } from 'react-dom';
+flushSync(() => {
+  setCount(c => c + 1);    // Re-renderiza imediatamente aqui
+});
+setFlag(f => !f);           // Re-renderiza novamente aqui
+```
+
+**Functional updates — quando e por quê:**
+
+```javascript
+// PROBLEMA: closures capturam o valor do momento
+function Counter() {
+  const [count, setCount] = useState(0);
+
+  function handleTripleClick() {
+    setCount(count + 1);  // count = 0 → seta 1
+    setCount(count + 1);  // count = 0 → seta 1 (mesmo closure!)
+    setCount(count + 1);  // count = 0 → seta 1 (resultado final: 1)
+  }
+
+  // SOLUÇÃO: functional update recebe o estado mais recente
+  function handleTripleClickCorrect() {
+    setCount(c => c + 1);  // c = 0 → seta 1
+    setCount(c => c + 1);  // c = 1 → seta 2
+    setCount(c => c + 1);  // c = 2 → seta 3 (resultado final: 3)
+  }
+}
+```
+
+---
+
+## 4. useEffect: Ciclo de Vida e Cleanup
+
+### 4.1 Quando o useEffect Executa
+
+```
+Render → DOM atualizado → Browser pinta → useEffect roda (assíncrono)
+                                          ↑
+                                   "passive effect"
+
+Render → DOM atualizado → useLayoutEffect roda → Browser pinta
+                          ↑
+                    "layout effect" (síncrono, bloqueia o paint)
+```
+
+### 4.2 A Comparação de Dependências
+
+O React usa `Object.is()` para comparar cada item do array de dependências:
+
+```javascript
+Object.is(3, 3)           // true  → não re-executa
+Object.is('a', 'a')       // true  → não re-executa
+Object.is(obj, obj)       // true  → MESMA referência → não re-executa
+Object.is({a:1}, {a:1})   // false → referências diferentes → RE-EXECUTA!
+Object.is(NaN, NaN)       // true  (diferente de ===)
+Object.is(0, -0)          // false (diferente de ===)
+```
+
+```javascript
+// PROBLEMA: objeto recriado a cada render → useEffect roda toda vez
+function Component({ userId }) {
+  const options = { method: 'GET', headers: { auth: token } };
+  //     ↑ novo objeto a cada render
+
+  useEffect(() => {
+    fetch(`/api/users/${userId}`, options);
+  }, [userId, options]); // options é SEMPRE uma nova referência!
+
+  // SOLUÇÃO 1: mover objeto para dentro do effect
+  useEffect(() => {
+    const options = { method: 'GET', headers: { auth: token } };
+    fetch(`/api/users/${userId}`, options);
+  }, [userId, token]); // Dependências primitivas
+
+  // SOLUÇÃO 2: useMemo para estabilizar a referência
+  const options = useMemo(
+    () => ({ method: 'GET', headers: { auth: token } }),
+    [token]
+  );
+}
+```
+
+### 4.3 Cleanup: Quando e Por Que
+
+```javascript
+useEffect(() => {
+  const subscription = api.subscribe(channel, handleMessage);
+
+  // Cleanup roda ANTES do próximo effect E quando o componente desmonta
+  return () => {
+    subscription.unsubscribe();
+  };
+}, [channel]);
+
+// Timeline:
+// Mount:              effect(channel="A") → subscribe A
+// channel muda p/ B:  cleanup() → unsubscribe A | effect(channel="B") → subscribe B
+// Unmount:            cleanup() → unsubscribe B
+```
+
+```javascript
+// Padrão essencial: evitar race conditions em fetch
+useEffect(() => {
+  const controller = new AbortController();
+
+  async function fetchData() {
+    try {
+      const res = await fetch(`/api/data/${id}`, {
+        signal: controller.signal
+      });
+      const json = await res.json();
+      setData(json);
+    } catch (err) {
+      if (err.name !== 'AbortError') {
+        setError(err);
+      }
+      // AbortError é esperado — ignorar silenciosamente
+    }
+  }
+
+  fetchData();
+  return () => controller.abort();
+}, [id]);
+```
+
+---
+
+## 5. useMemo e useCallback: Quando Realmente Ajudam
+
+A maioria dos desenvolvedores usa `useMemo` e `useCallback` nos lugares errados. Entender quando eles **realmente** fazem diferença é essencial.
+
+### 5.1 O que Eles Fazem
+
+```javascript
+// useMemo: memoiza um VALOR
+const sorted = useMemo(() => {
+  return items.slice().sort((a, b) => a.name.localeCompare(b.name));
+}, [items]);
+
+// useCallback: memoiza uma FUNÇÃO (é um useMemo para funções)
+const handleClick = useCallback((id) => {
+  dispatch({ type: 'SELECT', id });
+}, [dispatch]);
+
+// useCallback é açúcar sintático para:
+const handleClick = useMemo(() => {
+  return (id) => dispatch({ type: 'SELECT', id });
+}, [dispatch]);
+```
+
+### 5.2 Quando USAR (vale a pena)
+
+```javascript
+// CASO 1: Prop passada para componente envolvido em React.memo
+const MemoizedChild = React.memo(ChildComponent);
+
+function Parent() {
+  const [count, setCount] = useState(0);
+
+  // SEM useCallback: handler recriado → MemoizedChild re-renderiza
+  // COM useCallback: handler estável → MemoizedChild NÃO re-renderiza
+  const handleSubmit = useCallback((data) => {
+    submitForm(data);
+  }, []);
+
+  return (
+    <>
+      <button onClick={() => setCount(c => c + 1)}>Count: {count}</button>
+      <MemoizedChild onSubmit={handleSubmit} />
+    </>
+  );
+}
+
+// CASO 2: Dependência de outro hook
+function useDebounce(value, delay) {
+  const [debounced, setDebounced] = useState(value);
+
+  useEffect(() => {
+    const timer = setTimeout(() => setDebounced(value), delay);
+    return () => clearTimeout(timer);
+  }, [value, delay]); // Se value for um objeto, precisa ser memoizado pelo caller
+
+  return debounced;
+}
+
+// CASO 3: Computação genuinamente cara
+const filtered = useMemo(() => {
+  // Filtrar e ordenar 10.000+ itens — vale memoizar
+  return largeDataset
+    .filter(item => item.category === selectedCategory)
+    .sort((a, b) => b.score - a.score)
+    .slice(0, 100);
+}, [largeDataset, selectedCategory]);
+```
+
+### 5.3 Quando NÃO USAR (overhead desnecessário)
+
+```javascript
+function Component({ items }) {
+  // DESNECESSÁRIO: a computação é trivial
+  const count = useMemo(() => items.length, [items]);
+  // items.length é O(1) — o overhead do useMemo é maior que o cálculo
+
+  // DESNECESSÁRIO: não é passado para um React.memo child
+  const handleClick = useCallback(() => {
+    console.log('clicked');
+  }, []);
+  // Se <button onClick={handleClick}> — o <button> é nativo,
+  // não tem React.memo, vai re-renderizar de qualquer jeito
+
+  // DESNECESSÁRIO: objeto literal simples
+  const style = useMemo(() => ({ color: 'red' }), []);
+  // A menos que este style seja dependência de um useEffect
+  // ou prop de um React.memo child, não vale
+}
+```
+
+---
+
+## 6. Concurrent Features (React 18+)
+
+### 6.1 O Modelo de Prioridades (Lanes)
+
+O React 18 introduziu rendering concorrente. Updates têm diferentes prioridades:
+
+```
+Prioridades (Lanes):
+
+SyncLane              → Mais alta (discrete events: click, keydown)
+InputContinuousLane   → Alta (continuous events: mousemove, scroll)
+DefaultLane           → Normal (fetch callbacks, setTimeout)
+TransitionLane        → Baixa (startTransition)
+IdleLane              → Mais baixa (offscreen, prefetch)
+
+Updates de alta prioridade podem INTERROMPER renders de baixa prioridade.
+O Fiber descarta o workInProgress e começa de novo com o update prioritário.
+```
+
+### 6.2 startTransition
+
+Marca um update como **baixa prioridade** — o React pode interrompê-lo para processar interações do usuário:
+
+```javascript
+import { useState, useTransition } from 'react';
+
+function SearchPage() {
+  const [query, setQuery] = useState('');
+  const [results, setResults] = useState([]);
+  const [isPending, startTransition] = useTransition();
+
+  function handleChange(e) {
+    const value = e.target.value;
+
+    // Update URGENTE: o input precisa responder imediatamente
+    setQuery(value);
+
+    // Update NÃO URGENTE: filtrar 10.000 itens pode ser interrompido
+    startTransition(() => {
+      const filtered = filterLargeDataset(value);
+      setResults(filtered);
+    });
+  }
+
+  return (
+    <>
+      <input value={query} onChange={handleChange} />
+      {isPending && <Spinner />}
+      <ResultsList results={results} />
+    </>
+  );
+}
+```
+
+### 6.3 useDeferredValue
+
+Similar ao `startTransition`, mas para **valores** ao invés de funções:
+
+```javascript
+function SearchResults({ query }) {
+  // deferredQuery pode "ficar para trás" enquanto o React processa
+  // updates de alta prioridade. O componente re-renderiza duas vezes:
+  // uma com o valor antigo (rápida) e outra com o novo (pode ser lenta)
+  const deferredQuery = useDeferredValue(query);
+
+  // Mostra conteúdo stale com opacidade reduzida enquanto recalcula
+  const isStale = query !== deferredQuery;
+
+  const results = useMemo(
+    () => filterLargeDataset(deferredQuery),
+    [deferredQuery]
+  );
+
+  return (
+    <div style={{ opacity: isStale ? 0.7 : 1 }}>
+      <ResultsList results={results} />
+    </div>
+  );
+}
+```
+
+### 6.4 Suspense e Lazy Loading
+
+Suspense permite **declarar um estado de loading** na árvore de componentes:
+
+```javascript
+import { Suspense, lazy } from 'react';
+
+// Code splitting: o bundle do Dashboard só é baixado quando necessário
+const Dashboard = lazy(() => import('./Dashboard'));
+const Settings = lazy(() => import('./Settings'));
+
+function App() {
+  return (
+    <Suspense fallback={<PageSkeleton />}>
+      <Routes>
+        <Route path="/dashboard" element={<Dashboard />} />
+        <Route path="/settings" element={<Settings />} />
+      </Routes>
+    </Suspense>
+  );
+}
+```
+
+**Suspense com data fetching (React 19 pattern):**
+
+```javascript
+// O componente "suspende" durante o fetch —
+// React mostra o fallback até a Promise resolver
+import { use } from 'react';
+
+function UserProfile({ userPromise }) {
+  // use() suspende o componente até a promise resolver
+  const user = use(userPromise);
+
+  return (
+    <div>
+      <h1>{user.name}</h1>
+      <p>{user.email}</p>
+    </div>
+  );
+}
+
+function App() {
+  const userPromise = fetchUser(userId); // Inicia o fetch FORA do componente
+
+  return (
+    <Suspense fallback={<ProfileSkeleton />}>
+      <UserProfile userPromise={userPromise} />
+    </Suspense>
+  );
+}
+```
+
+---
+
+## 7. React Server Components (RSC)
+
+### 7.1 A Divisão Server / Client
+
+RSC introduz uma nova fronteira na arquitetura React:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                       SERVIDOR                               │
+│                                                              │
+│  Server Components (padrão)                                  │
+│  ├── Acesso direto a banco de dados                         │
+│  ├── Acesso a filesystem, APIs internas                     │
+│  ├── Zero JavaScript enviado ao client                      │
+│  ├── Podem ser async (await no corpo do componente)         │
+│  ├── NÃO podem usar useState, useEffect, event handlers    │
+│  └── Renderizam para um formato serializado (RSC Payload)   │
+│                                                              │
+│  ┌──────────── "use client" boundary ──────────────────┐    │
+│  │                                                      │    │
+│  │  Client Components                                   │    │
+│  │  ├── Rodam no browser (JavaScript enviado)          │    │
+│  │  ├── useState, useEffect, event handlers            │    │
+│  │  ├── Interatividade                                 │    │
+│  │  └── Podem receber Server Components como children  │    │
+│  │                                                      │    │
+│  └──────────────────────────────────────────────────────┘    │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 7.2 RSC Payload e Streaming
+
+O servidor não envia HTML puro — envia um **RSC Payload**, um formato serializado que o React no client sabe reconstruir:
+
+```
+// Server Component:
+async function PostList() {
+  const posts = await db.query('SELECT * FROM posts LIMIT 10');
+  return (
+    <ul>
+      {posts.map(post => (
+        <li key={post.id}>
+          <PostTitle title={post.title} />
+          <LikeButton postId={post.id} />  {/* "use client" */}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+// RSC Payload (simplificado):
+// É um stream de "chunks" que o client processa incrementalmente
+0: ["$", "ul", null, {
+  "children": [
+    ["$", "li", "1", {
+      "children": [
+        ["$", "PostTitle", null, {"title": "Meu Post"}],
+        ["$", "$Lclient_LikeButton", null, {"postId": 1}]
+        //  ↑ Referência a um Client Component — o client carrega o JS
+      ]
+    }]
+  ]
+}]
+```
+
+**Streaming SSR com Suspense:**
+
+```
+// O servidor começa a enviar HTML imediatamente para o shell:
+<html>
+  <body>
+    <header>...</header>  <!-- Enviado imediatamente -->
+    <main>
+      <!--$?-->           <!-- Placeholder para Suspense -->
+      <template id="B:0"></template>
+      <div>Loading...</div>  <!-- Fallback -->
+      <!--/$-->
+    </main>
+
+// Quando o Server Component assíncrono resolve, o servidor envia:
+    <div hidden id="S:0">
+      <!-- Conteúdo real do PostList -->
+    </div>
+    <script>
+      // Swap: substitui o fallback pelo conteúdo real
+      $RC("B:0", "S:0")
+    </script>
+```
+
+### 7.3 Regras da Fronteira Server/Client
+
+```javascript
+// ✓ Server Component pode importar Server Component
+// ✓ Server Component pode importar Client Component
+// ✗ Client Component NÃO pode importar Server Component
+//   (mas PODE receber como children)
+
+// server-component.jsx (sem "use client")
+import ClientButton from './ClientButton'; // ✓ OK
+
+export default async function Page() {
+  const data = await fetchData();
+  return (
+    <div>
+      <h1>{data.title}</h1>
+      <ClientButton>           {/* ✓ Client Component */}
+        <ServerChild />        {/* ✓ Passado como children — funciona! */}
+      </ClientButton>
+    </div>
+  );
+}
+
+// ClientButton.jsx
+'use client';
+export default function ClientButton({ children }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div>
+      <button onClick={() => setOpen(!open)}>Toggle</button>
+      {open && children}  {/* children foi renderizado no servidor */}
+    </div>
+  );
+}
+```
+
+---
+
+## 8. React Compiler (React Forget)
+
+O React Compiler analisa o código em tempo de build e insere memoização automática, eliminando a necessidade de `useMemo`, `useCallback` e `React.memo` manuais.
+
+### 8.1 O que o Compiler Faz
+
+```javascript
+// ANTES (código do desenvolvedor):
+function ProductCard({ product, onAddToCart }) {
+  const discountedPrice = product.price * (1 - product.discount);
+
+  return (
+    <div>
+      <h2>{product.name}</h2>
+      <p>R$ {discountedPrice.toFixed(2)}</p>
+      <button onClick={() => onAddToCart(product.id)}>
+        Adicionar
+      </button>
+    </div>
+  );
+}
+
+// DEPOIS (output do compiler — simplificado):
+function ProductCard({ product, onAddToCart }) {
+  const $ = _c(5); // Cache de 5 slots
+
+  let discountedPrice;
+  if ($[0] !== product.price || $[1] !== product.discount) {
+    discountedPrice = product.price * (1 - product.discount);
+    $[0] = product.price;
+    $[1] = product.discount;
+    $[2] = discountedPrice;
+  } else {
+    discountedPrice = $[2];
+  }
+
+  let t0;
+  if ($[3] !== product || $[4] !== onAddToCart) {
+    t0 = (
+      <div>
+        <h2>{product.name}</h2>
+        <p>R$ {discountedPrice.toFixed(2)}</p>
+        <button onClick={() => onAddToCart(product.id)}>
+          Adicionar
+        </button>
+      </div>
+    );
+    $[3] = product;
+    $[4] = onAddToCart;
+  } else {
+    t0 = $[5];
+  }
+
+  return t0;
+}
+```
+
+### 8.2 Regras para o Compiler Funcionar
+
+O compiler assume que o código segue as **Rules of React**:
+
+```
+✓ Components e hooks são puros (sem side effects durante render)
+✓ Props e state são imutáveis (nunca mutar diretamente)
+✓ Return values e argumentos para hooks são imutáveis
+✓ Valores passados para JSX são imutáveis
+
+// O compiler NÃO otimiza código que viola essas regras:
+function Bad() {
+  const obj = { count: 0 };
+  obj.count = 1;  // Mutação! Compiler pode não otimizar
+  return <Child data={obj} />;
+}
+
+// Correto:
+function Good() {
+  const obj = { count: 1 };  // Criar com o valor final
+  return <Child data={obj} />;
+}
+```
+
+---
+
+## 9. Performance: Debugando Re-renders
+
+### 9.1 Por que Componentes Re-renderizam
+
+Um componente re-renderiza quando:
+
+```
+1. Seu STATE muda (setState chamado)
+2. Seu PARENT re-renderizou (props podem ter mudado)
+3. O CONTEXT que ele consome mudou
+4. Um hook customizado causou re-render (setState interno)
+
+NOTA: Props mudarem NÃO é um trigger direto — é o parent
+re-renderizar que causa o re-render do filho.
+React.memo muda isso: o filho SÓ re-renderiza se props mudaram.
+```
+
+### 9.2 React.memo: Armadilhas
+
+```javascript
+// ARMADILHA 1: Objeto inline como prop
+const MemoChild = React.memo(ChildComponent);
+
+function Parent() {
+  // style é um NOVO objeto a cada render → memo falha
+  return <MemoChild style={{ color: 'red' }} />;
+}
+
+// ARMADILHA 2: Função inline como prop
+function Parent() {
+  // handleClick é uma NOVA função a cada render → memo falha
+  return <MemoChild onClick={() => doSomething()} />;
+}
+
+// ARMADILHA 3: children como prop
+function Parent() {
+  // <span> cria novo React Element a cada render → memo falha
+  return <MemoChild><span>Hello</span></MemoChild>;
+}
+
+// SOLUÇÃO: estabilizar referências
+function Parent() {
+  const style = useMemo(() => ({ color: 'red' }), []);
+  const handleClick = useCallback(() => doSomething(), []);
+
+  return <MemoChild style={style} onClick={handleClick} />;
+}
+```
+
+### 9.3 React DevTools Profiler
+
+```
+Como usar o Profiler:
+
+1. Abrir React DevTools → aba "Profiler"
+2. Clicar em "Record" e interagir com a aplicação
+3. Parar gravação e analisar:
+
+Flamegraph:
+  - Cada barra = um componente
+  - Cor: cinza = não re-renderizou, amarelo/laranja = re-renderizou
+  - Largura = tempo de render
+
+Ranked chart:
+  - Componentes ordenados por tempo de render
+  - Identifica os mais lentos
+
+"Why did this render?":
+  - Ativar em Settings → Profiler → "Record why each component rendered"
+  - Mostra: "Props changed", "State changed", "Hooks changed", "Parent rendered"
+```
+
+```javascript
+// Profiler API programático
+import { Profiler } from 'react';
+
+function onRender(id, phase, actualDuration, baseDuration, startTime, commitTime) {
+  // id: identificador do Profiler
+  // phase: "mount" ou "update"
+  // actualDuration: tempo gasto renderizando (ms)
+  // baseDuration: tempo estimado sem memoização (ms)
+  console.log(`${id} [${phase}]: ${actualDuration.toFixed(2)}ms`);
+}
+
+function App() {
+  return (
+    <Profiler id="Dashboard" onRender={onRender}>
+      <Dashboard />
+    </Profiler>
+  );
+}
+```
+
+---
+
+## 10. Padrões Avançados e Otimizações
+
+### 10.1 Composition para Evitar Re-renders
+
+```javascript
+// PROBLEMA: todo re-render do App re-renderiza ExpensiveList
+function App() {
+  const [count, setCount] = useState(0);
+  return (
+    <div>
+      <button onClick={() => setCount(c => c + 1)}>
+        Count: {count}
+      </button>
+      <ExpensiveList />  {/* Re-renderiza com cada click */}
+    </div>
+  );
+}
+
+// SOLUÇÃO: extrair o estado para um componente separado
+function Counter() {
+  const [count, setCount] = useState(0);
+  return (
+    <button onClick={() => setCount(c => c + 1)}>
+      Count: {count}
+    </button>
+  );
+}
+
+function App() {
+  return (
+    <div>
+      <Counter />          {/* Só Counter re-renderiza */}
+      <ExpensiveList />    {/* NÃO re-renderiza */}
+    </div>
+  );
+}
+
+// ALTERNATIVA: children pattern
+function CounterWrapper({ children }) {
+  const [count, setCount] = useState(0);
+  return (
+    <div>
+      <button onClick={() => setCount(c => c + 1)}>
+        Count: {count}
+      </button>
+      {children}  {/* children é a MESMA referência — não re-renderiza */}
+    </div>
+  );
+}
+
+function App() {
+  return (
+    <CounterWrapper>
+      <ExpensiveList />  {/* NÃO re-renderiza quando count muda */}
+    </CounterWrapper>
+  );
+}
+```
+
+### 10.2 Context: Otimizando Performance
+
+```javascript
+// PROBLEMA: qualquer mudança no context re-renderiza TODOS os consumers
+const AppContext = createContext();
+
+function App() {
+  const [user, setUser] = useState(null);
+  const [theme, setTheme] = useState('light');
+
+  // Novo objeto a cada render → TODOS os consumers re-renderizam
+  const value = { user, setUser, theme, setTheme };
+
+  return (
+    <AppContext.Provider value={value}>
+      <Page />
+    </AppContext.Provider>
+  );
+}
+
+// SOLUÇÃO 1: Separar contexts por domínio
+const UserContext = createContext();
+const ThemeContext = createContext();
+
+// Mudar theme não re-renderiza consumers de UserContext
+
+// SOLUÇÃO 2: Memoizar o value
+function App() {
+  const [user, setUser] = useState(null);
+  const [theme, setTheme] = useState('light');
+
+  const userValue = useMemo(() => ({ user, setUser }), [user]);
+  const themeValue = useMemo(() => ({ theme, setTheme }), [theme]);
+
+  return (
+    <UserContext.Provider value={userValue}>
+      <ThemeContext.Provider value={themeValue}>
+        <Page />
+      </ThemeContext.Provider>
+    </UserContext.Provider>
+  );
+}
+
+// SOLUÇÃO 3: Selector pattern (com use + useSyncExternalStore)
+// Libraries como Zustand fazem isso nativamente —
+// o componente só re-renderiza se o SLICE selecionado mudou
+const count = useStore(state => state.count);
+// Se state.name mudar, este componente NÃO re-renderiza
+```
+
+---
+
+## Resumo: Modelo Mental Completo
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│                     REACT INTERNALS                          │
+│                                                              │
+│  JSX → createElement → React Elements (objetos imutáveis)   │
+│                              │                               │
+│                              ▼                               │
+│  ┌───────────────────────────────────────────────────┐       │
+│  │              FIBER RECONCILER                      │       │
+│  │                                                    │       │
+│  │  Render Phase (interruptível):                     │       │
+│  │    beginWork → processar fiber → child/sibling     │       │
+│  │    completeWork → gerar effect list                │       │
+│  │                                                    │       │
+│  │  Commit Phase (síncrona):                          │       │
+│  │    Before Mutation → Mutation → Layout              │       │
+│  │    (depois, assíncrono: passive effects)            │       │
+│  └───────────────────────────────────────────────────┘       │
+│                              │                               │
+│                              ▼                               │
+│           Mutações mínimas no DOM real                       │
+│                              │                               │
+│                              ▼                               │
+│          Browser: Layout → Paint → Composite                 │
+└──────────────────────────────────────────────────────────────┘
+
+Hooks = linked list por fiber, identificados por POSIÇÃO
+Concurrent = prioridades (lanes), rendering interruptível
+RSC = componentes no servidor, zero JS no client
+Compiler = memoização automática em build time
+```
+
+A chave para performance em React não é adicionar `useMemo` e `useCallback` em tudo — é entender **por que** um componente re-renderiza e resolver o problema na raiz, seja com composição, separação de state, ou memoização cirúrgica.

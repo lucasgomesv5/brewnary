@@ -1,0 +1,65 @@
+---
+import MainLayout from '../layouts/MainLayout.astro';
+import Hero from '../components/ui/Hero.astro';
+import TrackCard from '../components/cards/TrackCard.astro';
+import { tracks } from '../lib/tracks';
+---
+
+<MainLayout
+  title="Home"
+  description="Brewnary — Referência técnica em Engenharia de Software. Fundamentos, arquitetura, infraestrutura e boas práticas."
+>
+  <Hero />
+
+  <section id="topicos" class="mx-auto max-w-5xl px-4 pb-20 sm:px-6">
+    <div class="mb-8 flex items-baseline gap-3">
+      <h2 class="text-2xl font-bold tracking-tight">Tópicos</h2>
+      <span class="font-mono text-xs text-[var(--color-text-muted)]"
+        >{tracks.reduce((s, t) => s + t.lessonCount, 0)} artigos</span
+      >
+    </div>
+
+    <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+      {
+        tracks.map((track) => (
+          <TrackCard
+            id={track.id}
+            title={track.title}
+            description={track.description}
+            color={track.color}
+            lessonCount={track.lessonCount}
+          />
+        ))
+      }
+    </div>
+  </section>
+
+  <script is:inline>
+    (function () {
+      try {
+        const progress = JSON.parse(localStorage.getItem('brewnary-progress') || '{}');
+        const completed = progress.completed || [];
+        document.querySelectorAll('[data-track-id]').forEach(function (card) {
+          const trackId = card.getAttribute('data-track-id');
+          const total = parseInt(card.getAttribute('data-lesson-count') || '0', 10);
+          if (!total) return;
+          const done = completed.filter(function (id) {
+            return id.startsWith(trackId + '/');
+          }).length;
+          if (done === 0) return;
+          const pct = Math.round((done / total) * 100);
+          const bar = card.querySelector('.progress-bar');
+          if (bar) {
+            bar.classList.remove('hidden');
+            const label = bar.querySelector('.progress-label');
+            if (label) label.textContent = done + '/' + total + ' concluídos';
+            const fill = bar.querySelector('div > div');
+            if (fill) fill.style.width = pct + '%';
+          }
+        });
+      } catch {
+        /* localStorage unavailable */
+      }
+    })();
+  </script>
+</MainLayout>

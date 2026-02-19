@@ -1,0 +1,381 @@
+---
+title: "GraphQL"
+description: "Schema-first design, resolvers, DataLoader, subscriptions, federation, segurança e trade-offs contra REST"
+track: "backend"
+order: 21
+section: "Escalabilidade"
+priority: "medium"
+tags: ["graphql", "api", "schema", "resolvers", "dataloader", "federation", "apollo"]
+prerequisites: ["rest-apis", "problema-n-plus-1"]
+keyTakeaways:
+  - "GraphQL é uma query language para APIs com um type system — o cliente pede exatamente os campos que precisa, eliminando over-fetching e under-fetching"
+  - "O schema é o contrato: define types, queries, mutations e subscriptions com tipagem forte e introspecção automática"
+  - "Resolvers são funções que conectam campos do schema a fontes de dados — cada campo pode ter seu próprio resolver"
+  - "O problema N+1 é amplificado em GraphQL pela resolução campo-a-campo — DataLoader (batching + caching por request) é obrigatório em produção"
+  - "GraphQL Federation permite compor um supergraph a partir de múltiplos subgraphs independentes — cada equipe mantém seu serviço"
+  - "GraphQL não é substituto universal de REST — é melhor para frontends complexos com queries variadas; REST é melhor para APIs públicas simples e caching HTTP"
+---
+
+# GraphQL
+
+GraphQL foi criado pelo Facebook em 2012 e open-sourced em 2015. Surgiu de um problema real: o app mobile do Facebook fazia dezenas de requests REST para montar uma única tela, buscando dados demais (over-fetching) ou de menos (under-fetching). GraphQL resolve isso permitindo que o cliente especifique exatamente os dados que precisa em uma única query.
+
+---
+
+## 1. Conceitos Fundamentais
+
+### 1.1 Schema Definition Language (SDL)
+
+O schema é o contrato da API — define os tipos, as queries possíveis e as mutations disponíveis:
+
+```graphql
+# Types definem a estrutura dos dados
+type User {
+  id: ID!
+  name: String!
+  email: String!
+  posts: [Post!]!      # Relação 1:N
+  createdAt: DateTime!
+}
+
+type Post {
+  id: ID!
+  title: String!
+  content: String!
+  author: User!         # Relação N:1
+  comments: [Comment!]!
+  published: Boolean!
+}
+
+type Comment {
+  id: ID!
+  text: String!
+  author: User!
+  post: Post!
+}
+
+# Queries disponíveis (leitura)
+type Query {
+  user(id: ID!): User
+  users(limit: Int = 10, offset: Int = 0): [User!]!
+  post(id: ID!): Post
+  feed(cursor: String, limit: Int = 20): FeedConnection!
+}
+
+# Mutations disponíveis (escrita)
+type Mutation {
+  createPost(input: CreatePostInput!): Post!
+  updatePost(id: ID!, input: UpdatePostInput!): Post!
+  deletePost(id: ID!): Boolean!
+}
+
+# Input types para mutations
+input CreatePostInput {
+  title: String!
+  content: String!
+  published: Boolean = false
+}
+
+input UpdatePostInput {
+  title: String
+  content: String
+  published: Boolean
+}
+```
+
+### 1.2 Queries: O Cliente Decide
+
+```graphql
+# O cliente pede EXATAMENTE o que precisa
+query {
+  user(id: "123") {
+    name
+    email
+    posts {
+      title
+      published
+    }
+  }
+}
+
+# Resposta: apenas os campos solicitados
+{
+  "data": {
+    "user": {
+      "name": "Maria",
+      "email": "maria@example.com",
+      "posts": [
+        { "title": "GraphQL na Prática", "published": true },
+        { "title": "Rascunho", "published": false }
+      ]
+    }
+  }
+}
+```
+
+Compare com REST: para obter o mesmo dado você precisaria de `GET /users/123` + `GET /users/123/posts`, ou de um endpoint custom que retorna tudo (incluindo campos que você não precisa).
+
+---
+
+## 2. Resolvers
+
+Resolvers são funções que retornam dados para cada campo do schema:
+
+```javascript
+const resolvers = {
+  Query: {
+    user: async (_, { id }, context) => {
+      return context.db.users.findById(id);
+    },
+    users: async (_, { limit, offset }, context) => {
+      return context.db.users.findAll({ limit, offset });
+    },
+  },
+
+  // Resolver para campo relacional
+  User: {
+    posts: async (parent, _, context) => {
+      // parent.id é o User já resolvido pela query acima
+      return context.db.posts.findByAuthorId(parent.id);
+    },
+  },
+
+  Mutation: {
+    createPost: async (_, { input }, context) => {
+      // Verificação de autenticação
+      if (!context.user) throw new AuthenticationError('Não autenticado');
+
+      return context.db.posts.create({
+        ...input,
+        authorId: context.user.id,
+      });
+    },
+  },
+};
+```
+
+### 2.1 O Problema N+1 em GraphQL
+
+```graphql
+query {
+  users(limit: 10) {  # 1 query: SELECT * FROM users LIMIT 10
+    name
+    posts {            # N queries: SELECT * FROM posts WHERE author_id = ?
+      title            # (uma para cada usuário!)
+    }
+  }
+}
+# Total: 1 + 10 = 11 queries!
+```
+
+### 2.2 DataLoader: A Solução
+
+DataLoader (Facebook, 2016) agrupa e cacheia chamadas dentro de um único tick do event loop:
+
+```javascript
+import DataLoader from 'dataloader';
+
+// Crie um novo DataLoader POR REQUEST (não global!)
+function createLoaders(db) {
+  return {
+    postsByAuthor: new DataLoader(async (authorIds) => {
+      // Uma única query batch
+      const posts = await db.posts.findAll({
+        where: { authorId: authorIds },
+      });
+
+      // Mapear resultados de volta para a ordem dos IDs
+      return authorIds.map(id =>
+        posts.filter(post => post.authorId === id)
+      );
+    }),
+  };
+}
+
+// No resolver, use o loader em vez de query direta
+const resolvers = {
+  User: {
+    posts: (parent, _, context) => {
+      return context.loaders.postsByAuthor.load(parent.id);
+      // 10 chamadas .load() no mesmo tick → 1 query batch
+    },
+  },
+};
+```
+
+---
+
+## 3. Subscriptions: Real-time com GraphQL
+
+```graphql
+# Schema
+type Subscription {
+  messageAdded(roomId: ID!): Message!
+  userTyping(roomId: ID!): User!
+}
+```
+
+```javascript
+// Servidor (com graphql-subscriptions)
+import { PubSub } from 'graphql-subscriptions';
+const pubsub = new PubSub();
+
+const resolvers = {
+  Mutation: {
+    sendMessage: async (_, { roomId, content }, context) => {
+      const message = await db.messages.create({
+        roomId, content, authorId: context.user.id,
+      });
+
+      // Publica evento para subscribers
+      pubsub.publish(`MESSAGE_ADDED_${roomId}`, {
+        messageAdded: message,
+      });
+
+      return message;
+    },
+  },
+
+  Subscription: {
+    messageAdded: {
+      subscribe: (_, { roomId }) => {
+        return pubsub.asyncIterator(`MESSAGE_ADDED_${roomId}`);
+      },
+    },
+  },
+};
+```
+
+---
+
+## 4. Paginação Cursor-Based
+
+```graphql
+type FeedConnection {
+  edges: [PostEdge!]!
+  pageInfo: PageInfo!
+}
+
+type PostEdge {
+  cursor: String!
+  node: Post!
+}
+
+type PageInfo {
+  hasNextPage: Boolean!
+  endCursor: String
+}
+
+# Query
+query {
+  feed(first: 10, after: "cursor_abc") {
+    edges {
+      cursor
+      node {
+        title
+        author { name }
+      }
+    }
+    pageInfo {
+      hasNextPage
+      endCursor
+    }
+  }
+}
+```
+
+---
+
+## 5. Segurança em GraphQL
+
+### 5.1 Depth Limiting
+
+```javascript
+// Previne queries profundas demais (DoS)
+import depthLimit from 'graphql-depth-limit';
+
+const server = new ApolloServer({
+  validationRules: [depthLimit(7)],
+});
+
+// Bloqueia:
+// query { user { posts { comments { author { posts { comments { ... } } } } } } }
+```
+
+### 5.2 Query Complexity
+
+```javascript
+// Atribui custo a cada campo e limita o custo total
+import { createComplexityRule, simpleEstimator } from 'graphql-query-complexity';
+
+const rule = createComplexityRule({
+  maximumComplexity: 1000,
+  estimators: [
+    simpleEstimator({ defaultComplexity: 1 }),
+  ],
+  onComplete: (complexity) => {
+    console.log('Query complexity:', complexity);
+  },
+});
+```
+
+### 5.3 Persisted Queries
+
+Em produção, o cliente não envia a query completa — envia apenas um hash. O servidor mantém um mapa hash → query aprovada. Isso previne queries maliciosas e reduz bandwidth.
+
+---
+
+## 6. Federation: Múltiplos Serviços
+
+Apollo Federation permite que cada equipe mantenha seu próprio subgraph, compostos em um supergraph unificado:
+
+```graphql
+# Subgraph: Users Service
+type User @key(fields: "id") {
+  id: ID!
+  name: String!
+  email: String!
+}
+
+# Subgraph: Posts Service
+type User @key(fields: "id") {
+  id: ID!
+  posts: [Post!]!  # Estende User com posts
+}
+
+type Post @key(fields: "id") {
+  id: ID!
+  title: String!
+  content: String!
+  author: User!
+}
+
+# O Gateway compõe ambos em um schema unificado
+# O cliente não sabe que são serviços diferentes
+```
+
+---
+
+## 7. GraphQL vs REST: Trade-offs
+
+| Aspecto | REST | GraphQL |
+|---------|------|---------|
+| Over-fetching | Comum (endpoints fixos) | Eliminado (cliente escolhe campos) |
+| Under-fetching | Múltiplos requests | Uma query resolve |
+| Caching | HTTP cache nativo (CDN, ETag) | Complexo (precisa de client-side cache) |
+| Versionamento | URLs versionadas (/v1, /v2) | Evolução do schema (deprecation) |
+| Tooling | Swagger/OpenAPI | Introspecção nativa, GraphiQL |
+| Curva de aprendizado | Baixa | Média-alta |
+| Melhor para | APIs públicas, CRUD simples | Frontends complexos, mobile, micro-frontends |
+
+**Regra prática:** use REST para APIs públicas simples e cenários onde HTTP caching é crítico. Use GraphQL quando o frontend tem queries variadas e precisa de flexibilidade para compor dados de múltiplas fontes.
+
+---
+
+## 8. Referências e Aprofundamento
+
+- **graphql.org** — especificação oficial e tutorial
+- **"Production Ready GraphQL"** (Marc-André Giroux) — patterns e anti-patterns para produção
+- **Apollo Documentation** — servidor, cliente e federation
+- **DataLoader (GitHub)** — implementação de referência do Facebook
+- **"GraphQL in Action"** (Samer Buna) — guia prático end-to-end

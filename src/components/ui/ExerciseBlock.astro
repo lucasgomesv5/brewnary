@@ -1,0 +1,23 @@
+---
+import Icon from './Icon.astro';
+
+interface Props {
+  title?: string;
+}
+
+const { title = 'Exercício Prático' } = Astro.props;
+---
+
+<div
+  class="not-prose my-6 overflow-hidden rounded-xl border border-green-200 bg-green-50 dark:border-green-800 dark:bg-green-950/30"
+>
+  <div class="border-b border-green-200 bg-green-100 px-4 py-3 dark:border-green-800 dark:bg-green-900/40">
+    <div class="flex items-center gap-2">
+      <Icon name="dumbbell" size={16} />
+      <h4 class="text-sm font-semibold">{title}</h4>
+    </div>
+  </div>
+  <div class="p-4 text-sm leading-relaxed [&>p]:mb-2 [&>ul]:list-disc [&>ul]:pl-5 [&>ul>li]:mb-1">
+    <slot />
+  </div>
+</div>

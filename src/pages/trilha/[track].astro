@@ -1,0 +1,189 @@
+---
+import MainLayout from '../../layouts/MainLayout.astro';
+import { getCollection } from 'astro:content';
+import { tracks, getTrack, toSlug } from '../../lib/tracks';
+
+
+export function getStaticPaths() {
+  return tracks.map((t) => ({ params: { track: t.id } }));
+}
+
+const { track } = Astro.params;
+const trackInfo = getTrack(track!);
+
+if (!trackInfo) {
+  return Astro.redirect('/404');
+}
+
+const allLessons = await getCollection('lessons');
+const trackLessons = allLessons.filter((l) => l.data.track === track).sort((a, b) => a.data.order - b.data.order);
+
+const hasSections = trackLessons.some((l) => l.data.section);
+
+type Section = { name: string; lessons: typeof trackLessons };
+const sections: Section[] = [];
+
+if (hasSections) {
+  for (const lesson of trackLessons) {
+    const sectionName = lesson.data.section ?? '';
+    const last = sections[sections.length - 1];
+    if (last && last.name === sectionName) {
+      last.lessons.push(lesson);
+    } else {
+      sections.push({ name: sectionName, lessons: [lesson] });
+    }
+  }
+}
+---
+
+<MainLayout title={trackInfo.title} description={trackInfo.description}>
+  <div class="mx-auto max-w-4xl px-4 py-12 sm:px-6">
+    <div class="mb-10">
+      <div class="mb-3 flex items-center gap-3">
+        <div class="h-8 w-0.5 rounded-full" style={`background-color: ${trackInfo.color}`}></div>
+        <div>
+          <p class="font-mono text-xs text-[var(--color-text-muted)]">
+            {trackLessons.length} artigos
+          </p>
+          <h1 class="text-2xl font-bold tracking-tight sm:text-3xl" transition:name={`track-title-${track}`}>
+            {trackInfo.title}
+          </h1>
+        </div>
+      </div>
+      <p class="mt-2 max-w-xl text-sm text-[var(--color-text-muted)]">
+        {trackInfo.description}
+      </p>
+    </div>
+
+    {
+      hasSections ? (
+        <div class="space-y-8">
+          {sections.map((section) => {
+            const firstIndex = trackLessons.indexOf(section.lessons[0]);
+            return (
+              <div data-section={section.name}>
+                <div class="mb-3 flex items-center gap-3">
+                  <div class="w-0.5 self-stretch rounded-full" style={`background-color: ${trackInfo.color}`} />
+                  <h2 class="text-sm font-bold">{section.name}</h2>
+                  <div class="h-px flex-1 bg-[var(--color-border)]" />
+                  <span class="font-mono text-xs text-[var(--color-text-muted)]" data-section-counter>
+                    {section.lessons.length}
+                  </span>
+                </div>
+                <div class="space-y-1">
+                  {section.lessons.map((lesson, j) => (
+                    <a
+                      href={`/trilha/${track}/${toSlug(lesson.id)}`}
+                      data-lesson-id={`${track}/${toSlug(lesson.id)}`}
+                      class="group flex items-center gap-4 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-alt)] p-4 transition-colors hover:border-[var(--color-text-muted)]"
+                    >
+                      <span class="w-5 shrink-0 text-right font-mono text-xs text-[var(--color-text-muted)]">
+                        {String(firstIndex + j + 1).padStart(2, '0')}
+                      </span>
+                      <div class="min-w-0 flex-1">
+                        <div class="flex items-center gap-2">
+                          <h3 class="text-sm font-medium">{lesson.data.title}</h3>
+
+                        </div>
+                        <p class="truncate text-xs text-[var(--color-text-muted)]">{lesson.data.description}</p>
+                      </div>
+                      <svg
+                        class="h-3.5 w-3.5 shrink-0 text-[var(--color-text-muted)]"
+                        viewBox="0 0 24 24"
+                        fill="none"
+                        stroke="currentColor"
+                        stroke-width="2"
+                        stroke-linecap="round"
+                        stroke-linejoin="round"
+                      >
+                        <path d="m9 18 6-6-6-6" />
+                      </svg>
+                    </a>
+                  ))}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <div class="space-y-1">
+          {trackLessons.map((lesson, i) => (
+            <a
+              href={`/trilha/${track}/${toSlug(lesson.id)}`}
+              data-lesson-id={`${track}/${toSlug(lesson.id)}`}
+              class="group flex items-center gap-4 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-alt)] p-4 transition-colors hover:border-[var(--color-text-muted)]"
+            >
+              <span class="w-5 shrink-0 text-right font-mono text-xs text-[var(--color-text-muted)]">
+                {String(i + 1).padStart(2, '0')}
+              </span>
+              <div class="min-w-0 flex-1">
+                <div class="flex items-center gap-2">
+                  <h3 class="text-sm font-medium">{lesson.data.title}</h3>
+                  {lesson.data.priority !== 'medium' && <PriorityBadge level={lesson.data.priority} />}
+                </div>
+                <p class="truncate text-xs text-[var(--color-text-muted)]">{lesson.data.description}</p>
+              </div>
+              <svg
+                class="h-3.5 w-3.5 shrink-0 text-[var(--color-text-muted)]"
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                stroke-width="2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <path d="m9 18 6-6-6-6" />
+              </svg>
+            </a>
+          ))}
+        </div>
+      )
+    }
+
+    {
+      trackLessons.length === 0 && (
+        <div class="py-12 text-center text-[var(--color-text-muted)]">
+          <p class="font-mono text-sm">// em construção</p>
+        </div>
+      )
+    }
+  </div>
+
+  <script is:inline>
+    (function () {
+      try {
+        const progress = JSON.parse(localStorage.getItem('brewnary-progress') || '{}');
+        const completed = progress.completed || [];
+        document.querySelectorAll('[data-lesson-id]').forEach(function (el) {
+          const id = el.getAttribute('data-lesson-id');
+          if (completed.indexOf(id) !== -1) {
+            el.classList.add('lesson-completed');
+            const checkSvg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+            checkSvg.setAttribute('width', '14');
+            checkSvg.setAttribute('height', '14');
+            checkSvg.setAttribute('viewBox', '0 0 24 24');
+            checkSvg.setAttribute('fill', 'none');
+            checkSvg.setAttribute('stroke', '#10B981');
+            checkSvg.setAttribute('stroke-width', '2');
+            checkSvg.setAttribute('stroke-linecap', 'round');
+            checkSvg.setAttribute('stroke-linejoin', 'round');
+            checkSvg.classList.add('shrink-0');
+            const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+            path.setAttribute('d', 'M20 6 9 17l-5-5');
+            checkSvg.appendChild(path);
+            const arrow = el.querySelector('svg:last-child');
+            if (arrow) arrow.replaceWith(checkSvg);
+          }
+        });
+        document.querySelectorAll('[data-section]').forEach(function (section) {
+          const total = section.querySelectorAll('[data-lesson-id]').length;
+          const done = section.querySelectorAll('.lesson-completed').length;
+          const counter = section.querySelector('[data-section-counter]');
+          if (counter) counter.textContent = done + '/' + total;
+        });
+      } catch {
+        /* localStorage unavailable */
+      }
+    })();
+  </script>
+</MainLayout>

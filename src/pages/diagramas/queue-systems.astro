@@ -1,0 +1,18 @@
+---
+import MainLayout from '../../layouts/MainLayout.astro';
+import QueueSystemsDiagram from '../../components/react/diagrams/QueueSystemsDiagram';
+---
+
+<MainLayout
+  title="Sistemas de Filas"
+  description="Diagrama interativo de sistemas de filas: producers, brokers, consumers e dead letter queues."
+>
+  <div class="mx-auto max-w-7xl px-4 py-8 sm:px-6">
+    <div class="mb-6">
+      <a href="/diagramas" class="text-sm text-(--color-text-muted) transition-colors hover:text-(--color-text)"
+        >← Voltar aos diagramas</a
+      >
+    </div>
+    <QueueSystemsDiagram client:visible />
+  </div>
+</MainLayout>

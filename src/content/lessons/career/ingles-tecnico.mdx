@@ -1,0 +1,500 @@
+---
+title: "Inglês Técnico"
+description: "Vocabulário técnico essencial, escrita profissional em inglês, participação em reuniões e recursos para dominar o idioma técnico"
+track: "career"
+order: 6
+section: "Crescimento"
+priority: "high"
+tags: ["inglês", "carreira", "comunicação", "documentação"]
+prerequisites: []
+keyTakeaways:
+  - "95% da documentação técnica, Stack Overflow e GitHub issues são em inglês — não saber limita a 5% do conhecimento disponível"
+  - "Escreva commits, PRs e bug reports em inglês como prática diária — feedback real em contexto técnico acelera mais que qualquer curso"
+  - "Vocabulário essencial: LGTM, WIP, RFC, YAGNI, DRY, KISS são usados diariamente em times globais"
+---
+
+## A Realidade do Inglês na Engenharia de Software
+
+Inglês não é "desejável" para um engenheiro de software — é **infraestrutura**. Toda a documentação oficial de linguagens, frameworks e ferramentas é escrita em inglês primeiro. Os melhores artigos, RFCs, papers acadêmicos e discussões técnicas acontecem em inglês. Empresas que pagam os melhores salários operam em inglês.
+
+```
+O que você perde sem inglês técnico fluente:
+
+Documentação:   MDN, React docs, Node.js docs, RFCs, man pages
+Comunidade:     Stack Overflow, GitHub Issues, Discord servers
+Conferências:   JSConf, GopherCon, KubeCon, re:Invent, QCon
+Livros:         DDIA, Clean Architecture, SRE Book (sem tradução ou
+                tradução de baixa qualidade)
+Oportunidades:  Empresas remotas globais ($100K-300K+ USD/ano)
+Carreira:       Staff+ em empresas internacionais exige comunicação
+                escrita impecável em inglês
+```
+
+---
+
+## Vocabulário Técnico Essencial
+
+### Termos que Não se Traduzem (Use em Inglês)
+
+```
+Termo             | Significado                        | Uso incorreto em PT
+------------------|------------------------------------|-----------------------
+Deploy            | Publicar em produção               | "Deployar" (neologismo ok)
+Merge             | Incorporar branch ao trunk         | "Mergear" (comum)
+Branch            | Ramificação do código              | "Branchar" (aceito)
+Push / Pull       | Enviar/buscar do remote            | "Pushar" (informal)
+Commit            | Registrar mudança no VCS           | "Commitar" (aceito)
+Build             | Compilar/empacotar                 | "Buildar" (comum)
+Sprint            | Iteração de desenvolvimento        | Não traduzir
+Standby           | Em espera                          | Não traduzir
+Rollback          | Reverter mudança                   | Não traduzir
+Throttle          | Limitar taxa de execução           | "Throttlear"
+Cache             | Armazenamento temporário rápido    | "Cachear" (aceito)
+Feedback          | Retorno/opinião                    | Não traduzir
+Trade-off         | Escolha com custo-benefício        | Não traduzir
+Bottleneck        | Gargalo de performance             | Gargalo é aceitável
+Boilerplate       | Código repetitivo/template         | Não traduzir
+Refactor          | Reestruturar sem mudar comportamento| "Refatorar" (aceito)
+Overhead          | Custo adicional                    | Não traduzir
+Workaround        | Solução temporária/contorno        | "Gambiarra" (informal)
+```
+
+### Acrônimos Usados Diariamente
+
+```
+Acrônimo    | Significado                      | Quando usar
+------------|----------------------------------|---------------------------
+LGTM        | Looks Good To Me                 | Aprovar PR
+PTAL        | Please Take A Look               | Pedir review
+WIP         | Work In Progress                 | PR ainda não pronto
+RFC         | Request For Comments             | Proposta para discussão
+TL;DR       | Too Long; Didn't Read            | Resumo de texto longo
+YAGNI       | You Ain't Gonna Need It          | Evitar over-engineering
+DRY         | Don't Repeat Yourself            | Princípio de não duplicar
+KISS        | Keep It Simple, Stupid           | Princípio de simplicidade
+SLA         | Service Level Agreement          | Contrato de disponibilidade
+SLO         | Service Level Objective          | Meta interna de confiabilidade
+SLI         | Service Level Indicator          | Métrica medida
+MTTR        | Mean Time To Recovery            | Tempo médio de recuperação
+MTTF        | Mean Time To Failure             | Tempo médio até falha
+OOO         | Out Of Office                    | Ausente do trabalho
+EOD         | End Of Day                       | Até o final do dia
+ETA         | Estimated Time of Arrival        | Previsão de conclusão
+AFK         | Away From Keyboard               | Longe do computador
+IMO / IMHO  | In My (Humble) Opinion           | Na minha opinião
+FYI         | For Your Information             | Para sua informação
+AFAIK       | As Far As I Know                 | Até onde eu sei
+ACK / NACK  | Acknowledge / Negative Ack       | Confirmar / rejeitar
+```
+
+---
+
+## Pronúncia de Termos Comuns
+
+A pronúncia incorreta prejudica comunicação em reuniões e demonstra falta de prática oral.
+
+```
+Termo           | Pronúncia ERRADA        | Pronúncia CORRETA
+----------------|------------------------|------------------------
+Cache           | "ka-SHEI"              | "KASH" (rima com cash)
+Queue           | "KE-ue"               | "KIUU" (rima com few)
+Null            | "NU-oo"               | "NÓL" (rima com dull)
+Query           | "KE-ri"               | "KUÍRI" (rima com weary)
+Schema          | "es-KE-ma"            | "SKÍI-mah"
+Height          | "HAIT"                | "HAIT" (ok! sem o "gh")
+Width           | "ui-DITH"             | "UIDTH" (th como em "the")
+Debug           | "de-BUG"              | "dii-BÓG"
+Integer         | "in-TE-ger"           | "ÍN-te-jer"
+Boolean         | "bu-le-AN"            | "BÚU-li-an"
+Async           | "a-SINK"              | "ei-SINK"
+Parameter       | "pa-ra-ME-ter"        | "pa-RÂ-me-ter"
+Nginx           | "en-GINKS"            | "en-jin-ÉKS"
+SQL             | "es-ki-EL"            | "SÍI-kwol" ou "es-kiú-ÉL"
+PostgreSQL      | "pos-TRE-sql"         | "PÔUST-gres-kiú-ÉL"
+Kubernetes      | "ku-BER-nets"         | "kuu-ber-NÉ-tis"
+Linux           | "li-NUKS"             | "LÍ-noks" (Linus diz LÍ-nuks)
+GUI             | "gui"                 | "GÚ-ii" (rima com gooey)
+API             | "a-pi"                | "ei-pii-ÁI"
+CLI             | "cli"                 | "sii-el-ÁI"
+JSON            | "ji-SON"              | "DJEI-son" (Jason)
+YAML            | "ya-MÊL"             | "IÂ-mol" (rima com camel)
+OAuth           | "o-AUTH"              | "ÔU-ath"
+```
+
+---
+
+## Escrita Técnica em Inglês
+
+### Pull Request Descriptions
+
+```markdown
+RUIM (vago, sem contexto):
+  Title: "Fix bug"
+  Body: "Fixed the thing"
+
+BOM (estruturado, com contexto):
+  Title: "Fix race condition in order processing pipeline"
+  Body:
+  ## Problem
+  Orders created concurrently for the same user could result
+  in duplicate charges. This happened because the stock check
+  and payment processing were not atomic.
+
+  Repro: Create 2 orders simultaneously for the same user
+  with the same item (1 in stock). Both orders succeed.
+
+  ## Solution
+  Added a distributed lock (Redis SETNX) scoped to the user ID
+  during order creation. The lock has a 30s TTL to prevent
+  deadlocks if the process crashes.
+
+  ## Trade-offs
+  - Adds ~5ms latency per order (Redis round-trip)
+  - Orders for the same user are now serialized (acceptable
+    given our traffic: ~10 orders/user/day)
+
+  ## Testing
+  - Unit test for lock acquisition/release
+  - Integration test with concurrent order creation
+  - Load test: no regression in P99 latency
+
+  ## Related
+  - Fixes #1234
+  - See ADR-042 for distributed locking rationale
+```
+
+### Commit Messages
+
+```
+FORMATO (Conventional Commits):
+  <type>(<scope>): <description>
+
+  [optional body]
+
+  [optional footer]
+
+TIPOS COMUNS:
+  feat:     Nova funcionalidade
+  fix:      Correção de bug
+  refactor: Reestruturação sem mudar comportamento
+  perf:     Melhoria de performance
+  test:     Adição/modificação de testes
+  docs:     Documentação
+  chore:    Manutenção (deps, CI, config)
+  ci:       Mudanças em CI/CD
+
+EXEMPLOS BONS:
+  feat(orders): add distributed lock to prevent duplicate charges
+  fix(auth): handle expired refresh tokens gracefully
+  refactor(payments): extract payment strategy into separate module
+  perf(search): add composite index for user+created_at queries
+  docs(api): document rate limiting headers and error responses
+
+EXEMPLOS RUINS:
+  "fixed stuff"
+  "wip"
+  "changes"
+  "update"
+  "asdfg" (sim, existe em produção por aí)
+```
+
+### Bug Reports
+
+```markdown
+TEMPLATE PROFISSIONAL:
+
+## Bug: Users receive duplicate email notifications
+
+### Environment
+- Service: notification-service v2.4.1
+- Region: us-east-1
+- First observed: 2024-02-15 14:30 UTC
+
+### Expected Behavior
+User receives exactly 1 email notification per event.
+
+### Actual Behavior
+User receives 2-3 identical emails for the same event.
+Affects ~5% of users (those with orders created during
+high-traffic periods).
+
+### Steps to Reproduce
+1. Create an order during peak hours (>1000 RPS)
+2. Wait for email notification
+3. Check inbox — 2-3 identical emails received
+
+### Root Cause (if known)
+Suspected: The SQS consumer has visibility timeout of 30s,
+but email sending takes 35-40s during peak. SQS redelivers
+the message, causing duplicate processing.
+
+### Impact
+- ~500 users/day receive duplicate emails
+- Customer support tickets increased 20%
+- No data corruption or financial impact
+
+### Suggested Fix
+1. Increase visibility timeout to 120s
+2. Add idempotency key (event_id) to prevent reprocessing
+3. Add deduplication check before sending
+```
+
+### RFC Writing em Inglês
+
+```markdown
+KEY PHRASES FOR RFCs:
+
+Propondo:
+  "This RFC proposes..."
+  "We suggest migrating to..."
+  "The goal of this document is to..."
+
+Justificando:
+  "The current approach does not scale because..."
+  "This change would reduce latency by approximately..."
+  "The trade-off is acceptable given that..."
+
+Apresentando alternativas:
+  "We considered the following alternatives:"
+  "Option A was rejected because..."
+  "While Option B is simpler, it does not address..."
+
+Discutindo riscos:
+  "The primary risk is..."
+  "To mitigate this, we will..."
+  "If this approach fails, we can fall back to..."
+
+Concluindo:
+  "In summary, we recommend..."
+  "The proposed timeline is..."
+  "We welcome feedback by [date]."
+```
+
+---
+
+## Participação em Reuniões
+
+### Stand-ups
+
+```
+ESTRUTURA (30-60 segundos por pessoa):
+
+"Yesterday I [worked on / finished / reviewed]...
+ Today I'm going to [work on / continue / pair with]...
+ [I'm blocked on / I need help with]..."
+
+EXEMPLOS:
+  "Yesterday I finished the database migration for the orders
+   table and opened a PR. Today I'm going to work on the
+   consumer that processes the new events. No blockers."
+
+  "Yesterday I investigated the memory leak in the payment
+   service. I found the root cause — we're not releasing
+   HTTP connections after timeout. Today I'm going to fix it
+   and add a regression test. I need Pedro to review the PR
+   since he owns that service."
+
+ERROS COMUNS:
+  ✗ Listar tarefas sem contexto: "I worked on JIRA-1234"
+    (ninguém decorou todos os tickets)
+  ✗ Ser muito detalhado: 5 minutos de stand-up individual
+  ✗ Discutir soluções técnicas: "let's take that offline"
+```
+
+### Design Reviews
+
+```
+FRASES ÚTEIS PARA DESIGN REVIEWS:
+
+Fazendo perguntas:
+  "What happens if [component] goes down?"
+  "Have we considered the impact on [existing system]?"
+  "How does this handle [edge case]?"
+  "What's the rollback strategy if this doesn't work?"
+
+Dando feedback:
+  "I think this approach makes sense because..."
+  "One concern I have is..."
+  "Have you considered [alternative]? It might simplify..."
+  "I agree with the overall direction. Minor suggestion:..."
+
+Discordando construtivamente:
+  "I see this differently. In my experience, [X] tends to..."
+  "I'm not sure [approach] will work at our scale because..."
+  "Could we prototype both approaches to validate?"
+  "What data do we have to support this decision?"
+
+NÃO diga:
+  ✗ "That's wrong" (agressivo)
+  ✗ "We should obviously use X" (condescendente)
+  ✗ "I don't like it" (vago, sem justificativa)
+```
+
+### Post-mortems
+
+```
+TEMPLATE DE POST-MORTEM (blameless):
+
+## Incident: Payment processing outage
+## Date: 2024-02-15 | Duration: 47 minutes | Severity: P1
+
+### Summary
+Payment processing was unavailable for 47 minutes due to
+a database connection pool exhaustion caused by a slow query
+introduced in deploy v2.4.1.
+
+### Timeline (UTC)
+- 14:30 — Deploy v2.4.1 rolled out to production
+- 14:45 — Monitoring shows increased P99 latency (2s → 15s)
+- 14:52 — PagerDuty alert fires: "High DB connection usage"
+- 14:55 — On-call engineer acknowledges, begins investigation
+- 15:05 — Root cause identified: new query missing index
+- 15:10 — Rollback initiated (revert to v2.4.0)
+- 15:17 — Rollback complete, connections draining
+- 15:22 — Service fully recovered, alert resolved
+
+### Root Cause
+The new feature in v2.4.1 added a query that scans the full
+orders table (~50M rows) without an index. Under load, each
+query took ~30s, holding a connection for the duration.
+The pool (max 20 connections) was exhausted in minutes.
+
+### What Went Well
+- Alert fired within 7 minutes of degradation
+- On-call identified root cause in 10 minutes
+- Rollback procedure worked as documented
+
+### What Went Wrong
+- No query performance review in the PR process
+- No load test for the new feature before deploy
+- The slow query was not caught by existing test suite
+
+### Action Items
+| Action                                   | Owner  | Due       |
+|------------------------------------------|--------|-----------|
+| Add mandatory EXPLAIN ANALYZE for new    | Maria  | Feb 22    |
+| queries in PR template                   |        |           |
+| Set up pg_stat_statements monitoring     | Pedro  | Feb 25    |
+| Add load test stage to CI pipeline       | Lucas  | Mar 01    |
+| Create index on orders(user_id, date)    | Maria  | Feb 16    |
+```
+
+---
+
+## Erros Comuns de Falantes de Português
+
+```
+ERRO                              | CORRETO
+----------------------------------|----------------------------------
+"I have 5 years of experience"    | OK! (muitos acham que está errado)
+"I'm agree"                       | "I agree"
+"It depends of"                   | "It depends on"
+"I'm thinking in use"             | "I'm thinking of using"
+"The code don't work"             | "The code doesn't work"
+"Explain me"                      | "Explain to me"
+"I'm used to work"               | "I'm used to working"
+"We need discuss"                 | "We need to discuss"
+"The datas show"                  | "The data show" (data é plural)
+"An hypothesis"                   | "A hypothesis" (h aspirado)
+"I will send you the informations"| "I will send you the information"
+"We can to do"                    | "We can do"
+"Is possible to..."              | "It is possible to..." / "Is it possible to..."
+"Actually" (= atualmente)         | "Currently" (actually = na verdade)
+"Eventually" (= eventualmente)    | "Possibly/Perhaps" (eventually = finalmente)
+"Pretend" (= pretender)           | "Intend" (pretend = fingir)
+"Push a meeting"                  | "Schedule a meeting" (push = adiar)
+"Realize" (= realizar)            | "Accomplish/Do" (realize = perceber)
+```
+
+---
+
+## Reading Comprehension: RFCs e Documentação
+
+### Estratégia para Ler RFCs Técnicas
+
+```
+RFCs (como as da IETF: HTTP/2, WebSocket, TLS) são densas.
+Estratégia:
+
+1. Leia o Abstract e Introduction primeiro
+   → Qual problema está sendo resolvido?
+
+2. Pule para a seção de terminologia (geralmente seção 2)
+   → Defina os termos antes de ler o resto
+
+3. Leia os exemplos (geralmente no meio ou final)
+   → Exemplos concretos ancoram a teoria
+
+4. Volte e leia o design técnico
+   → Agora com vocabulário e contexto
+
+5. Leia a seção de Security Considerations
+   → Sempre existe em RFCs da IETF, revela ameaças
+
+VOCABULÁRIO RECORRENTE EM RFCs:
+  MUST / MUST NOT    → Obrigatório (RFC 2119)
+  SHOULD / SHOULD NOT → Recomendado
+  MAY                → Opcional
+  SHALL              → Obrigatório (formal)
+  e.g.               → por exemplo (exempli gratia)
+  i.e.               → isto é (id est)
+  cf.                → compare com (confer)
+  et al.             → e outros (et alia)
+  viz.               → a saber (videlicet)
+  N.B.               → nota importante (nota bene)
+```
+
+---
+
+## Recursos para Melhoria Contínua
+
+```
+PRÁTICA DIÁRIA (gratuito):
+  □ Mude IDE, celular e SO para inglês
+  □ Escreva commits e PRs em inglês
+  □ Leia docs oficiais em inglês (MDN, React, Node)
+  □ Participe de GitHub issues e discussions
+
+READING:
+  □ Hacker News (news.ycombinator.com) — ler + comentários
+  □ The Morning Paper (blog) — resumos de papers acadêmicos
+  □ Martin Fowler's blog — excelente escrita técnica
+  □ Dan Abramov's blog (overreacted.io) — escrita clara
+
+LISTENING:
+  □ Syntax.fm — Web development (começar com 0.75x se necessário)
+  □ Software Engineering Daily — entrevistas técnicas
+  □ The Changelog — open source e comunidade
+  □ Go Time, Rustacean Station — linguagens específicas
+
+WRITING:
+  □ Google Developer Documentation Style Guide (guia de estilo)
+  □ "On Writing Well" — William Zinsser (não-técnico mas essencial)
+  □ Escreva blog posts técnicos em inglês (dev.to, hashnode)
+  □ Contribua com documentação de projetos open source
+
+SPEAKING:
+  □ Clubhouse / Twitter Spaces em salas técnicas
+  □ Meetups remotos internacionais
+  □ Pramp / interviewing.io (mock interviews em inglês)
+  □ Gravar-se explicando conceitos técnicos (rubber duck em inglês)
+  □ Shadowing: repita falas de talks técnicos em voz alta
+
+FORMAL (pago):
+  □ Cambly / iTalki — aulas com nativos focadas em tech
+  □ English for Developers (cursos específicos)
+  □ IELTS / TOEFL se precisar de certificação
+```
+
+---
+
+## Referências
+
+```
+- Google Developer Documentation Style Guide
+- RFC 2119: "Key words for use in RFCs" (MUST, SHOULD, MAY)
+- "On Writing Well" — William Zinsser
+- Conventional Commits: https://www.conventionalcommits.org
+- MDN Web Docs (excelente referência de escrita técnica)
+- "The Elements of Style" — Strunk & White
+```

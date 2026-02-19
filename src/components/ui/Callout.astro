@@ -1,0 +1,34 @@
+---
+import Icon from './Icon.astro';
+
+interface Props {
+  type?: 'tip' | 'warning' | 'concept' | 'exercise';
+  title?: string;
+}
+
+const { type = 'tip', title } = Astro.props;
+
+const config = {
+  tip: { icon: 'lightbulb', borderColor: '#3B82F6', label: 'Dica' },
+  warning: { icon: 'triangle-alert', borderColor: '#F59E0B', label: 'Atenção' },
+  concept: { icon: 'brain', borderColor: '#8B5CF6', label: 'Conceito' },
+  exercise: { icon: 'dumbbell', borderColor: '#10B981', label: 'Exercício' },
+};
+
+const c = config[type];
+---
+
+<aside
+  class="not-prose my-5 rounded-lg border-l-4 bg-[var(--color-bg-alt)] p-4"
+  style={`border-left-color: ${c.borderColor}`}
+>
+  <div class="flex items-start gap-3">
+    <Icon name={c.icon} size={18} class="mt-0.5 shrink-0" style={`color: ${c.borderColor}`} />
+    <div>
+      <p class="mb-1 text-sm font-semibold">{title || c.label}</p>
+      <div class="text-sm leading-relaxed text-[var(--color-text-muted)] [&>p]:mb-2 [&>p:last-child]:mb-0">
+        <slot />
+      </div>
+    </div>
+  </div>
+</aside>

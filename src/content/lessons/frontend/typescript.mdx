@@ -1,0 +1,946 @@
+---
+title: "TypeScript"
+description: "Domine TypeScript: interfaces, generics, utility types e discriminated unions"
+track: "frontend"
+order: 11
+section: "TypeScript"
+priority: "high"
+tags: ["typescript", "tipos", "generics", "interfaces"]
+prerequisites: ["closures"]
+keyTakeaways:
+  - "TypeScript não é opcional em 2025+ — tipos são documentação viva que o compilador verifica"
+  - "Generics permitem criar tipos reutilizáveis que recebem parâmetros de tipo"
+  - "Discriminated Unions são um pattern poderoso para modelar estados com segurança de tipos"
+---
+
+## Sistema de Tipos — Structural Typing vs Nominal Typing
+
+TypeScript usa **structural typing** (duck typing estático): dois tipos são compatíveis
+se suas estruturas são compatíveis, independente do nome.
+
+```typescript
+interface Point2D {
+  x: number;
+  y: number;
+}
+
+interface Vector2D {
+  x: number;
+  y: number;
+}
+
+// Point2D e Vector2D são o MESMO tipo para o TypeScript — mesma estrutura
+const point: Point2D = { x: 1, y: 2 };
+const vector: Vector2D = point; // OK — estruturalmente compatíveis
+
+// Excess property checking — exceção importante
+// Objetos literais passam por checagem EXTRA (detecta typos)
+const p: Point2D = { x: 1, y: 2, z: 3 }; // ERRO: 'z' não existe em Point2D
+const obj = { x: 1, y: 2, z: 3 };
+const p2: Point2D = obj; // OK — sem excess property check em variáveis intermediárias
+```
+
+### Type Inference — O Compilador é Mais Esperto do Que Você Pensa
+
+```typescript
+// O TS infere tipos em quase todos os contextos — não anote o óbvio
+const name = "Lucas";          // tipo: "Lucas" (literal type, não string)
+let name2 = "Lucas";           // tipo: string (let permite reatribuição)
+const names = ["Ana", "Bob"];  // tipo: string[]
+const tuple = [1, "a"] as const; // tipo: readonly [1, "a"]
+
+// Return type inference — deixe o TS inferir
+function add(a: number, b: number) {
+  return a + b; // TS infere: number
+}
+
+// Satisfies — valida o tipo SEM alargar ou estreitar
+const palette = {
+  red: [255, 0, 0],
+  green: "#00ff00",
+  blue: [0, 0, 255],
+} satisfies Record<string, string | number[]>;
+
+// palette.green ainda é string (não string | number[])
+palette.green.toUpperCase(); // OK — TS sabe que green é string
+// Sem satisfies, Record<string, string | number[]> perderia essa informação
+
+// const assertions — congela o tipo no nível mais estreito possível
+const ROUTES = {
+  HOME: "/",
+  ADMIN: "/admin",
+  PROFILE: "/profile",
+} as const;
+// tipo: { readonly HOME: "/"; readonly ADMIN: "/admin"; readonly PROFILE: "/profile" }
+type Route = (typeof ROUTES)[keyof typeof ROUTES]; // "/" | "/admin" | "/profile"
+```
+
+### Type Narrowing — Refinamento Progressivo de Tipos
+
+```typescript
+// O TS estreita tipos automaticamente em control flow
+
+function process(value: string | number | null | undefined) {
+  // Truthiness narrowing
+  if (!value) return; // tipo aqui: string | number (null e undefined eliminados)
+
+  // typeof narrowing
+  if (typeof value === "string") {
+    value.toUpperCase(); // tipo: string
+    return;
+  }
+
+  value.toFixed(2); // tipo: number (string já foi eliminado acima)
+}
+
+// in operator narrowing
+interface Fish { swim(): void }
+interface Bird { fly(): void }
+
+function move(animal: Fish | Bird) {
+  if ("swim" in animal) {
+    animal.swim(); // tipo: Fish
+  } else {
+    animal.fly();  // tipo: Bird
+  }
+}
+
+// instanceof narrowing
+function formatDate(input: string | Date) {
+  if (input instanceof Date) {
+    return input.toISOString(); // tipo: Date
+  }
+  return new Date(input).toISOString(); // tipo: string
+}
+
+// Assignment narrowing
+let x: string | number;
+x = "hello";
+x.toUpperCase(); // tipo: string (TS rastreia a última atribuição)
+```
+
+## Utility Types — O Canivete Suíço do Dia a Dia
+
+```typescript
+interface User {
+  id: number;
+  name: string;
+  email: string;
+  role: "admin" | "user" | "viewer";
+  createdAt: Date;
+  settings?: { theme: "light" | "dark"; notifications: boolean };
+}
+
+// Partial<T> — torna TODAS as propriedades opcionais
+type UpdateUserDTO = Partial<User>;
+// { id?: number; name?: string; email?: string; ... }
+
+// Required<T> — torna TODAS as propriedades obrigatórias
+type StrictUser = Required<User>;
+// settings deixa de ser opcional
+
+// Pick<T, K> — seleciona apenas as chaves listadas
+type UserPreview = Pick<User, "id" | "name">;
+// { id: number; name: string }
+
+// Omit<T, K> — remove as chaves listadas
+type CreateUserDTO = Omit<User, "id" | "createdAt">;
+// { name: string; email: string; role: ...; settings?: ... }
+
+// Record<K, V> — cria objeto com chaves K e valores V
+type RolePermissions = Record<User["role"], string[]>;
+// { admin: string[]; user: string[]; viewer: string[] }
+
+// Exclude<T, U> — remove membros de union que são assignable a U
+type NonAdmin = Exclude<User["role"], "admin">;
+// "user" | "viewer"
+
+// Extract<T, U> — mantém apenas membros assignable a U
+type AdminOnly = Extract<User["role"], "admin" | "moderator">;
+// "admin"
+
+// NonNullable<T> — remove null e undefined
+type MaybeString = string | null | undefined;
+type DefiniteString = NonNullable<MaybeString>; // string
+
+// ReturnType<T> — extrai o tipo de retorno de uma função
+function fetchUser(id: number) {
+  return { id, name: "Lucas", email: "lucas@example.com" };
+}
+type FetchUserResult = ReturnType<typeof fetchUser>;
+// { id: number; name: string; email: string }
+
+// Parameters<T> — extrai os tipos dos parâmetros como tuple
+type FetchUserParams = Parameters<typeof fetchUser>;
+// [id: number]
+
+// Awaited<T> — unwrap de Promise (recursivo)
+type AwaitedUser = Awaited<Promise<Promise<User>>>;
+// User (resolve todas as camadas de Promise)
+```
+
+## Generics — Tipos Parametrizados
+
+```typescript
+// Generics são "funções para tipos" — recebem parâmetros de tipo
+
+// Sem generic: precisa de overload ou any
+function firstElement(arr: any[]): any { return arr[0]; }
+
+// Com generic: preserva a informação de tipo
+function firstElement<T>(arr: T[]): T | undefined { return arr[0]; }
+const n = firstElement([1, 2, 3]);    // tipo: number | undefined
+const s = firstElement(["a", "b"]);   // tipo: string | undefined
+
+// Constraints (extends) — restringe quais tipos são aceitos
+function getProperty<T, K extends keyof T>(obj: T, key: K): T[K] {
+  return obj[key];
+}
+const user: User = { id: 1, name: "Lucas", email: "", role: "admin", createdAt: new Date() };
+getProperty(user, "name");  // tipo: string
+getProperty(user, "xyz");   // ERRO: '"xyz"' não é assignable a keyof User
+
+// Generic com default
+interface ApiResponse<T = unknown> {
+  data: T;
+  status: number;
+  timestamp: Date;
+}
+type GenericResponse = ApiResponse;         // data: unknown
+type UserResponse = ApiResponse<User>;      // data: User
+type UsersResponse = ApiResponse<User[]>;   // data: User[]
+```
+
+### Conditional Types — Lógica no Nível de Tipos
+
+```typescript
+// T extends U ? X : Y — "se T é assignable a U, então X, senão Y"
+
+type IsString<T> = T extends string ? true : false;
+type A = IsString<"hello">; // true
+type B = IsString<42>;      // false
+
+// Distributive conditional types — distribui sobre unions automaticamente
+type ToArray<T> = T extends any ? T[] : never;
+type C = ToArray<string | number>; // string[] | number[]
+// O TS aplica a condição para cada membro da union separadamente
+
+// Prevenir distribuição com colchetes:
+type ToArrayNonDist<T> = [T] extends [any] ? T[] : never;
+type D = ToArrayNonDist<string | number>; // (string | number)[]
+
+// infer — extrair tipo dentro de um conditional
+type UnwrapPromise<T> = T extends Promise<infer U> ? U : T;
+type E = UnwrapPromise<Promise<string>>; // string
+type F = UnwrapPromise<number>;          // number (não é Promise, retorna T)
+
+// infer com constraints (TS 4.7+)
+type FirstIfString<T> = T extends [infer S extends string, ...unknown[]] ? S : never;
+type G = FirstIfString<["hello", 42]>; // "hello"
+type H = FirstIfString<[42, "hello"]>; // never (primeiro elemento não é string)
+
+// Exemplo prático: extrair tipos de parâmetros de rota
+type ExtractParams<T extends string> =
+  T extends `${string}:${infer Param}/${infer Rest}`
+    ? { [K in Param]: string } & ExtractParams<Rest>
+    : T extends `${string}:${infer Param}`
+      ? { [K in Param]: string }
+      : {};
+
+type Params = ExtractParams<"/users/:userId/posts/:postId">;
+// { userId: string } & { postId: string }
+```
+
+## Template Literal Types — Manipulação de Strings no Nível de Tipos
+
+```typescript
+// Combinação de literal types cria todas as permutações
+type Color = "red" | "green" | "blue";
+type Shade = "light" | "dark";
+type ColorVariant = `${Shade}-${Color}`;
+// "light-red" | "light-green" | "light-blue" | "dark-red" | "dark-green" | "dark-blue"
+
+// Built-in string manipulation types
+type Upper = Uppercase<"hello">;     // "HELLO"
+type Lower = Lowercase<"HELLO">;     // "hello"
+type Cap = Capitalize<"hello">;      // "Hello"
+type Uncap = Uncapitalize<"Hello">; // "hello"
+
+// Pattern matching em strings
+type ExtractDomain<T extends string> = T extends `${string}@${infer Domain}` ? Domain : never;
+type Domain = ExtractDomain<"lucas@example.com">; // "example.com"
+
+// Converter snake_case para camelCase no nível de tipos
+type CamelCase<S extends string> =
+  S extends `${infer Head}_${infer Tail}`
+    ? `${Lowercase<Head>}${Capitalize<CamelCase<Tail>>}`
+    : Lowercase<S>;
+
+type A2 = CamelCase<"user_first_name">; // "userFirstName"
+type B2 = CamelCase<"created_at">;      // "createdAt"
+
+// Aplicar recursivamente em todas as chaves de um objeto
+type CamelCaseKeys<T> = {
+  [K in keyof T as K extends string ? CamelCase<K> : K]: T[K]
+};
+
+interface SnakeCaseUser {
+  user_id: number;
+  first_name: string;
+  created_at: Date;
+}
+
+type CamelUser = CamelCaseKeys<SnakeCaseUser>;
+// { userId: number; firstName: string; createdAt: Date }
+```
+
+## Discriminated Unions — Modelagem de Estados com Segurança
+
+```typescript
+// Tagged union: cada variante tem um campo literal discriminante
+
+type RequestState<T> =
+  | { status: "idle" }
+  | { status: "loading" }
+  | { status: "success"; data: T }
+  | { status: "error"; error: Error; retryCount: number };
+
+function renderState(state: RequestState<User[]>) {
+  switch (state.status) {
+    case "idle":
+      return null;
+    case "loading":
+      return <Spinner />;
+    case "success":
+      return state.data.map((u) => <UserCard key={u.id} user={u} />);
+      // TS sabe que state.data existe porque status === "success"
+    case "error":
+      return <ErrorBanner message={state.error.message} retries={state.retryCount} />;
+  }
+}
+
+// Exhaustive checking com never — garante que todos os casos são tratados
+function assertNever(value: never): never {
+  throw new Error(`Caso não tratado: ${JSON.stringify(value)}`);
+}
+
+type Shape =
+  | { kind: "circle"; radius: number }
+  | { kind: "rectangle"; width: number; height: number }
+  | { kind: "triangle"; base: number; height: number };
+
+function area(shape: Shape): number {
+  switch (shape.kind) {
+    case "circle":
+      return Math.PI * shape.radius ** 2;
+    case "rectangle":
+      return shape.width * shape.height;
+    case "triangle":
+      return (shape.base * shape.height) / 2;
+    default:
+      return assertNever(shape);
+      // Se alguém adicionar um novo kind (ex: "polygon") e esquecer o case,
+      // o TS dá erro: 'Shape & { kind: "polygon" }' não é assignable a 'never'
+  }
+}
+
+// Discriminated union para eventos de domínio
+type DomainEvent =
+  | { type: "USER_CREATED"; payload: { userId: string; email: string } }
+  | { type: "USER_UPDATED"; payload: { userId: string; changes: Partial<User> } }
+  | { type: "USER_DELETED"; payload: { userId: string; reason: string } }
+  | { type: "ORDER_PLACED"; payload: { orderId: string; items: OrderItem[] } };
+
+// Type-safe event handler map
+type EventHandler<T extends DomainEvent["type"]> = (
+  payload: Extract<DomainEvent, { type: T }>["payload"]
+) => void;
+
+const handlers: { [T in DomainEvent["type"]]?: EventHandler<T> } = {
+  USER_CREATED: (payload) => {
+    // payload é tipado como { userId: string; email: string }
+    sendWelcomeEmail(payload.email);
+  },
+  ORDER_PLACED: (payload) => {
+    // payload é tipado como { orderId: string; items: OrderItem[] }
+    processOrder(payload.orderId, payload.items);
+  },
+};
+```
+
+## Type Guards — Narrowing Customizado
+
+```typescript
+// Custom type predicate: paramName is Type
+interface Cat { meow(): void; purr(): void }
+interface Dog { bark(): void; fetch(): void }
+
+// O retorno "animal is Cat" diz ao TS que, se retornar true, o argumento é Cat
+function isCat(animal: Cat | Dog): animal is Cat {
+  return "meow" in animal;
+}
+
+function interact(animal: Cat | Dog) {
+  if (isCat(animal)) {
+    animal.purr(); // tipo: Cat
+  } else {
+    animal.fetch(); // tipo: Dog
+  }
+}
+
+// Type guard com assertion: asserts paramName is Type
+function assertIsString(value: unknown): asserts value is string {
+  if (typeof value !== "string") {
+    throw new TypeError(`Esperado string, recebido ${typeof value}`);
+  }
+}
+
+function processInput(input: unknown) {
+  assertIsString(input);
+  // Daqui para frente, TS sabe que input é string
+  console.log(input.toUpperCase());
+}
+
+// Type guard para discriminated unions com array filter
+const events: DomainEvent[] = [/* ... */];
+const userEvents = events.filter(
+  (e): e is Extract<DomainEvent, { type: `USER_${string}` }> =>
+    e.type.startsWith("USER_")
+);
+// userEvents é tipado como array de eventos USER_*
+
+// Type guard genérico reutilizável
+function isNotNullish<T>(value: T): value is NonNullable<T> {
+  return value !== null && value !== undefined;
+}
+
+const mixed = [1, null, 2, undefined, 3];
+const numbers = mixed.filter(isNotNullish);
+// tipo: number[] (não (number | null | undefined)[])
+```
+
+## Mapped Types — Transformação Sistemática de Tipos
+
+```typescript
+// Mapped type básico: [K in keyof T]
+type Readonly2<T> = { readonly [K in keyof T]: T[K] };
+type Optional<T> = { [K in keyof T]?: T[K] };
+type Mutable<T> = { -readonly [K in keyof T]: T[K] };  // Remove readonly
+type Concrete<T> = { [K in keyof T]-?: T[K] };          // Remove optional
+
+// Key remapping com as (TS 4.1+)
+type Getters<T> = {
+  [K in keyof T as `get${Capitalize<string & K>}`]: () => T[K]
+};
+
+type UserGetters = Getters<{ name: string; age: number }>;
+// { getName: () => string; getAge: () => number }
+
+// Filtrar chaves com conditional em as
+type OnlyStrings<T> = {
+  [K in keyof T as T[K] extends string ? K : never]: T[K]
+};
+
+type StringFields = OnlyStrings<User>;
+// { name: string; email: string } — só campos cujo valor é string
+
+// DeepReadonly — recursivo
+type DeepReadonly<T> = {
+  readonly [K in keyof T]: T[K] extends object
+    ? T[K] extends Function
+      ? T[K]
+      : DeepReadonly<T[K]>
+    : T[K]
+};
+
+// DeepPartial — recursivo
+type DeepPartial<T> = {
+  [K in keyof T]?: T[K] extends object
+    ? T[K] extends Function
+      ? T[K]
+      : DeepPartial<T[K]>
+    : T[K]
+};
+
+// Exemplo prático: tipo para form state com validação
+type FormState<T> = {
+  values: T;
+  errors: { [K in keyof T]?: string };
+  touched: { [K in keyof T]?: boolean };
+  isValid: boolean;
+  isDirty: boolean;
+};
+
+type UserFormState = FormState<CreateUserDTO>;
+```
+
+## Declaration Merging e Module Augmentation
+
+```typescript
+// Interface merging — interfaces com mesmo nome são combinadas
+interface Window {
+  analytics: AnalyticsClient;  // Adiciona ao Window global
+}
+window.analytics.track("page_view"); // Sem erro
+
+// Module augmentation — estender tipos de bibliotecas externas
+// Arquivo: types/express.d.ts
+declare module "express-serve-static-core" {
+  interface Request {
+    user?: AuthenticatedUser;     // Adiciona user ao Request do Express
+    requestId: string;
+  }
+}
+
+// Agora em qualquer handler Express:
+app.get("/profile", (req, res) => {
+  req.user?.name;     // Tipado corretamente
+  req.requestId;      // Tipado corretamente
+});
+
+// Augmentação de módulo genérico (ex: estender Zod)
+declare module "zod" {
+  interface ZodString {
+    cpf(): ZodString;  // Adiciona método .cpf() ao ZodString
+  }
+}
+
+// Ambient declarations — declarar tipos para módulos sem tipagem
+declare module "*.svg" {
+  const content: React.FC<React.SVGAttributes<SVGElement>>;
+  export default content;
+}
+
+declare module "*.css" {
+  const classes: Record<string, string>;
+  export default classes;
+}
+
+// Global augmentation dentro de um módulo
+export {}; // Torna o arquivo um módulo
+
+declare global {
+  interface Array<T> {
+    groupBy<K extends string>(fn: (item: T) => K): Record<K, T[]>;
+  }
+}
+```
+
+## Variance — Covariância e Contravariância
+
+```typescript
+// Variância determina a compatibilidade de tipos em posição genérica
+
+// Covariância (out): Dog extends Animal → Container<Dog> extends Container<Animal>
+// Arrays são covariantes em TS (por design, não é sound)
+class Animal { name = "animal"; }
+class Dog extends Animal { bark() {} }
+
+const dogs: Dog[] = [new Dog()];
+const animals: Animal[] = dogs; // OK — covariante (mas unsound!)
+// animals.push(new Animal()); // Compila, mas quebra em runtime — é um Dog[]
+
+// Contravariância (in): se Dog extends Animal, então
+// (animal: Animal) => void extends (dog: Dog) => void? NÃO!
+// É o contrário: (dog: Dog) => void NÃO É assignable a (animal: Animal) => void
+
+// Com strictFunctionTypes: true (ESSENCIAL — ative sempre)
+type Handler<T> = (value: T) => void;
+const animalHandler: Handler<Animal> = (a) => console.log(a.name);
+const dogHandler: Handler<Dog> = (d) => d.bark();
+
+// animalHandler é assignable a dogHandler? Sim, porque Animal é mais genérico.
+const h: Handler<Dog> = animalHandler; // OK
+// dogHandler é assignable a animalHandler? Não! Dog tem bark(), Animal não.
+// const h2: Handler<Animal> = dogHandler; // ERRO com strictFunctionTypes
+
+// Annotation explícita de variância (TS 4.7+)
+interface Producer<out T> {  // Covariante: T só aparece em posição de output
+  get(): T;
+}
+
+interface Consumer<in T> {   // Contravariante: T só aparece em posição de input
+  accept(value: T): void;
+}
+
+interface Transformer<in I, out O> {  // Misto
+  transform(input: I): O;
+}
+```
+
+## Branded Types — Simulando Tipos Nominais
+
+```typescript
+// Problema: string é string — não distingue UserId de OrderId
+function getUser(id: string) { /* ... */ }
+function getOrder(id: string) { /* ... */ }
+getUser(orderId); // Compila sem erro, mas é um bug lógico!
+
+// Solução: Branded types (Opaque types)
+declare const __brand: unique symbol;
+type Brand<T, B extends string> = T & { readonly [__brand]: B };
+
+type UserId = Brand<string, "UserId">;
+type OrderId = Brand<string, "OrderId">;
+type Email = Brand<string, "Email">;
+
+// Funções construtoras que validam
+function userId(id: string): UserId {
+  if (!id.startsWith("usr_")) throw new Error("UserId inválido");
+  return id as UserId;
+}
+
+function orderId(id: string): OrderId {
+  if (!id.startsWith("ord_")) throw new Error("OrderId inválido");
+  return id as OrderId;
+}
+
+function email(value: string): Email {
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(value)) throw new Error("Email inválido");
+  return value as Email;
+}
+
+// Agora o compilador impede mistura
+function getUserById(id: UserId) { /* ... */ }
+function getOrderById(id: OrderId) { /* ... */ }
+
+const uid = userId("usr_123");
+const oid = orderId("ord_456");
+
+getUserById(uid);  // OK
+getUserById(oid);  // ERRO: OrderId não é assignable a UserId
+getUserById("usr_123"); // ERRO: string não é assignable a UserId
+
+// Branded types para valores numéricos
+type Cents = Brand<number, "Cents">;
+type Dollars = Brand<number, "Dollars">;
+
+function cents(value: number): Cents { return value as Cents; }
+function centsToLDollars(c: Cents): Dollars { return (c / 100) as Dollars; }
+// Previne mistura acidental de centavos com dólares
+```
+
+## Performance do Compilador — Projetos Grandes
+
+```
+# Project References — dividir monorepo em sub-projetos
+# tsconfig.json (raiz)
+{
+  "references": [
+    { "path": "./packages/shared" },
+    { "path": "./packages/api" },
+    { "path": "./packages/web" }
+  ]
+}
+
+# packages/shared/tsconfig.json
+{
+  "compilerOptions": {
+    "composite": true,      // Requerido para project references
+    "declaration": true,    // Gera .d.ts
+    "declarationMap": true, // Go-to-definition funciona entre projetos
+    "outDir": "./dist"
+  }
+}
+
+# Build incremental: tsc --build (ou tsc -b)
+# Só recompila pacotes que mudaram + dependentes transitivos.
+
+# Incremental builds (projeto único)
+{
+  "compilerOptions": {
+    "incremental": true,    // Salva estado em .tsbuildinfo
+    "tsBuildInfoFile": "./.tsbuildinfo"
+  }
+}
+# Primeira build: 30s → Builds seguintes: 2-3s (só recompila o que mudou)
+
+# isolatedModules — requerido para transpiladores (esbuild, swc, Babel)
+{
+  "compilerOptions": {
+    "isolatedModules": true
+    // Cada arquivo deve ser compilável isoladamente.
+    // Proíbe: const enums, namespace merging, re-export de types sem "type"
+  }
+}
+
+# Dicas para performance:
+# 1. Use "skipLibCheck": true (não checa node_modules/.d.ts)
+# 2. Exclua node_modules e dist do include
+# 3. Evite tipos recursivos profundos (> 5 níveis)
+# 4. Prefira interfaces a type aliases (interfaces são cacheadas por nome)
+# 5. Use project references em monorepos
+```
+
+## tsconfig Deep Dive — Opções que Importam
+
+```jsonc
+{
+  "compilerOptions": {
+    // === Strict Mode (SEMPRE ative tudo) ===
+    "strict": true,              // Ativa TODAS as flags strict de uma vez:
+    // "noImplicitAny": true,    //   Erro se tipo inferido é any
+    // "strictNullChecks": true,  //   null/undefined são tipos separados
+    // "strictFunctionTypes": true, // Contravariância em parâmetros de função
+    // "strictBindCallApply": true, // Tipos corretos para bind/call/apply
+    // "strictPropertyInitialization": true, // Classes: propriedades devem ser inicializadas
+    // "noImplicitThis": true,   //   Erro se this é implicitamente any
+    // "alwaysStrict": true,     //   Emite "use strict" em todos os arquivos
+    // "useUnknownInCatchVariables": true, // catch(e) → e é unknown, não any
+
+    // === Extra safety (não incluídas no strict) ===
+    "noUncheckedIndexedAccess": true,  // array[0] é T | undefined, não T
+    "exactOptionalProperties": true,   // { a?: string } não aceita { a: undefined }
+    "noPropertyAccessFromIndexSignature": true, // Força obj["key"] para index signatures
+
+    // === Module Resolution ===
+    "module": "ESNext",
+    "moduleResolution": "bundler",  // Para projetos com Vite/webpack/esbuild
+    // "moduleResolution": "node16", // Para bibliotecas publicadas ou Node.js puro
+    // "moduleResolution": "nodenext", // Alias para node16 (segue versão do Node)
+
+    // bundler vs node16:
+    //   bundler: permite import sem extensão, resolve index.ts, package.json "exports"
+    //   node16: exige extensões (.js!), resolve "exports" com condições, ESM strict
+
+    // === Path Aliases ===
+    "baseUrl": ".",
+    "paths": {
+      "@/*": ["./src/*"],           // import { db } from "@/lib/db"
+      "@components/*": ["./src/components/*"],
+      "@utils/*": ["./src/utils/*"]
+    },
+    // IMPORTANTE: paths é APENAS para o TS. O bundler precisa de configuração separada:
+    // Vite: resolve.alias no vite.config.ts
+    // webpack: resolve.alias no webpack.config.js
+
+    // === Output ===
+    "target": "ES2022",            // Alvo de compilação (determina quais features são transpiladas)
+    "lib": ["ES2022", "DOM", "DOM.Iterable"], // APIs disponíveis em runtime
+    "jsx": "react-jsx",            // React 17+ transform (não precisa de import React)
+    "outDir": "./dist",
+    "declaration": true,           // Gera .d.ts (necessário para libs)
+    "sourceMap": true,
+
+    // === Imports ===
+    "esModuleInterop": true,       // import fs from "fs" ao invés de import * as fs
+    "allowImportingTsExtensions": true, // Permite import "./foo.ts" (com bundler)
+    "resolveJsonModule": true,     // Permite import config from "./config.json"
+    "isolatedModules": true,       // Compatibilidade com esbuild/swc
+    "verbatimModuleSyntax": true,  // import type DEVE usar "import type { X }"
+                                    // Substitui importsNotUsedAsValues
+    "skipLibCheck": true           // Pula checagem de .d.ts (performance)
+  },
+  "include": ["src/**/*"],
+  "exclude": ["node_modules", "dist", "**/*.test.ts"]
+}
+```
+
+## Patterns Avançados — Builder, Result, Exhaustive Switch
+
+### Builder Pattern com Tipos Acumulativos
+
+```typescript
+// O tipo acumula as propriedades configuradas — garante que build() só é chamado
+// quando todas as obrigatórias foram setadas.
+
+type BuilderState = {
+  host: boolean;
+  port: boolean;
+  database: boolean;
+};
+
+class DatabaseConfigBuilder<State extends BuilderState = { host: false; port: false; database: false }> {
+  private config: Partial<{ host: string; port: number; database: string }> = {};
+
+  host(value: string): DatabaseConfigBuilder<State & { host: true }> {
+    this.config.host = value;
+    return this as any;
+  }
+
+  port(value: number): DatabaseConfigBuilder<State & { port: true }> {
+    this.config.port = value;
+    return this as any;
+  }
+
+  database(value: string): DatabaseConfigBuilder<State & { database: true }> {
+    this.config.database = value;
+    return this as any;
+  }
+
+  // build() só está disponível quando TODAS as propriedades são true
+  build(
+    this: DatabaseConfigBuilder<{ host: true; port: true; database: true }>
+  ): { host: string; port: number; database: string } {
+    return this.config as any;
+  }
+}
+
+const config = new DatabaseConfigBuilder()
+  .host("localhost")
+  .port(5432)
+  .database("myapp")
+  .build(); // OK
+
+// new DatabaseConfigBuilder().host("localhost").build();
+// ERRO: 'build' não existe quando port e database são false
+```
+
+### Result Type — Tratamento de Erros sem Exceções
+
+```typescript
+// Inspirado em Rust: Result<T, E> força o chamador a tratar o erro
+
+type Result<T, E = Error> =
+  | { ok: true; value: T }
+  | { ok: false; error: E };
+
+function ok<T>(value: T): Result<T, never> {
+  return { ok: true, value };
+}
+
+function err<E>(error: E): Result<never, E> {
+  return { ok: false, error };
+}
+
+// Uso: parsing de configuração
+type ConfigError =
+  | { code: "MISSING_FIELD"; field: string }
+  | { code: "INVALID_VALUE"; field: string; expected: string }
+  | { code: "FILE_NOT_FOUND"; path: string };
+
+function parseConfig(raw: unknown): Result<AppConfig, ConfigError> {
+  if (typeof raw !== "object" || raw === null) {
+    return err({ code: "INVALID_VALUE", field: "root", expected: "object" });
+  }
+
+  const obj = raw as Record<string, unknown>;
+
+  if (!obj.port) {
+    return err({ code: "MISSING_FIELD", field: "port" });
+  }
+
+  if (typeof obj.port !== "number" || obj.port < 1 || obj.port > 65535) {
+    return err({ code: "INVALID_VALUE", field: "port", expected: "number (1-65535)" });
+  }
+
+  // ... mais validações
+
+  return ok({
+    port: obj.port,
+    host: (obj.host as string) ?? "localhost",
+  });
+}
+
+// O chamador é OBRIGADO a checar o resultado
+const result = parseConfig(rawConfig);
+if (!result.ok) {
+  switch (result.error.code) {
+    case "MISSING_FIELD":
+      console.error(`Campo obrigatório ausente: ${result.error.field}`);
+      break;
+    case "INVALID_VALUE":
+      console.error(`Valor inválido para ${result.error.field}: esperado ${result.error.expected}`);
+      break;
+    case "FILE_NOT_FOUND":
+      console.error(`Arquivo não encontrado: ${result.error.path}`);
+      break;
+  }
+  process.exit(1);
+}
+
+// Aqui o TS sabe que result.ok === true
+console.log(`Servidor na porta ${result.value.port}`);
+```
+
+### Exhaustive Switch com Mapa de Handlers
+
+```typescript
+// Pattern para garantir que toda ação é tratada, com tipo de retorno correto
+
+type Action =
+  | { type: "INCREMENT"; amount: number }
+  | { type: "DECREMENT"; amount: number }
+  | { type: "RESET" }
+  | { type: "SET"; value: number };
+
+// Tipo helper que exige handler para cada Action["type"]
+type ActionHandlerMap<State> = {
+  [A in Action as A["type"]]: (state: State, action: A) => State;
+};
+
+interface CounterState {
+  count: number;
+  lastAction: Action["type"] | null;
+}
+
+// Se você esquecer de tratar qualquer tipo de ação, o TS dá erro
+const handlers: ActionHandlerMap<CounterState> = {
+  INCREMENT: (state, action) => ({
+    count: state.count + action.amount,  // action tipada como { type: "INCREMENT"; amount: number }
+    lastAction: "INCREMENT",
+  }),
+  DECREMENT: (state, action) => ({
+    count: state.count - action.amount,
+    lastAction: "DECREMENT",
+  }),
+  RESET: (state) => ({
+    count: 0,
+    lastAction: "RESET",
+  }),
+  SET: (state, action) => ({
+    count: action.value,  // action tipada como { type: "SET"; value: number }
+    lastAction: "SET",
+  }),
+};
+
+function reducer(state: CounterState, action: Action): CounterState {
+  const handler = handlers[action.type] as (state: CounterState, action: Action) => CounterState;
+  return handler(state, action);
+}
+```
+
+### Zod + TypeScript — Schema como Fonte de Verdade
+
+```typescript
+import { z } from "zod";
+
+// O schema Zod é a single source of truth — o tipo TS é derivado
+const UserSchema = z.object({
+  id: z.string().uuid(),
+  name: z.string().min(2).max(100),
+  email: z.string().email(),
+  role: z.enum(["admin", "user", "viewer"]),
+  createdAt: z.coerce.date(), // Aceita string ISO e converte para Date
+  settings: z.object({
+    theme: z.enum(["light", "dark"]).default("light"),
+    notifications: z.boolean().default(true),
+  }).optional(),
+});
+
+// Tipo derivado do schema — NUNCA defina manualmente se tem Zod
+type User = z.infer<typeof UserSchema>;
+// { id: string; name: string; email: string; role: "admin" | "user" | "viewer"; ... }
+
+// Schema para criação (omite id e createdAt)
+const CreateUserSchema = UserSchema.omit({ id: true, createdAt: true });
+type CreateUserDTO = z.infer<typeof CreateUserSchema>;
+
+// Schema para update (tudo parcial)
+const UpdateUserSchema = CreateUserSchema.partial();
+type UpdateUserDTO = z.infer<typeof UpdateUserSchema>;
+
+// Validação em runtime com tipo seguro
+function createUser(input: unknown): Result<User, z.ZodError> {
+  const parsed = CreateUserSchema.safeParse(input);
+  if (!parsed.success) return err(parsed.error);
+
+  const user: User = {
+    ...parsed.data,
+    id: crypto.randomUUID(),
+    createdAt: new Date(),
+  };
+
+  return ok(user);
+}
+```

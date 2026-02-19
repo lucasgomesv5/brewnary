@@ -1,0 +1,732 @@
+---
+title: "Patterns de Estado no React"
+description: "Domine useState, useReducer, Context, state management externo e estratégias avançadas de gerenciamento de estado"
+track: "frontend"
+order: 13
+section: "React"
+priority: "high"
+tags: ["react", "estado", "context", "tanstack-query", "patterns"]
+prerequisites: ["react-internals"]
+keyTakeaways:
+  - "Estado local (useState) é para estado de UI simples — useReducer para transições complexas"
+  - "Context resolve compartilhamento, mas causa re-renders — divida contextos por frequência de atualização"
+  - "Dados do servidor não são estado do cliente — são cache, e TanStack Query gerencia cache, refetch e invalidação"
+---
+
+## Estado em React: fluxo unidirecional e batching
+
+O React segue o modelo de **unidirectional data flow**: estado flui de cima para baixo via props, e eventos fluem de baixo para cima via callbacks. Essa arquitetura torna o fluxo de dados previsível e debugável.
+
+```jsx
+// Por que setState é "assíncrono"?
+// React agrupa (batches) múltiplas atualizações de estado em uma única re-renderização.
+function Counter() {
+  const [count, setCount] = useState(0);
+
+  function handleClick() {
+    setCount(count + 1); // Agenda atualização
+    setCount(count + 1); // Agenda atualização com o MESMO valor de count!
+    setCount(count + 1); // Resultado: count + 1 (não count + 3)
+    // Todas as chamadas usam o mesmo snapshot de `count` desta renderização.
+  }
+
+  function handleClickCorreto() {
+    setCount(c => c + 1); // Functional update — recebe o valor mais recente
+    setCount(c => c + 1); // c agora é count + 1
+    setCount(c => c + 1); // c agora é count + 2 → resultado: count + 3
+  }
+
+  return <button onClick={handleClickCorreto}>{count}</button>;
+}
+
+// A partir do React 18, TODAS as atualizações são batched automaticamente,
+// incluindo promises, setTimeout e event handlers nativos.
+// Antes do React 18, apenas event handlers do React eram batched.
+
+// Para forçar atualização síncrona (raro, evite):
+import { flushSync } from 'react-dom';
+flushSync(() => setCount(c => c + 1));
+// O DOM é atualizado imediatamente aqui
+```
+
+---
+
+## useState: implementação interna e patterns avançados
+
+Internamente, o React armazena hooks em uma **linked list** associada à fiber (nó da árvore interna). A ordem dos hooks DEVE ser constante entre renderizações — por isso hooks não podem estar dentro de condicionais.
+
+```jsx
+// Implementação simplificada do useState (para entender o modelo mental)
+let hooks = [];
+let currentHookIndex = 0;
+
+function useStateSimplified(initialValue) {
+  const index = currentHookIndex;
+
+  if (hooks[index] === undefined) {
+    // Primeira renderização — inicializa
+    hooks[index] = typeof initialValue === 'function'
+      ? initialValue() // Lazy initialization
+      : initialValue;
+  }
+
+  const setState = (newValue) => {
+    const nextValue = typeof newValue === 'function'
+      ? newValue(hooks[index]) // Functional update
+      : newValue;
+
+    if (Object.is(hooks[index], nextValue)) return; // Bail out se igual
+    hooks[index] = nextValue;
+    rerender(); // Agenda re-renderização
+  };
+
+  currentHookIndex++;
+  return [hooks[index], setState];
+}
+
+// Lazy initial state — a função só é executada na PRIMEIRA renderização
+function ExpensiveComponent() {
+  // RUIM: computeInitialData() roda em TODA renderização, resultado é descartado
+  const [data, setData] = useState(computeInitialData());
+
+  // BOM: computeInitialData é chamado APENAS na primeira renderização
+  const [data, setData] = useState(() => computeInitialData());
+
+  // Casos de uso para lazy init:
+  // - Ler de localStorage
+  // - Parsear dados pesados
+  // - Gerar valores complexos iniciais
+  const [prefs, setPrefs] = useState(() => {
+    const saved = localStorage.getItem('preferences');
+    return saved ? JSON.parse(saved) : defaultPreferences;
+  });
+}
+```
+
+---
+
+## useReducer: state machines e transições complexas
+
+`useReducer` é preferível ao `useState` quando o próximo estado depende do estado anterior de formas complexas, ou quando múltiplos valores de estado estão inter-relacionados.
+
+```jsx
+// Estado com múltiplas transições inter-relacionadas
+const initialState = {
+  status: 'idle',     // 'idle' | 'loading' | 'success' | 'error'
+  data: null,
+  error: null,
+  retryCount: 0,
+};
+
+function fetchReducer(state, action) {
+  switch (action.type) {
+    case 'FETCH_START':
+      return {
+        ...state,
+        status: 'loading',
+        error: null,
+      };
+    case 'FETCH_SUCCESS':
+      return {
+        ...state,
+        status: 'success',
+        data: action.payload,
+        error: null,
+        retryCount: 0,
+      };
+    case 'FETCH_ERROR':
+      return {
+        ...state,
+        status: 'error',
+        error: action.payload,
+      };
+    case 'RETRY':
+      // Transição condicional — só permite retry se estiver em estado de erro
+      if (state.status !== 'error') return state;
+      return {
+        ...state,
+        status: 'loading',
+        retryCount: state.retryCount + 1,
+      };
+    case 'RESET':
+      return initialState;
+    default:
+      throw new Error(`Ação desconhecida: ${action.type}`);
+  }
+}
+
+function useFetch(url) {
+  const [state, dispatch] = useReducer(fetchReducer, initialState);
+
+  const execute = useCallback(async () => {
+    dispatch({ type: 'FETCH_START' });
+    try {
+      const response = await fetch(url);
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      const data = await response.json();
+      dispatch({ type: 'FETCH_SUCCESS', payload: data });
+    } catch (error) {
+      dispatch({ type: 'FETCH_ERROR', payload: error.message });
+    }
+  }, [url]);
+
+  return { ...state, execute, dispatch };
+}
+
+// Uso
+function UserProfile({ userId }) {
+  const { status, data, error, execute, dispatch } = useFetch(`/api/users/${userId}`);
+
+  useEffect(() => { execute(); }, [execute]);
+
+  if (status === 'loading') return <Spinner />;
+  if (status === 'error') return (
+    <div>
+      <p>Erro: {error}</p>
+      <button onClick={() => { dispatch({ type: 'RETRY' }); execute(); }}>
+        Tentar novamente
+      </button>
+    </div>
+  );
+  if (status === 'success') return <UserCard user={data} />;
+  return null;
+}
+```
+
+---
+
+## Context API: Provider/Consumer e o problema de re-renders
+
+Context resolve o problema de prop drilling, mas tem uma armadilha séria: **qualquer mudança no value do Provider re-renderiza TODOS os consumidores**, mesmo que eles usem apenas uma parte do valor.
+
+```jsx
+// PROBLEMA: Context monolítico causa re-renders desnecessários
+const AppContext = React.createContext();
+
+function AppProvider({ children }) {
+  const [user, setUser] = useState(null);
+  const [theme, setTheme] = useState('dark');
+  const [notifications, setNotifications] = useState([]);
+
+  // Toda vez que notifications muda, componentes que usam APENAS theme
+  // também re-renderizam, porque o objeto value é novo.
+  return (
+    <AppContext.Provider value={{ user, setUser, theme, setTheme, notifications }}>
+      {children}
+    </AppContext.Provider>
+  );
+}
+
+// SOLUÇÃO: Dividir contextos por frequência de atualização
+const AuthContext = React.createContext(null);
+const ThemeContext = React.createContext('dark');
+const NotificationContext = React.createContext(null);
+
+function AuthProvider({ children }) {
+  const [user, setUser] = useState(null);
+  const login = useCallback(async (credentials) => {
+    const user = await api.login(credentials);
+    setUser(user);
+  }, []);
+  const logout = useCallback(() => setUser(null), []);
+
+  // useMemo para estabilizar a referência — só muda quando user muda
+  const value = useMemo(() => ({ user, login, logout }), [user, login, logout]);
+
+  return (
+    <AuthContext.Provider value={value}>
+      {children}
+    </AuthContext.Provider>
+  );
+}
+
+// Custom hook com validação
+function useAuth() {
+  const context = useContext(AuthContext);
+  if (context === null) {
+    throw new Error('useAuth deve ser usado dentro de <AuthProvider>');
+  }
+  return context;
+}
+
+// Pattern: separar state de dispatch
+// State muda frequentemente, dispatch é estável (nunca muda)
+const CountStateContext = React.createContext();
+const CountDispatchContext = React.createContext();
+
+function CountProvider({ children }) {
+  const [count, dispatch] = useReducer(countReducer, 0);
+
+  return (
+    <CountStateContext.Provider value={count}>
+      <CountDispatchContext.Provider value={dispatch}>
+        {children}
+      </CountDispatchContext.Provider>
+    </CountStateContext.Provider>
+  );
+}
+
+// Componentes que apenas disparam ações NÃO re-renderizam quando count muda
+function IncrementButton() {
+  const dispatch = useContext(CountDispatchContext); // Referência estável
+  return <button onClick={() => dispatch({ type: 'increment' })}>+1</button>;
+}
+```
+
+---
+
+## State management externo: Redux, Zustand e Jotai
+
+```javascript
+// REDUX — Flux architecture com middleware e selectors
+// Quando usar: aplicações grandes com estado global complexo,
+// time-travel debugging, serializable state
+
+import { configureStore, createSlice } from '@reduxjs/toolkit';
+
+const todosSlice = createSlice({
+  name: 'todos',
+  initialState: { items: [], filter: 'all' },
+  reducers: {
+    addTodo(state, action) {
+      // RTK usa Immer internamente — mutação "direta" é segura aqui
+      state.items.push({ id: Date.now(), text: action.payload, done: false });
+    },
+    toggleTodo(state, action) {
+      const todo = state.items.find(t => t.id === action.payload);
+      if (todo) todo.done = !todo.done;
+    },
+    setFilter(state, action) {
+      state.filter = action.payload;
+    },
+  },
+});
+
+const store = configureStore({ reducer: { todos: todosSlice.reducer } });
+
+// Selector memoizado — evita recomputação se o estado não mudou
+import { createSelector } from '@reduxjs/toolkit';
+
+const selectFilteredTodos = createSelector(
+  [(state) => state.todos.items, (state) => state.todos.filter],
+  (items, filter) => {
+    switch (filter) {
+      case 'done': return items.filter(t => t.done);
+      case 'pending': return items.filter(t => !t.done);
+      default: return items;
+    }
+  },
+);
+```
+
+```javascript
+// ZUSTAND — API mínima, sem boilerplate, sem Provider
+// Quando usar: estado global moderado, quer simplicidade e performance
+
+import { create } from 'zustand';
+import { devtools, persist, subscribeWithSelector } from 'zustand/middleware';
+
+const useStore = create(
+  devtools(
+    persist(
+      subscribeWithSelector((set, get) => ({
+        todos: [],
+        filter: 'all',
+
+        addTodo: (text) => set((state) => ({
+          todos: [...state.todos, { id: Date.now(), text, done: false }],
+        })),
+
+        toggleTodo: (id) => set((state) => ({
+          todos: state.todos.map(t =>
+            t.id === id ? { ...t, done: !t.done } : t
+          ),
+        })),
+
+        // Derived state com get()
+        get filteredTodos() {
+          const { todos, filter } = get();
+          if (filter === 'done') return todos.filter(t => t.done);
+          if (filter === 'pending') return todos.filter(t => !t.done);
+          return todos;
+        },
+      })),
+      { name: 'todos-storage' }, // Persiste em localStorage automaticamente
+    ),
+  ),
+);
+
+// Uso com selector — componente só re-renderiza quando filter muda
+function FilterSelector() {
+  const filter = useStore((state) => state.filter);
+  return <select value={filter} onChange={e => useStore.getState().setFilter(e.target.value)} />;
+}
+```
+
+```javascript
+// JOTAI — modelo atômico (inspirado no Recoil)
+// Quando usar: estado granular derivado, dependências entre atoms
+
+import { atom, useAtom } from 'jotai';
+
+const todosAtom = atom([]);
+const filterAtom = atom('all');
+
+// Derived atom — recomputa quando todosAtom ou filterAtom mudam
+const filteredTodosAtom = atom((get) => {
+  const todos = get(todosAtom);
+  const filter = get(filterAtom);
+  if (filter === 'done') return todos.filter(t => t.done);
+  if (filter === 'pending') return todos.filter(t => !t.done);
+  return todos;
+});
+
+// Write-only atom (ação)
+const addTodoAtom = atom(null, (get, set, text) => {
+  set(todosAtom, (prev) => [
+    ...prev,
+    { id: Date.now(), text, done: false },
+  ]);
+});
+
+function TodoList() {
+  const [todos] = useAtom(filteredTodosAtom);
+  const [, addTodo] = useAtom(addTodoAtom);
+  // Componente só re-renderiza quando filteredTodosAtom muda
+}
+```
+
+---
+
+## Server state: TanStack Query
+
+Dados do servidor NÃO são estado do cliente. São **cache** com semântica diferente: podem ficar stale, precisam de revalidação, e são compartilhados entre componentes.
+
+```jsx
+import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query';
+
+function UserList() {
+  const queryClient = useQueryClient();
+
+  const { data: users, isLoading, error, isStale } = useQuery({
+    queryKey: ['users'],
+    queryFn: () => fetch('/api/users').then(r => r.json()),
+    staleTime: 5 * 60 * 1000,  // Considera fresco por 5 minutos
+    gcTime: 30 * 60 * 1000,    // Mantém no cache por 30 min após unmount
+    retry: 3,                   // Retenta 3 vezes em caso de falha
+    refetchOnWindowFocus: true, // Revalida ao voltar para a aba
+  });
+
+  // Optimistic update — atualiza a UI ANTES da resposta do servidor
+  const deleteUser = useMutation({
+    mutationFn: (id) => fetch(`/api/users/${id}`, { method: 'DELETE' }),
+
+    onMutate: async (deletedId) => {
+      // Cancela queries em andamento para evitar sobrescrita
+      await queryClient.cancelQueries({ queryKey: ['users'] });
+
+      // Salva snapshot para rollback
+      const previousUsers = queryClient.getQueryData(['users']);
+
+      // Atualiza o cache otimisticamente
+      queryClient.setQueryData(['users'], (old) =>
+        old.filter(u => u.id !== deletedId)
+      );
+
+      return { previousUsers }; // Context para onError
+    },
+
+    onError: (err, deletedId, context) => {
+      // Rollback em caso de erro
+      queryClient.setQueryData(['users'], context.previousUsers);
+    },
+
+    onSettled: () => {
+      // Sempre revalida para garantir consistência com o servidor
+      queryClient.invalidateQueries({ queryKey: ['users'] });
+    },
+  });
+
+  if (isLoading) return <Skeleton count={5} />;
+  if (error) return <ErrorBanner message={error.message} />;
+
+  return (
+    <ul>
+      {users.map(user => (
+        <li key={user.id}>
+          {user.name}
+          <button onClick={() => deleteUser.mutate(user.id)}>
+            {deleteUser.isPending ? 'Excluindo...' : 'Excluir'}
+          </button>
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+// Pattern: prefetch para navegação instantânea
+function UserListItem({ user }) {
+  const queryClient = useQueryClient();
+
+  return (
+    <Link
+      to={`/users/${user.id}`}
+      onMouseEnter={() => {
+        // Prefetch ao hover — quando o usuário clicar, os dados já estarão no cache
+        queryClient.prefetchQuery({
+          queryKey: ['user', user.id],
+          queryFn: () => fetch(`/api/users/${user.id}`).then(r => r.json()),
+          staleTime: 60 * 1000,
+        });
+      }}
+    >
+      {user.name}
+    </Link>
+  );
+}
+```
+
+---
+
+## Derived state: useMemo vs computar na renderização
+
+```jsx
+// REGRA: Não memoize tudo. Memoize apenas quando há custo mensurável.
+
+function ProductList({ products, searchTerm }) {
+  // SIMPLES e CORRETO — computar no render é suficiente para a maioria dos casos.
+  // Filtrar um array de 100 itens leva microsegundos — não precisa de useMemo.
+  const filtered = products.filter(p =>
+    p.name.toLowerCase().includes(searchTerm.toLowerCase())
+  );
+
+  // useMemo JUSTIFICADO quando:
+  // 1. A computação é genuinamente cara (sort de 10k+ itens, aggregation)
+  // 2. O resultado é passado como prop para componente memoizado
+  const sortedAndGrouped = useMemo(() => {
+    const sorted = [...filtered].sort((a, b) => b.price - a.price);
+    return Object.groupBy(sorted, (p) => p.category);
+  }, [filtered]);
+
+  // useMemo para referência estável (evita re-render de filho memoizado)
+  const chartData = useMemo(
+    () => products.map(p => ({ x: p.name, y: p.price })),
+    [products],
+  );
+
+  // React.memo só funciona se as props são referencialmente estáveis
+  return <ExpensiveChart data={chartData} />;
+}
+
+// ANTIPATTERN: estado derivado em useState
+function BadExample({ items }) {
+  // ERRADO — duplica estado e causa bugs de sincronização
+  const [filteredItems, setFilteredItems] = useState(items);
+
+  useEffect(() => {
+    setFilteredItems(items.filter(i => i.active));
+  }, [items]);
+  // Problema: render extra desnecessário, possível flickering
+
+  // CERTO — derivar diretamente
+  const filteredItems = items.filter(i => i.active);
+}
+```
+
+---
+
+## Form state: controlled vs uncontrolled e React Hook Form
+
+```jsx
+// CONTROLLED — React controla o valor do input
+function ControlledForm() {
+  const [email, setEmail] = useState('');
+  // Cada keystroke causa re-render do componente inteiro.
+  // Aceitável para formulários pequenos (< 10 campos).
+  return <input value={email} onChange={e => setEmail(e.target.value)} />;
+}
+
+// UNCONTROLLED — o DOM mantém o estado, React lê quando precisa
+function UncontrolledForm() {
+  const emailRef = useRef();
+
+  function handleSubmit(e) {
+    e.preventDefault();
+    console.log(emailRef.current.value); // Lê do DOM
+  }
+
+  return (
+    <form onSubmit={handleSubmit}>
+      <input ref={emailRef} type="email" defaultValue="" />
+      <button type="submit">Enviar</button>
+    </form>
+  );
+}
+
+// REACT HOOK FORM — performance de uncontrolled + DX de controlled
+import { useForm } from 'react-hook-form';
+
+function RegistrationForm() {
+  const {
+    register,
+    handleSubmit,
+    watch,
+    formState: { errors, isSubmitting, isDirty },
+  } = useForm({
+    defaultValues: { email: '', password: '', confirmPassword: '' },
+    mode: 'onBlur', // Valida ao sair do campo (não a cada keystroke)
+  });
+
+  const password = watch('password'); // Observa um campo específico
+
+  const onSubmit = async (data) => {
+    await api.register(data);
+  };
+
+  return (
+    <form onSubmit={handleSubmit(onSubmit)}>
+      <input
+        {...register('email', {
+          required: 'E-mail é obrigatório',
+          pattern: {
+            value: /^[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}$/i,
+            message: 'E-mail inválido',
+          },
+        })}
+        type="email"
+      />
+      {errors.email && <span role="alert">{errors.email.message}</span>}
+
+      <input
+        {...register('password', {
+          required: 'Senha é obrigatória',
+          minLength: { value: 8, message: 'Mínimo 8 caracteres' },
+        })}
+        type="password"
+      />
+
+      <input
+        {...register('confirmPassword', {
+          validate: (value) =>
+            value === password || 'As senhas não coincidem',
+        })}
+        type="password"
+      />
+
+      <button type="submit" disabled={isSubmitting}>
+        {isSubmitting ? 'Enviando...' : 'Cadastrar'}
+      </button>
+    </form>
+  );
+}
+// React Hook Form re-renderiza APENAS os campos com erro,
+// não o formulário inteiro — essencial para forms com 20+ campos.
+```
+
+---
+
+## URL como estado e state colocation
+
+```jsx
+// URL como estado — search params são estado compartilhável e bookmarkável
+import { useSearchParams } from 'react-router-dom';
+
+function ProductFilters() {
+  const [searchParams, setSearchParams] = useSearchParams();
+
+  const category = searchParams.get('category') || 'all';
+  const sort = searchParams.get('sort') || 'name';
+  const page = Number(searchParams.get('page')) || 1;
+
+  const updateFilter = (key, value) => {
+    setSearchParams(prev => {
+      const next = new URLSearchParams(prev);
+      next.set(key, value);
+      if (key !== 'page') next.set('page', '1'); // Reset page ao filtrar
+      return next;
+    });
+  };
+
+  // A URL REFLETE o estado: /products?category=eletronicos&sort=price&page=2
+  // Bookmarkável, compartilhável, funciona com back/forward do browser.
+}
+
+// STATE COLOCATION — onde colocar cada tipo de estado
+//
+// 1. Estado LOCAL (useState) → toggle, input value, modal aberto/fechado
+//    Regra: se só um componente usa, mantenha local.
+//
+// 2. Lift state UP → quando dois siblings precisam do mesmo estado,
+//    suba para o pai mais próximo.
+//
+// 3. Push state DOWN → se um componente pai tem estado que só o filho usa,
+//    mova para o filho. Menos re-renders no pai.
+//
+// 4. Context → estado compartilhado por muitos componentes em subárvores
+//    distantes (theme, auth, locale).
+//
+// 5. State manager (Zustand/Redux) → estado verdadeiramente global
+//    que muitos componentes leem e escrevem.
+//
+// 6. URL → filtros, paginação, tab ativa — qualquer estado que o
+//    usuário deveria poder compartilhar via link.
+//
+// 7. Server state (TanStack Query) → dados que vêm de API.
+//    NUNCA duplique em useState.
+```
+
+---
+
+## Imutabilidade: por que React precisa de novas referências
+
+```javascript
+// React usa Object.is() para comparar state antigo vs novo.
+// Se a referência é a mesma, React assume que nada mudou e PULA o re-render.
+
+// ERRADO — mutação direta, React não detecta a mudança
+const [items, setItems] = useState([1, 2, 3]);
+items.push(4);       // Muta o array original
+setItems(items);     // Mesma referência → React ignora → sem re-render!
+
+// CERTO — criar nova referência
+setItems([...items, 4]);               // Spread
+setItems(items.concat(4));             // concat
+setItems(prev => [...prev, 4]);        // Functional update com spread
+
+// Para objetos:
+const [user, setUser] = useState({ name: 'Lucas', address: { city: 'SP' } });
+
+// ERRADO
+user.address.city = 'RJ';
+setUser(user); // Mesma referência → ignorado
+
+// CERTO — spread em cada nível de aninhamento
+setUser(prev => ({
+  ...prev,
+  address: { ...prev.address, city: 'RJ' },
+}));
+
+// IMMER — permite "mutação" que gera objetos imutáveis por trás
+import { produce } from 'immer';
+
+setUser(produce(draft => {
+  draft.address.city = 'RJ';
+  draft.address.zipCode = '01000-000';
+  // Immer cria novos objetos apenas nos paths modificados
+  // (structural sharing) — eficiente para estado profundamente aninhado
+}));
+
+// structuredClone — deep clone nativo (ES2022)
+const deepCopy = structuredClone(user);
+// Funciona com Date, Map, Set, ArrayBuffer, RegExp
+// NÃO funciona com: functions, DOM nodes, symbols, prototypes customizados
+// Use para snapshots de estado, undo/redo, worker communication
+
+// COMPARAÇÃO DE ABORDAGENS:
+// Spread            → Rápido, mas verboso para objetos profundos
+// Immer             → Ergonômico, ~2-3x mais lento que spread para objetos rasos
+// structuredClone   → Deep clone completo, mais lento, sem structural sharing
+// JSON.parse/stringify → Legado, perde Date/Map/Set/undefined, evite
+```
+
+Gerenciamento de estado é o problema central de toda aplicação React. A chave é usar a ferramenta certa para cada tipo de estado: local para UI, Context para compartilhamento limitado, TanStack Query para servidor, URL para estado navegável, e state managers externos apenas quando a complexidade justifica. Estado é como dívida técnica: quanto menos global, mais fácil de entender e manter.

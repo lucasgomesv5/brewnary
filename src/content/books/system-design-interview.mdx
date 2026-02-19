@@ -1,0 +1,43 @@
+---
+title: "System Design Interview (Vol 1 e 2)"
+author: "Alex Xu"
+description: "Estudos de caso praticos de sistemas reais com decisoes de arquitetura explicadas"
+category: "Entrevistas"
+priority: "essential"
+order: 5
+coverColor: "#2563EB"
+---
+
+## Por que ler
+
+Nao e so para entrevistas. Cada capitulo e um estudo de caso de um sistema real (URL shortener, chat, news feed, etc.) com decisoes de arquitetura explicadas. E o livro mais pratico de system design.
+
+## Conceitos-chave do livro
+
+**Framework de 4 passos para design:**
+1. Entender requisitos e estimar escala
+2. High-level design (diagrama de componentes)
+3. Deep dive nos componentes criticos
+4. Wrap-up: bottlenecks, trade-offs, proximos passos
+
+**Estimativas "Back of the Envelope":**
+```
+Números que todo engenheiro deveria saber:
+  - 1 dia = 86.400 segundos ≈ ~100.000 (para estimativas)
+  - 1 QPS (query/sec) = ~2.5M requests/mês
+  - Leitura do SSD: ~100μs
+  - Leitura de memória: ~100ns (1000x mais rápido que SSD)
+  - Round trip na mesma datacenter: ~500μs
+  - Round trip California → Holanda: ~150ms
+
+  Exemplo: "1M DAU, cada usuário faz 10 requests/dia"
+  → 10M requests/dia ÷ 100.000 seg/dia = 100 QPS médio
+  → Pico: 2-3x = 200-300 QPS
+  → Um server Node.js aguenta ~1000 QPS simples
+  → 1 servidor basta. Sem microserviços. Sem K8s.
+```
+
+**Designs cobertos no livro:**
+Rate Limiter, Consistent Hashing, Key-Value Store, URL Shortener, Web Crawler, Notification System, News Feed, Chat System, Search Autocomplete, YouTube, Google Drive.
+
+Cada um ensina conceitos diferentes que sao combinados em sistemas reais.

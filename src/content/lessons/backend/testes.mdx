@@ -1,0 +1,865 @@
+---
+title: "Testes"
+description: "Pirâmide de testes, test doubles, TDD, mutation testing, contract testing e estratégias avançadas"
+track: "backend"
+order: 16
+section: "Testes e Qualidade"
+priority: "high"
+tags: ["testes", "unit-test", "integration-test", "e2e", "tdd", "jest", "mutation-testing", "contract-testing"]
+prerequisites: ["rest-apis"]
+keyTakeaways:
+  - "A pirâmide de testes define custo e confiança: muitos unit tests rápidos na base, poucos E2E lentos no topo — mas o equilíbrio depende do tipo de aplicação"
+  - "Test doubles têm definições formais (Meszaros): mock verifica interação, stub fornece respostas, spy registra chamadas, fake é implementação simplificada"
+  - "100% de code coverage não garante qualidade — mutation testing (Stryker) mede se seus testes realmente detectam bugs"
+---
+
+## Pirâmide de Testes: Custo vs Confiança
+
+A pirâmide de testes (Mike Cohn) define a proporção ideal entre tipos de teste.
+Cada nível tem um trade-off entre **velocidade/custo** e **confiança/realismo**:
+
+```
+         ╱╲
+        ╱E2E╲         Poucos | Lentos | Caros | Alta confiança
+       ╱──────╲        Testam o sistema inteiro (browser, API, DB)
+      ╱Integra-╲
+     ╱  ção     ╲     Moderados | Média velocidade | Média confiança
+    ╱────────────╲     Testam boundaries reais (DB, APIs externas)
+   ╱    Unit      ╲
+  ╱────────────────╲   Muitos | Rápidos | Baratos | Baixa confiança
+                       Testam funções isoladas, lógica pura
+
+Trade-offs por nível:
+  Unit:        ~1ms/teste, sem I/O, quebra com refactoring interno
+  Integration: ~100ms/teste, I/O real, mais estável que unit
+  E2E:         ~5s/teste, browser real, flaky mas alta confiança
+```
+
+Na prática, a proporção exata depende do tipo de aplicação:
+
+```
+Aplicação CRUD simples:     Aplicação com lógica complexa:
+  E2E: 20%                    E2E: 5%
+  Integration: 50%            Integration: 25%
+  Unit: 30%                   Unit: 70%
+
+Microserviços:              Frontend-heavy (SPA):
+  E2E: 5%                    E2E: 30%
+  Integration: 60%           Integration: 20%
+  Contract: 20%              Unit: 50% (component tests)
+  Unit: 15%
+```
+
+---
+
+## Unit Tests: Isolamento e Testabilidade
+
+Um bom unit test testa **uma unidade de comportamento** (não necessariamente
+uma função). Deve ser rápido, determinístico e sem I/O:
+
+```typescript
+// Função pura: fácil de testar, sem dependências externas
+function calculateOrderTotal(
+  items: Array<{ price: number; quantity: number }>,
+  discountPercent: number,
+  taxRate: number,
+): number {
+  if (discountPercent < 0 || discountPercent > 100) {
+    throw new Error('Desconto deve estar entre 0 e 100');
+  }
+
+  const subtotal = items.reduce(
+    (sum, item) => sum + item.price * item.quantity,
+    0,
+  );
+  const discounted = subtotal * (1 - discountPercent / 100);
+  const total = discounted * (1 + taxRate);
+  return Math.round(total * 100) / 100; // Arredonda para centavos
+}
+
+// Testes: cobrem happy path, edge cases e error cases
+describe('calculateOrderTotal', () => {
+  // Happy path
+  it('deve calcular total com desconto e imposto', () => {
+    const items = [
+      { price: 100, quantity: 2 },  // 200
+      { price: 50, quantity: 1 },   // 50
+    ];
+    // Subtotal: 250, desconto 10%: 225, imposto 8%: 243
+    expect(calculateOrderTotal(items, 10, 0.08)).toBe(243);
+  });
+
+  // Edge cases
+  it('deve retornar 0 para lista vazia', () => {
+    expect(calculateOrderTotal([], 0, 0.08)).toBe(0);
+  });
+
+  it('deve lidar com desconto de 100%', () => {
+    const items = [{ price: 100, quantity: 1 }];
+    expect(calculateOrderTotal(items, 100, 0.08)).toBe(0);
+  });
+
+  it('deve arredondar corretamente para centavos', () => {
+    const items = [{ price: 10.33, quantity: 3 }];
+    // 30.99 * 1.08 = 33.4692 → 33.47
+    expect(calculateOrderTotal(items, 0, 0.08)).toBe(33.47);
+  });
+
+  // Error cases
+  it('deve lançar erro para desconto negativo', () => {
+    expect(() => calculateOrderTotal([], -5, 0)).toThrow(
+      'Desconto deve estar entre 0 e 100',
+    );
+  });
+
+  it('deve lançar erro para desconto acima de 100', () => {
+    expect(() => calculateOrderTotal([], 150, 0)).toThrow(
+      'Desconto deve estar entre 0 e 100',
+    );
+  });
+});
+```
+
+### Dependency Injection para Testabilidade
+
+Código acoplado a dependências externas é difícil de testar.
+**Dependency Injection** (DI) resolve isso invertendo o controle:
+
+```typescript
+// ❌ Difícil de testar: dependência hardcoded
+class OrderService {
+  async createOrder(userId: string, items: CartItem[]) {
+    const user = await db.query('SELECT * FROM users WHERE id = $1', [userId]);
+    const order = await db.query('INSERT INTO orders ...');
+    await sendEmail(user.email, 'Pedido confirmado');  // Efeito colateral
+    return order;
+  }
+}
+
+// ✅ Testável: dependências injetadas
+class OrderService {
+  constructor(
+    private readonly userRepo: UserRepository,
+    private readonly orderRepo: OrderRepository,
+    private readonly emailService: EmailService,
+  ) {}
+
+  async createOrder(userId: string, items: CartItem[]) {
+    const user = await this.userRepo.findById(userId);
+    if (!user) throw new UserNotFoundError(userId);
+
+    const total = items.reduce((s, i) => s + i.price * i.qty, 0);
+    const order = await this.orderRepo.create({ userId, items, total });
+
+    await this.emailService.send(user.email, 'Pedido confirmado');
+    return order;
+  }
+}
+
+// No teste: injeta mocks/stubs em vez das dependências reais
+describe('OrderService.createOrder', () => {
+  it('deve criar pedido e enviar email', async () => {
+    const userRepo = { findById: jest.fn().mockResolvedValue({ id: '1', email: 'a@b.com' }) };
+    const orderRepo = { create: jest.fn().mockResolvedValue({ id: 'order_1' }) };
+    const emailService = { send: jest.fn().mockResolvedValue(undefined) };
+
+    const service = new OrderService(userRepo as any, orderRepo as any, emailService as any);
+    const order = await service.createOrder('1', [{ price: 100, qty: 2 }]);
+
+    expect(order.id).toBe('order_1');
+    expect(orderRepo.create).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: '1', total: 200 }),
+    );
+    expect(emailService.send).toHaveBeenCalledWith('a@b.com', 'Pedido confirmado');
+  });
+
+  it('deve lançar erro se usuário não existe', async () => {
+    const userRepo = { findById: jest.fn().mockResolvedValue(null) };
+    const service = new OrderService(userRepo as any, {} as any, {} as any);
+
+    await expect(service.createOrder('999', [])).rejects.toThrow(UserNotFoundError);
+  });
+});
+```
+
+---
+
+## Test Doubles: Mock vs Stub vs Spy vs Fake
+
+Termos formais definidos por **Gerard Meszaros** (xUnit Test Patterns):
+
+```
+Tipo       O que faz                           Quando usar
+────────   ──────────────────────────────────  ─────────────────────────────
+Dummy      Preenche parâmetro, nunca é usado   Satisfazer assinatura de função
+Stub       Retorna respostas pré-definidas     Controlar dados de entrada indireta
+Spy        Registra chamadas para verificação  Verificar que algo foi chamado
+Mock       Stub + verificação de interação     Verificar COMO dependência foi usada
+Fake       Implementação simplificada real     Substituir infra pesada (in-memory DB)
+```
+
+```typescript
+// STUB: controla o que a dependência retorna
+const paymentGateway = {
+  charge: jest.fn().mockResolvedValue({ success: true, transactionId: 'tx_123' }),
+};
+
+// SPY: verifica que a dependência foi chamada corretamente
+const logger = { info: jest.fn(), error: jest.fn() };
+// ... executa código ...
+expect(logger.info).toHaveBeenCalledWith('Pagamento processado', { txId: 'tx_123' });
+expect(logger.error).not.toHaveBeenCalled();
+
+// MOCK: stub + expectativa de interação (ordem, número de chamadas)
+const emailService = { send: jest.fn() };
+// ... executa código ...
+expect(emailService.send).toHaveBeenCalledTimes(1);
+expect(emailService.send).toHaveBeenCalledWith(
+  expect.objectContaining({ to: 'user@example.com', subject: expect.stringContaining('Confirmação') }),
+);
+
+// FAKE: implementação funcional simplificada
+class FakeUserRepository implements UserRepository {
+  private users = new Map<string, User>();
+
+  async findById(id: string): Promise<User | null> {
+    return this.users.get(id) || null;
+  }
+
+  async save(user: User): Promise<void> {
+    this.users.set(user.id, { ...user });
+  }
+
+  // Helper para testes
+  seed(users: User[]): void {
+    users.forEach(u => this.users.set(u.id, u));
+  }
+}
+```
+
+---
+
+## Integration Tests: Boundaries Reais
+
+Integration tests verificam que componentes funcionam juntos.
+Teste com o banco **real** (não mocks):
+
+```typescript
+// Testcontainers: sobe container Docker para cada suíte de testes
+import { PostgreSqlContainer, StartedPostgreSqlContainer } from '@testcontainers/postgresql';
+
+describe('UserRepository (integration)', () => {
+  let container: StartedPostgreSqlContainer;
+  let pool: Pool;
+  let repo: UserRepository;
+
+  beforeAll(async () => {
+    // Sobe PostgreSQL real em container
+    container = await new PostgreSqlContainer('postgres:16')
+      .withDatabase('testdb')
+      .start();
+
+    pool = new Pool({ connectionString: container.getConnectionUri() });
+
+    // Roda migrações
+    await runMigrations(pool);
+    repo = new UserRepository(pool);
+  }, 30000); // Timeout maior para start do container
+
+  afterAll(async () => {
+    await pool.end();
+    await container.stop();
+  });
+
+  beforeEach(async () => {
+    // Limpa dados entre testes (TRUNCATE é mais rápido que DELETE)
+    await pool.query('TRUNCATE users CASCADE');
+  });
+
+  it('deve criar e buscar usuário', async () => {
+    const created = await repo.create({
+      name: 'Lucas',
+      email: 'lucas@example.com',
+    });
+
+    expect(created.id).toBeDefined();
+
+    const found = await repo.findById(created.id);
+    expect(found).toEqual(expect.objectContaining({
+      name: 'Lucas',
+      email: 'lucas@example.com',
+    }));
+  });
+
+  it('deve lançar erro para email duplicado', async () => {
+    await repo.create({ name: 'A', email: 'dup@test.com' });
+
+    await expect(
+      repo.create({ name: 'B', email: 'dup@test.com' }),
+    ).rejects.toThrow(/unique.*email/i);
+  });
+
+  it('deve aplicar soft delete corretamente', async () => {
+    const user = await repo.create({ name: 'X', email: 'x@test.com' });
+    await repo.softDelete(user.id);
+
+    const found = await repo.findById(user.id);
+    expect(found).toBeNull(); // findById ignora soft-deleted
+
+    const foundIncludingDeleted = await repo.findById(user.id, {
+      includeDeleted: true,
+    });
+    expect(foundIncludingDeleted?.deletedAt).toBeDefined();
+  });
+});
+```
+
+### API Integration Test
+
+```typescript
+import request from 'supertest';
+import { app } from '../src/app';
+
+describe('POST /api/users (integration)', () => {
+  beforeEach(async () => {
+    await db.query('TRUNCATE users CASCADE');
+  });
+
+  it('deve criar usuário e retornar 201', async () => {
+    // Arrange: nada (banco limpo pelo beforeEach)
+
+    // Act
+    const res = await request(app)
+      .post('/api/users')
+      .send({ email: 'test@test.com', name: 'Test User' })
+      .expect('Content-Type', /json/);
+
+    // Assert: resposta HTTP
+    expect(res.status).toBe(201);
+    expect(res.body).toMatchObject({
+      id: expect.any(String),
+      email: 'test@test.com',
+      name: 'Test User',
+    });
+
+    // Assert: persistência real no banco
+    const { rows } = await db.query(
+      'SELECT * FROM users WHERE email = $1',
+      ['test@test.com'],
+    );
+    expect(rows).toHaveLength(1);
+    expect(rows[0].name).toBe('Test User');
+  });
+
+  it('deve retornar 409 para email duplicado', async () => {
+    await request(app)
+      .post('/api/users')
+      .send({ email: 'dup@test.com', name: 'First' });
+
+    const res = await request(app)
+      .post('/api/users')
+      .send({ email: 'dup@test.com', name: 'Second' });
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toMatch(/already exists/i);
+  });
+
+  it('deve retornar 422 para payload inválido', async () => {
+    const res = await request(app)
+      .post('/api/users')
+      .send({ email: 'not-an-email', name: '' });
+
+    expect(res.status).toBe(422);
+    expect(res.body.errors).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ field: 'email' }),
+        expect.objectContaining({ field: 'name' }),
+      ]),
+    );
+  });
+});
+```
+
+---
+
+## E2E Tests: Cypress e Playwright
+
+E2E tests verificam fluxos completos do ponto de vista do usuário:
+
+```typescript
+// Playwright: mais rápido e estável que Cypress para E2E
+import { test, expect } from '@playwright/test';
+
+test.describe('Fluxo de checkout', () => {
+  test.beforeEach(async ({ page }) => {
+    // Seed de dados via API (não via UI — mais rápido e determinístico)
+    await fetch('http://localhost:3000/api/test/seed', { method: 'POST' });
+    await page.goto('http://localhost:3000/login');
+    await page.fill('[data-testid="email"]', 'user@test.com');
+    await page.fill('[data-testid="password"]', 'password123');
+    await page.click('[data-testid="login-button"]');
+    await page.waitForURL('/dashboard');
+  });
+
+  test('deve completar compra com cartão', async ({ page }) => {
+    // Navegar para produto
+    await page.goto('/products/teclado-mecanico');
+    await page.click('[data-testid="add-to-cart"]');
+
+    // Ir para checkout
+    await page.click('[data-testid="cart-icon"]');
+    await page.click('[data-testid="checkout-button"]');
+
+    // Preencher pagamento
+    await page.fill('[data-testid="card-number"]', '4242424242424242');
+    await page.fill('[data-testid="card-expiry"]', '12/28');
+    await page.fill('[data-testid="card-cvc"]', '123');
+
+    // Confirmar
+    await page.click('[data-testid="confirm-purchase"]');
+
+    // Verificar sucesso
+    await expect(page.locator('[data-testid="success-message"]'))
+      .toHaveText(/Pedido confirmado/);
+    await expect(page.locator('[data-testid="order-number"]'))
+      .toBeVisible();
+  });
+});
+
+// Trade-offs de E2E:
+// ✅ Alta confiança: testa o sistema real
+// ❌ Lento: ~5-30s por teste
+// ❌ Flaky: depende de timing, rede, rendering
+// ❌ Caro de manter: qualquer mudança de UI pode quebrar
+```
+
+---
+
+## TDD: Red-Green-Refactor
+
+Test-Driven Development segue um ciclo de três passos:
+
+```
+RED:      Escreva um teste que falha (define o comportamento desejado)
+GREEN:    Escreva o código MÍNIMO para o teste passar
+REFACTOR: Melhore o código mantendo os testes verdes
+
+Ciclo:  RED → GREEN → REFACTOR → RED → GREEN → REFACTOR → ...
+```
+
+```typescript
+// Exemplo: implementar validação de CPF com TDD
+
+// RED: teste primeiro (função ainda não existe)
+describe('validateCPF', () => {
+  it('deve aceitar CPF válido', () => {
+    expect(validateCPF('529.982.247-25')).toBe(true);
+  });
+
+  it('deve rejeitar CPF com dígitos repetidos', () => {
+    expect(validateCPF('111.111.111-11')).toBe(false);
+  });
+
+  it('deve rejeitar CPF com dígito verificador errado', () => {
+    expect(validateCPF('529.982.247-26')).toBe(false);
+  });
+
+  it('deve aceitar CPF sem formatação', () => {
+    expect(validateCPF('52998224725')).toBe(true);
+  });
+
+  it('deve rejeitar string vazia', () => {
+    expect(validateCPF('')).toBe(false);
+  });
+});
+
+// GREEN: implementação mínima (pode ser feia, o importante é passar)
+function validateCPF(cpf: string): boolean {
+  const cleaned = cpf.replace(/\D/g, '');
+  if (cleaned.length !== 11) return false;
+  if (/^(\d)\1{10}$/.test(cleaned)) return false;
+
+  const calcDigit = (slice: string, factor: number): number => {
+    let sum = 0;
+    for (let i = 0; i < slice.length; i++) {
+      sum += parseInt(slice[i]) * (factor - i);
+    }
+    const remainder = sum % 11;
+    return remainder < 2 ? 0 : 11 - remainder;
+  };
+
+  const d1 = calcDigit(cleaned.slice(0, 9), 10);
+  const d2 = calcDigit(cleaned.slice(0, 10), 11);
+  return d1 === parseInt(cleaned[9]) && d2 === parseInt(cleaned[10]);
+}
+
+// REFACTOR: melhorar sem mudar comportamento (extrair funções, renomear, etc.)
+```
+
+### Quando TDD funciona bem vs quando não
+
+```
+TDD funciona bem para:                  TDD não funciona bem para:
+────────────────────────                ──────────────────────────
+• Lógica de negócio pura               • UI/UX exploratória
+• Validações e regras complexas         • Protótipos rápidos
+• Algoritmos com edge cases claros      • Código que interage com APIs externas
+• Refactoring de código legado          • Quando os requisitos são vagos
+• Libraries e utils                     • Performance tuning
+```
+
+---
+
+## Testing Patterns
+
+### AAA (Arrange-Act-Assert)
+
+```typescript
+it('deve aplicar cupom de desconto ao pedido', () => {
+  // Arrange: preparar o cenário
+  const order = new Order([
+    { product: 'Teclado', price: 300 },
+    { product: 'Mouse', price: 150 },
+  ]);
+  const coupon = new Coupon('SAVE20', 20); // 20% off
+
+  // Act: executar a ação sendo testada
+  order.applyCoupon(coupon);
+
+  // Assert: verificar o resultado
+  expect(order.total).toBe(360);          // 450 * 0.8
+  expect(order.discount).toBe(90);
+  expect(order.couponCode).toBe('SAVE20');
+});
+```
+
+### Given-When-Then (BDD style)
+
+```typescript
+describe('Sistema de fidelidade', () => {
+  describe('dado um cliente com 500 pontos', () => {
+    const customer = createCustomer({ points: 500 });
+
+    describe('quando resgata um prêmio de 300 pontos', () => {
+      const result = customer.redeemReward({ cost: 300 });
+
+      it('então deve debitar os pontos', () => {
+        expect(customer.points).toBe(200);
+      });
+
+      it('então deve retornar sucesso', () => {
+        expect(result.success).toBe(true);
+      });
+    });
+
+    describe('quando tenta resgatar prêmio de 600 pontos', () => {
+      it('então deve lançar erro de saldo insuficiente', () => {
+        expect(() => customer.redeemReward({ cost: 600 }))
+          .toThrow('Pontos insuficientes');
+      });
+    });
+  });
+});
+```
+
+### Parametrized Tests
+
+```typescript
+// Jest: test.each para testes parametrizados
+describe('converterMoeda', () => {
+  test.each([
+    ['USD', 'BRL', 100, 500],     // $100 = R$500
+    ['EUR', 'BRL', 100, 550],     // €100 = R$550
+    ['BRL', 'USD', 500, 100],     // R$500 = $100
+    ['USD', 'USD', 100, 100],     // Mesma moeda = mesmo valor
+    ['USD', 'BRL', 0, 0],         // Zero = zero
+  ])('deve converter %s → %s: %d → %d', (from, to, amount, expected) => {
+    expect(converterMoeda(from, to, amount)).toBe(expected);
+  });
+
+  // Parametrized para error cases
+  test.each([
+    ['XXX', 'BRL', 'Moeda não suportada: XXX'],
+    ['USD', 'YYY', 'Moeda não suportada: YYY'],
+  ])('deve lançar erro para moeda inválida: %s → %s', (from, to, errorMsg) => {
+    expect(() => converterMoeda(from, to, 100)).toThrow(errorMsg);
+  });
+});
+```
+
+---
+
+## Code Coverage: Por que 100% Não Basta
+
+Coverage mede **quais linhas foram executadas**, não **se o comportamento está correto**:
+
+```
+Tipo de Coverage        O que mede                    Exemplo não coberto
+──────────────────     ──────────────────────────     ────────────────────
+Statement coverage     Linhas executadas              Linha nunca alcançada
+Branch coverage        Caminhos if/else               else nunca testado
+Function coverage      Funções chamadas               Função auxiliar ignorada
+Line coverage          Linhas (≈ statement)           Similar ao statement
+
+Por que 100% coverage é enganoso:
+```
+
+```typescript
+// Essa função tem 100% de line coverage com UM teste
+function divide(a: number, b: number): number {
+  return a / b;
+}
+
+test('divide 10 by 2', () => {
+  expect(divide(10, 2)).toBe(5);
+});
+// 100% line coverage! Mas:
+//   divide(10, 0) → Infinity (bug!)
+//   divide(0, 0) → NaN (bug!)
+//   divide(-10, 3) → -3.333... (comportamento esperado?)
+
+// Coverage razoável como GUIDELINE (não como meta):
+//   70-80% é pragmático para a maioria dos projetos
+//   Foque em branch coverage (mais útil que line coverage)
+//   Coverage alto em lógica de negócio, baixo em boilerplate
+```
+
+---
+
+## Mutation Testing: Stryker
+
+Mutation testing responde: **"Se eu introduzir um bug no código, algum teste falha?"**
+
+```
+Como funciona:
+  1. Stryker cria "mutantes" — cópias do código com pequenas modificações
+  2. Cada mutante é testado contra sua suíte de testes
+  3. Se um teste falha → mutante "morto" (BOM: seus testes detectaram a mudança)
+  4. Se nenhum teste falha → mutante "sobreviveu" (RUIM: bug passou despercebido)
+
+Mutation Score = mutantes mortos / total de mutantes × 100%
+
+Tipos de mutações:
+  • Arithmetic: a + b → a - b
+  • Conditional: if (a > b) → if (a >= b)
+  • Boolean: true → false
+  • String: "hello" → ""
+  • Remove statement: delete uma linha inteira
+  • Return value: return x → return 0
+```
+
+```javascript
+// stryker.conf.js
+module.exports = {
+  mutator: 'typescript',
+  packageManager: 'npm',
+  reporters: ['html', 'clear-text', 'progress'],
+  testRunner: 'jest',
+  coverageAnalysis: 'perTest',
+  thresholds: {
+    high: 80,
+    low: 60,
+    break: 50,   // Falha o CI se mutation score < 50%
+  },
+  mutate: [
+    'src/**/*.ts',
+    '!src/**/*.test.ts',
+    '!src/**/*.spec.ts',
+  ],
+};
+
+// Exemplo de mutante que sobrevive (teste fraco):
+// Código original:
+function isEligibleForDiscount(age: number, purchases: number): boolean {
+  return age >= 18 && purchases > 5;
+}
+
+// Mutante: age >= 18 → age > 18
+// Se nenhum teste usa age = 18, o mutante sobrevive!
+// Solução: adicionar teste com boundary value:
+test('deve aceitar idade exatamente 18', () => {
+  expect(isEligibleForDiscount(18, 10)).toBe(true);
+});
+```
+
+---
+
+## Contract Testing: Pact
+
+Em microserviços, **contract testing** garante que consumer e provider
+concordam sobre a API, sem precisar rodar ambos juntos:
+
+```typescript
+// Consumer side: define as expectativas (contrato)
+import { PactV3, MatchersV3 } from '@pact-foundation/pact';
+const { like, eachLike, string, integer } = MatchersV3;
+
+const provider = new PactV3({
+  consumer: 'OrderService',
+  provider: 'UserService',
+});
+
+describe('UserService contract', () => {
+  it('deve retornar usuário por ID', async () => {
+    // Define a interação esperada
+    await provider
+      .given('usuário com ID 123 existe')
+      .uponReceiving('request para buscar usuário 123')
+      .withRequest({
+        method: 'GET',
+        path: '/api/users/123',
+        headers: { Authorization: string('Bearer token') },
+      })
+      .willRespondWith({
+        status: 200,
+        headers: { 'Content-Type': 'application/json' },
+        body: {
+          id: like('123'),
+          name: like('Lucas'),
+          email: like('lucas@example.com'),
+          createdAt: like('2025-01-01T00:00:00Z'),
+        },
+      });
+
+    // Executa o teste contra o mock do Pact
+    await provider.executeTest(async (mockServer) => {
+      const client = new UserServiceClient(mockServer.url);
+      const user = await client.getUser('123');
+
+      expect(user.id).toBe('123');
+      expect(user.name).toBeDefined();
+      expect(user.email).toContain('@');
+    });
+  });
+});
+
+// Provider side: verifica que a implementação real satisfaz os contratos
+// Pact Broker armazena os contratos e permite verificação no CI do provider
+```
+
+```
+Fluxo de Contract Testing:
+─────────────────────────
+  1. Consumer gera contrato (Pact file) → publica no Pact Broker
+  2. Provider CI busca contratos → roda verificação contra implementação real
+  3. Se provider quebra contrato → CI falha ANTES do deploy
+  4. can-i-deploy: verifica se consumer e provider são compatíveis antes do deploy
+
+Vantagens sobre E2E:
+  • Rápido (não precisa subir todos os serviços)
+  • Determinístico (sem dependência de ambiente)
+  • Identifica exatamente qual contrato quebrou
+  • Independente de deploy order
+```
+
+---
+
+## Load Testing: k6 e Artillery
+
+Load testing valida se o sistema aguenta a carga esperada:
+
+```javascript
+// k6: script de load test
+import http from 'k6/http';
+import { check, sleep } from 'k6';
+
+export const options = {
+  stages: [
+    { duration: '30s', target: 50 },   // Ramp-up: 0 → 50 VUs em 30s
+    { duration: '2m', target: 50 },     // Sustain: 50 VUs por 2 minutos
+    { duration: '30s', target: 200 },   // Spike: sobe para 200 VUs
+    { duration: '1m', target: 200 },    // Sustain spike
+    { duration: '30s', target: 0 },     // Ramp-down
+  ],
+  thresholds: {
+    http_req_duration: ['p(95)<500', 'p(99)<1000'],  // p95 < 500ms, p99 < 1s
+    http_req_failed: ['rate<0.01'],                    // < 1% de erros
+    http_reqs: ['rate>100'],                           // > 100 req/s throughput
+  },
+};
+
+export default function () {
+  const res = http.get('https://api.example.com/products');
+
+  check(res, {
+    'status is 200': (r) => r.status === 200,
+    'response time < 500ms': (r) => r.timings.duration < 500,
+    'body has products': (r) => JSON.parse(r.body).length > 0,
+  });
+
+  sleep(1); // Simula think time entre requests
+}
+
+// Conceitos de load testing:
+// Throughput: requests por segundo que o sistema processa
+// Latency percentiles:
+//   p50 (mediana): metade dos requests são mais rápidos
+//   p95: 95% dos requests são mais rápidos (SLA típico)
+//   p99: quase todos — mas os 1% piores podem ser muito lentos
+// Saturation point: throughput para de crescer mesmo com mais carga
+// Breaking point: sistema começa a retornar erros (5xx, timeouts)
+```
+
+---
+
+## Flaky Tests: Causas e Soluções
+
+Testes flaky (que passam e falham intermitentemente) destroem a confiança na suíte:
+
+```
+Causa                     Exemplo                          Solução
+────────────────────     ────────────────────────────     ──────────────────────────
+Timing / Race condition  setTimeout, Promise.race          Usar waitFor, retries, polling
+Shared state             Teste A modifica global que       Isolamento: beforeEach cleanup,
+                         Teste B precisa limpo             containers/DBs separados
+Order dependency         Teste B depende de dado           Cada teste cria seus próprios
+                         criado pelo Teste A               dados (setup independente)
+External dependency      API externa timeout               Mock APIs externas em testes
+Date/Time dependency     new Date() retorna valor          jest.useFakeTimers(),
+                         diferente                         clock.tick()
+Random data              Math.random() gera flakiness      Seed fixo para geradores
+Async cleanup            Teste termina antes do cleanup    await de todas as promises
+Port conflicts           Dois testes usam mesma porta      Portas dinâmicas (port 0)
+```
+
+```typescript
+// ❌ Flaky: depende de timing
+test('deve expirar sessão após 5 minutos', async () => {
+  const session = createSession();
+  await new Promise(r => setTimeout(r, 300000)); // Esperar 5 minutos?!
+  expect(session.isExpired()).toBe(true);
+});
+
+// ✅ Estável: usa fake timers
+test('deve expirar sessão após 5 minutos', () => {
+  jest.useFakeTimers();
+  const session = createSession();
+
+  jest.advanceTimersByTime(4 * 60 * 1000); // 4 minutos
+  expect(session.isExpired()).toBe(false);
+
+  jest.advanceTimersByTime(1 * 60 * 1000); // +1 minuto = 5 total
+  expect(session.isExpired()).toBe(true);
+
+  jest.useRealTimers();
+});
+
+// ❌ Flaky: shared state entre testes
+let counter = 0;
+test('incrementa', () => { counter++; expect(counter).toBe(1); });
+test('incrementa de novo', () => { counter++; expect(counter).toBe(2); }); // Depende da ordem!
+
+// ✅ Estável: cada teste é independente
+test('incrementa', () => { let counter = 0; counter++; expect(counter).toBe(1); });
+test('incrementa de novo', () => { let counter = 0; counter++; expect(counter).toBe(1); });
+
+// Estratégia para lidar com flaky tests no CI:
+// 1. Quarentena: mova para pasta @flaky, rode separado, não bloqueie merge
+// 2. Retry: jest-circus retry (maxRetries: 2), mas isso MASCARA o problema
+// 3. Fix root cause: identifique a causa real (geralmente shared state ou timing)
+// 4. Randomize order: jest --randomize para detectar order dependency
+```
+
+Testes são **infraestrutura de confiança**. Uma suíte que é ignorada porque
+"sempre tem um teste falhando" é pior que não ter testes — ela dá falsa
+segurança enquanto esconde bugs reais.

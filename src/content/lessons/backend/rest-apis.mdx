@@ -1,0 +1,832 @@
+---
+title: "REST APIs"
+description: "Arquitetura REST em profundidade: constraints formais de Fielding, semântica HTTP, HATEOAS, paginação cursor-based, versionamento, error handling RFC 7807 e trade-offs contra GraphQL e gRPC"
+track: "backend"
+order: 1
+section: "Fundamentos de APIs"
+priority: "high"
+tags: ["rest", "api", "http", "hateoas", "paginação", "openapi", "rfc7807"]
+prerequisites: []
+keyTakeaways:
+  - "REST é um estilo arquitetural definido por seis constraints formais — não é sinônimo de 'HTTP + JSON'"
+  - "Idempotência e safety são propriedades distintas: GET é safe e idempotente, PUT é idempotente mas não safe, POST não é nenhum dos dois"
+  - "Paginação offset/limit quebra com datasets mutáveis — cursor-based (keyset) é a abordagem correta para feeds e listagens ordenadas"
+  - "Erros devem seguir RFC 7807 (Problem Details) para consistência e interoperabilidade entre serviços"
+  - "HATEOAS é a constraint mais ignorada de REST e a razão pela qual quase nenhuma API é verdadeiramente RESTful"
+---
+
+## REST — Definição Formal
+
+REST (Representational State Transfer) foi definido por Roy Fielding na sua dissertação de doutorado em 2000, na Universidade da Califórnia, Irvine. É um **estilo arquitetural** — não um protocolo, não uma especificação, não um framework. Fielding descreveu REST como o modelo arquitetural que fundamenta a própria Web.
+
+A maioria das APIs que se autodeclaram "RESTful" na realidade implementa apenas um subconjunto das constraints. Leonard Richardson propôs um modelo de maturidade com quatro níveis:
+
+- **Nível 0** — Um único URI, um único verbo (RPC sobre HTTP)
+- **Nível 1** — Recursos individuais com URIs distintas
+- **Nível 2** — Uso correto dos verbos HTTP e status codes
+- **Nível 3** — HATEOAS (hypermedia como motor do estado da aplicação)
+
+A grande maioria das APIs de produção opera no nível 2. O nível 3 é raramente implementado fora de contextos académicos.
+
+---
+
+## As Seis Constraints de REST
+
+Fielding definiu seis constraints que, juntas, compõem o estilo REST:
+
+### 1. Client-Server
+
+Separação estrita de responsabilidades. O servidor gere o estado dos recursos e expõe uma interface uniforme; o cliente gere a interface com o utilizador e o estado da sessão. Esta separação permite que ambos evoluam independentemente.
+
+### 2. Stateless
+
+**Cada request do cliente ao servidor deve conter toda a informação necessária** para que o servidor compreenda e processe o pedido. O servidor não armazena contexto de sessão entre requests. Isto implica que tokens de autenticação, preferências e contexto de paginação viajam sempre no request.
+
+Consequência directa: escalabilidade horizontal trivial — qualquer instância do servidor pode servir qualquer request.
+
+### 3. Cacheable
+
+Responses devem declarar-se explicitamente como cacheáveis ou não-cacheáveis. Quando um response é cacheável, o cliente (ou intermediários) pode reutilizá-lo para requests equivalentes futuros, eliminando interacções desnecessárias com o servidor.
+
+### 4. Uniform Interface
+
+A constraint mais fundamental e a que mais distingue REST de outros estilos. É composta por quatro sub-constraints (detalhadas na secção seguinte).
+
+### 5. Layered System
+
+A arquitectura permite camadas intermediárias (proxies, gateways, CDNs, load balancers) entre cliente e servidor. O cliente não precisa de saber se está a comunicar directamente com o servidor final ou com um intermediário.
+
+### 6. Code-on-Demand (Opcional)
+
+A única constraint opcional. Permite que o servidor envie código executável ao cliente (ex: JavaScript). Estende a funcionalidade do cliente sem necessidade de re-deploy.
+
+---
+
+## Uniform Interface — As Quatro Sub-Constraints
+
+### Resource Identification (URIs)
+
+Cada recurso é identificado de forma única por uma URI. O recurso é o conceito abstracto; a representação é a forma concreta que o servidor devolve.
+
+```
+# Recursos — substantivos no plural, hierarquia reflecte relações
+GET /api/breweries                          # Colecção de cervejarias
+GET /api/breweries/b7a3f1e2                 # Cervejaria específica
+GET /api/breweries/b7a3f1e2/beers           # Cervejas desta cervejaria
+GET /api/breweries/b7a3f1e2/beers/ipa-001   # Cerveja específica
+
+# Anti-patterns a evitar:
+GET /api/getBreweries          # Verbo na URI — errado
+GET /api/brewery/list          # Acção na URI — errado
+POST /api/deleteUser/123       # Verbo HTTP errado para a operação
+```
+
+### Resource Manipulation Through Representations
+
+O cliente manipula recursos através das suas representações. Um recurso pode ter múltiplas representações (JSON, XML, HTML, MessagePack). O cliente envia uma representação no body do request para criar ou alterar o recurso; o servidor devolve uma representação no response.
+
+### Self-Descriptive Messages
+
+Cada mensagem contém informação suficiente para descrever como processá-la. Headers como `Content-Type`, `Content-Length`, `Cache-Control` e `Authorization` fazem parte desta auto-descrição.
+
+### HATEOAS (Hypermedia as the Engine of Application State)
+
+O cliente descobre acções disponíveis e navega entre estados da aplicação exclusivamente através de hyperlinks incluídos nas respostas do servidor. O cliente não precisa de codificar URIs — segue os links que o servidor fornece.
+
+```json
+{
+  "id": "b7a3f1e2",
+  "name": "Cervejaria Artesanal do Porto",
+  "status": "active",
+  "_links": {
+    "self": { "href": "/api/breweries/b7a3f1e2" },
+    "beers": { "href": "/api/breweries/b7a3f1e2/beers" },
+    "deactivate": { "href": "/api/breweries/b7a3f1e2/deactivate", "method": "POST" },
+    "orders": { "href": "/api/breweries/b7a3f1e2/orders{?status,since}", "templated": true }
+  }
+}
+```
+
+---
+
+## Métodos HTTP — Semântica Formal
+
+Os métodos HTTP possuem duas propriedades formais definidas na RFC 7231:
+
+- **Safety**: o método não altera o estado do servidor (efeito de leitura apenas)
+- **Idempotência**: executar o método N vezes produz o mesmo resultado que executá-lo uma vez
+
+| Método  | Safety | Idempotente | Semântica                                                |
+|---------|--------|-------------|----------------------------------------------------------|
+| GET     | Sim    | Sim         | Obter representação do recurso                           |
+| HEAD    | Sim    | Sim         | Igual ao GET mas sem body — apenas headers                |
+| OPTIONS | Sim    | Sim         | Descrever opções de comunicação disponíveis              |
+| PUT     | Não    | Sim         | Substituir completamente o recurso (ou criar se não existir) |
+| DELETE  | Não    | Sim         | Remover o recurso                                        |
+| POST    | Não    | Não         | Criar recurso subordinado ou trigger de processamento     |
+| PATCH   | Não    | Não         | Aplicar modificação parcial ao recurso                    |
+
+### GET — Leitura
+
+```http
+GET /api/beers/ipa-001 HTTP/1.1
+Host: api.brewnary.dev
+Accept: application/json
+Authorization: Bearer eyJhbGciOiJSUzI1NiIs...
+If-None-Match: "a1b2c3d4"
+```
+
+```http
+HTTP/1.1 200 OK
+Content-Type: application/json; charset=utf-8
+ETag: "a1b2c3d4"
+Cache-Control: private, max-age=300
+X-Request-Id: req_8f3a2b1c
+
+{
+  "id": "ipa-001",
+  "name": "West Coast IPA",
+  "style": "American IPA",
+  "abv": 6.8,
+  "ibu": 65,
+  "brewery_id": "b7a3f1e2",
+  "created_at": "2025-03-15T10:30:00Z",
+  "updated_at": "2025-11-20T14:22:00Z"
+}
+```
+
+Se o `ETag` não mudou, o servidor devolve `304 Not Modified` sem body — economizando largura de banda.
+
+### POST — Criação
+
+```http
+POST /api/breweries/b7a3f1e2/beers HTTP/1.1
+Host: api.brewnary.dev
+Content-Type: application/json
+Authorization: Bearer eyJhbGciOiJSUzI1NiIs...
+Idempotency-Key: req_unique_abc123
+
+{
+  "name": "Belgian Tripel",
+  "style": "Belgian Strong Ale",
+  "abv": 9.2,
+  "ibu": 30
+}
+```
+
+```http
+HTTP/1.1 201 Created
+Location: /api/breweries/b7a3f1e2/beers/tripel-001
+Content-Type: application/json
+
+{
+  "id": "tripel-001",
+  "name": "Belgian Tripel",
+  "style": "Belgian Strong Ale",
+  "abv": 9.2,
+  "ibu": 30,
+  "brewery_id": "b7a3f1e2",
+  "created_at": "2026-02-18T09:15:00Z"
+}
+```
+
+O header `Location` indica a URI do recurso criado. O header `Idempotency-Key` (padrão adoptado por Stripe e outros) permite que o cliente reenvie o mesmo POST com segurança — o servidor reconhece a chave e devolve o resultado original em vez de criar um duplicado.
+
+### PUT vs PATCH
+
+```http
+PUT /api/beers/ipa-001 HTTP/1.1
+Content-Type: application/json
+
+{
+  "name": "West Coast IPA",
+  "style": "American IPA",
+  "abv": 7.0,
+  "ibu": 70
+}
+```
+
+PUT **substitui o recurso inteiro**. Campos omitidos são removidos ou definidos como null. Isto é o que torna PUT idempotente — o resultado final é sempre o mesmo independentemente do estado anterior.
+
+```http
+PATCH /api/beers/ipa-001 HTTP/1.1
+Content-Type: application/merge-patch+json
+
+{
+  "abv": 7.0
+}
+```
+
+PATCH aplica uma modificação parcial. O `Content-Type: application/merge-patch+json` (RFC 7396) indica que o body é um merge patch — apenas os campos presentes são alterados. Existe também o JSON Patch (RFC 6902) com `Content-Type: application/json-patch+json`, que descreve operações atómicas:
+
+```json
+[
+  { "op": "replace", "path": "/abv", "value": 7.0 },
+  { "op": "add", "path": "/tags/-", "value": "seasonal" }
+]
+```
+
+### DELETE
+
+```http
+DELETE /api/beers/ipa-001 HTTP/1.1
+Authorization: Bearer eyJhbGciOiJSUzI1NiIs...
+```
+
+```http
+HTTP/1.1 204 No Content
+```
+
+DELETE é idempotente: a primeira chamada remove o recurso e devolve 204; chamadas subsequentes podem devolver 204 ou 404 — ambas são aceitáveis e não alteram o estado do servidor.
+
+---
+
+## Status Codes — Significado Preciso
+
+### 2xx — Sucesso
+
+| Código | Nome                | Uso                                                         |
+|--------|---------------------|-------------------------------------------------------------|
+| 200    | OK                  | Request bem-sucedido com body de resposta                   |
+| 201    | Created             | Recurso criado com sucesso — incluir header `Location`      |
+| 202    | Accepted            | Request aceite para processamento assíncrono (job queue)    |
+| 204    | No Content          | Sucesso sem body — típico para DELETE e PUT                 |
+
+### 3xx — Redirecção
+
+| Código | Nome                | Uso                                                         |
+|--------|---------------------|-------------------------------------------------------------|
+| 301    | Moved Permanently   | Recurso movido permanentemente — cliente deve actualizar URI |
+| 304    | Not Modified        | Conditional GET — recurso não mudou desde o último ETag     |
+| 307    | Temporary Redirect  | Redirecção temporária mantendo o método HTTP original       |
+| 308    | Permanent Redirect  | Redirecção permanente mantendo o método HTTP original       |
+
+### 4xx — Erro do Cliente
+
+| Código | Nome                | Uso                                                         |
+|--------|---------------------|-------------------------------------------------------------|
+| 400    | Bad Request         | Body malformado, JSON inválido, campos com tipo errado      |
+| 401    | Unauthorized        | Autenticação ausente ou inválida (nome enganador — é autenticação, não autorização) |
+| 403    | Forbidden           | Autenticado mas sem permissão para esta operação            |
+| 404    | Not Found           | Recurso não existe (ou o cliente não tem permissão para saber que existe) |
+| 405    | Method Not Allowed  | Método HTTP não suportado neste recurso                     |
+| 409    | Conflict            | Conflito com o estado actual (ex: email duplicado, versão desactualizada) |
+| 422    | Unprocessable Entity| JSON válido mas semanticamente incorrecto (validação de negócio) |
+| 429    | Too Many Requests   | Rate limit excedido — incluir header `Retry-After`          |
+
+### 5xx — Erro do Servidor
+
+| Código | Nome                  | Uso                                                       |
+|--------|-----------------------|-----------------------------------------------------------|
+| 500    | Internal Server Error | Erro inesperado — nunca expor stack traces em produção    |
+| 502    | Bad Gateway           | Upstream retornou resposta inválida                       |
+| 503    | Service Unavailable   | Servidor temporariamente indisponível (manutenção, sobrecarga) |
+| 504    | Gateway Timeout       | Upstream não respondeu a tempo                            |
+
+---
+
+## Headers Essenciais
+
+### Content Negotiation
+
+```http
+# O cliente indica que prefere JSON, aceita XML como fallback
+GET /api/beers HTTP/1.1
+Accept: application/json, application/xml;q=0.9, */*;q=0.1
+
+# O servidor responde com o tipo escolhido
+HTTP/1.1 200 OK
+Content-Type: application/json; charset=utf-8
+Vary: Accept
+```
+
+O header `Vary: Accept` indica aos caches que a resposta varia consoante o header `Accept` do request — fundamental para caching correcto em CDNs.
+
+### Cache-Control e Validação Condicional
+
+```http
+# Response com directivas de cache
+HTTP/1.1 200 OK
+Cache-Control: public, max-age=3600, stale-while-revalidate=60
+ETag: "v2-a1b2c3d4"
+Last-Modified: Thu, 20 Nov 2025 14:22:00 GMT
+
+# Request condicional subsequente (validação)
+GET /api/beers/ipa-001 HTTP/1.1
+If-None-Match: "v2-a1b2c3d4"
+If-Modified-Since: Thu, 20 Nov 2025 14:22:00 GMT
+
+# Se nada mudou:
+HTTP/1.1 304 Not Modified
+ETag: "v2-a1b2c3d4"
+```
+
+- `max-age`: duração em segundos durante a qual o cache é considerado fresco
+- `stale-while-revalidate`: permite servir conteúdo stale enquanto revalida em background
+- `private`: apenas caches do browser, não em CDNs (dados específicos do utilizador)
+- `no-store`: proíbe qualquer cache (dados sensíveis)
+
+### CORS (Cross-Origin Resource Sharing)
+
+```http
+# Preflight request (browser envia automaticamente para cross-origin)
+OPTIONS /api/beers HTTP/1.1
+Origin: https://brewnary.dev
+Access-Control-Request-Method: POST
+Access-Control-Request-Headers: Content-Type, Authorization
+
+# Response do servidor
+HTTP/1.1 204 No Content
+Access-Control-Allow-Origin: https://brewnary.dev
+Access-Control-Allow-Methods: GET, POST, PUT, PATCH, DELETE
+Access-Control-Allow-Headers: Content-Type, Authorization
+Access-Control-Max-Age: 86400
+Access-Control-Allow-Credentials: true
+```
+
+`Access-Control-Max-Age` define por quanto tempo o browser pode fazer cache do resultado do preflight — evitando OPTIONS requests repetitivos.
+
+---
+
+## Versionamento de API
+
+Três abordagens dominantes, cada uma com trade-offs distintos:
+
+### 1. URI Path Versioning
+
+```
+GET /v1/beers/ipa-001
+GET /v2/beers/ipa-001
+```
+
+**Vantagens**: explícito, trivial de rotear em load balancers e API gateways, fácil de documentar.
+**Desvantagens**: viola o princípio de que a URI identifica um recurso (o recurso é o mesmo, a representação mudou), dificulta HATEOAS.
+
+### 2. Header Versioning
+
+```http
+GET /api/beers/ipa-001 HTTP/1.1
+Accept: application/vnd.brewnary.v2+json
+# ou
+Accept-Version: v2
+```
+
+**Vantagens**: URIs estáveis, semanticamente mais correcto.
+**Desvantagens**: mais difícil de testar (não basta mudar a URL no browser), mais difícil de descobrir.
+
+### 3. Query Parameter
+
+```
+GET /api/beers/ipa-001?version=2
+```
+
+**Vantagens**: simples de implementar.
+**Desvantagens**: poluição da query string, conflito com caches que ignoram query params.
+
+**Na prática**: URI path versioning é o padrão da indústria. GitHub, Stripe, Twilio, Google Cloud — todos usam `/v1/`, `/v2/`. A pureza semântica do header versioning raramente justifica a complexidade operacional.
+
+---
+
+## Paginação
+
+### Offset/Limit (Page-Based)
+
+```http
+GET /api/beers?offset=40&limit=20 HTTP/1.1
+```
+
+```json
+{
+  "data": [ "..." ],
+  "pagination": {
+    "offset": 40,
+    "limit": 20,
+    "total": 347
+  }
+}
+```
+
+**Problema fundamental**: se um item é inserido ou removido enquanto o cliente pagina, os offsets deslocam-se. O cliente pode ver itens duplicados ou saltar itens. Com datasets de milhões de registos, `OFFSET 1000000` é catastroficamente lento em SQL — o motor de base de dados precisa de ler e descartar 1.000.000 de linhas.
+
+### Cursor-Based (Keyset Pagination)
+
+```http
+GET /api/beers?limit=20&after=eyJpZCI6ImJlZXItMDQwIn0 HTTP/1.1
+```
+
+```json
+{
+  "data": [ "..." ],
+  "pagination": {
+    "limit": 20,
+    "has_next": true,
+    "next_cursor": "eyJpZCI6ImJlZXItMDYwIn0",
+    "has_previous": true,
+    "previous_cursor": "eyJpZCI6ImJlZXItMDQxIn0"
+  }
+}
+```
+
+O cursor é tipicamente um valor opaco (Base64 do ID ou de um campo ordenável). A query SQL resultante usa um `WHERE id > ?` em vez de `OFFSET`, permitindo uso eficiente de índices:
+
+```sql
+-- Offset-based (lento com offsets grandes)
+SELECT * FROM beers ORDER BY id LIMIT 20 OFFSET 1000000;
+
+-- Cursor-based (performance constante independentemente da posição)
+SELECT * FROM beers WHERE id > 'beer-040' ORDER BY id LIMIT 20;
+```
+
+### Link Header (RFC 8288)
+
+```http
+HTTP/1.1 200 OK
+Link: </api/beers?after=eyJpZCI6ImJlZXItMDYwIn0>; rel="next",
+      </api/beers?before=eyJpZCI6ImJlZXItMDQxIn0>; rel="prev",
+      </api/beers>; rel="first"
+```
+
+O Link header é o mecanismo mais RESTful — segue HATEOAS e não polui o body com metadados de paginação. O GitHub API usa esta abordagem.
+
+---
+
+## Filtragem, Sorting e Sparse Fieldsets
+
+```http
+# Filtragem por atributos
+GET /api/beers?style=ipa&abv[gte]=6.0&abv[lte]=8.0&brewery_id=b7a3f1e2
+
+# Sorting — prefixo "-" indica ordem descendente
+GET /api/beers?sort=-abv,name
+
+# Sparse fieldsets — reduzir payload (inspirado em JSON:API)
+GET /api/beers?fields=id,name,abv,style
+
+# Combinação completa
+GET /api/beers?style=ipa&abv[gte]=6.0&sort=-abv&fields=id,name,abv&limit=10&after=cursor123
+```
+
+Convenções para operadores de filtragem — não há padrão universal, mas estas são comuns:
+
+```
+?price[gte]=10        # >=
+?price[lte]=50        # <=
+?price[gt]=10         # >
+?price[lt]=50         # <
+?status[in]=active,pending   # IN
+?name[like]=west*     # LIKE 'west%'
+?deleted[is]=null     # IS NULL
+```
+
+O ponto chave de ergonomia: a API deve rejeitar parâmetros de filtro desconhecidos com `400 Bad Request` em vez de os ignorar silenciosamente. Ignorar filtros desconhecidos pode levar a resultados inesperados — o cliente pensa que está a filtrar mas recebe o dataset completo.
+
+---
+
+## Error Handling — RFC 7807 (Problem Details)
+
+A RFC 7807 (actualizada pela RFC 9457) define um formato standard para reportar erros em APIs HTTP. O media type é `application/problem+json`.
+
+```http
+HTTP/1.1 422 Unprocessable Entity
+Content-Type: application/problem+json
+
+{
+  "type": "https://api.brewnary.dev/errors/validation-failed",
+  "title": "Falha na validação dos dados de entrada",
+  "status": 422,
+  "detail": "O campo 'abv' deve ser um número entre 0 e 100. O valor recebido foi -5.",
+  "instance": "/api/beers",
+  "trace_id": "req_8f3a2b1c",
+  "errors": [
+    {
+      "field": "abv",
+      "code": "out_of_range",
+      "message": "Deve ser um número entre 0 e 100",
+      "received": -5
+    },
+    {
+      "field": "name",
+      "code": "required",
+      "message": "Campo obrigatório não fornecido"
+    }
+  ]
+}
+```
+
+Campos definidos pela RFC:
+- **type**: URI que identifica o tipo de erro (pode apontar para documentação)
+- **title**: sumário legível por humanos, estável entre ocorrências do mesmo tipo
+- **status**: o HTTP status code (redundante com o header, mas útil quando o body é processado fora de contexto)
+- **detail**: explicação específica desta ocorrência
+- **instance**: URI que identifica esta ocorrência específica
+
+O campo `errors` (array de erros de validação) é uma extensão comum — não faz parte da RFC mas é adoptado por convenção.
+
+---
+
+## Rate Limiting
+
+```http
+HTTP/1.1 200 OK
+X-RateLimit-Limit: 1000
+X-RateLimit-Remaining: 847
+X-RateLimit-Reset: 1708300800
+
+# Quando excedido:
+HTTP/1.1 429 Too Many Requests
+Retry-After: 45
+X-RateLimit-Limit: 1000
+X-RateLimit-Remaining: 0
+X-RateLimit-Reset: 1708300800
+Content-Type: application/problem+json
+
+{
+  "type": "https://api.brewnary.dev/errors/rate-limit-exceeded",
+  "title": "Limite de requisições excedido",
+  "status": 429,
+  "detail": "O limite de 1000 requisições por hora foi atingido. Tente novamente em 45 segundos."
+}
+```
+
+- `X-RateLimit-Limit`: número máximo de requests no período
+- `X-RateLimit-Remaining`: requests restantes no período actual
+- `X-RateLimit-Reset`: timestamp Unix em que o período reinicia
+- `Retry-After`: segundos ou data HTTP em que o cliente pode tentar novamente
+
+Nota: existe um draft IETF (RFC 9110 Section 10.2.3) a padronizar estes headers como `RateLimit-Limit`, `RateLimit-Remaining` e `RateLimit-Reset` (sem o prefixo `X-`). Algumas APIs já adoptam esta forma.
+
+Estratégias de implementação: **fixed window** (simples mas permite bursts na fronteira), **sliding window log** (preciso mas caro em memória), **token bucket** (permite bursts controlados), **sliding window counter** (bom compromisso entre precisão e eficiência). Redis é a escolha canónica para armazenamento dos contadores.
+
+---
+
+## REST vs GraphQL vs gRPC — Trade-offs
+
+### REST
+
+**Pontos fortes**: universalidade (qualquer cliente HTTP funciona), caching nativo via infraestrutura HTTP existente (CDNs, proxies, browsers), tooling maduro, fácil de depurar com `curl`.
+
+**Pontos fracos**: overfetching (o endpoint devolve campos que o cliente não precisa), underfetching (o cliente precisa de múltiplos requests para montar uma vista), sem schema nativo (depende de OpenAPI como add-on).
+
+### GraphQL
+
+```graphql
+query {
+  beer(id: "ipa-001") {
+    name
+    abv
+    brewery {
+      name
+      city
+    }
+    reviews(first: 5) {
+      rating
+      comment
+    }
+  }
+}
+```
+
+**Pontos fortes**: o cliente pede exactamente os campos que precisa (resolve over/underfetching), schema fortemente tipado e introspectável, um único endpoint.
+
+**Pontos fracos**: caching HTTP invalidado (tudo é POST para um único endpoint), N+1 queries no resolver se não houver DataLoader, complexidade de rate limiting (um query pode ser arbitrariamente pesado), upload de ficheiros requer spec adicional (multipart request specification), curva de aprendizagem mais acentuada.
+
+### gRPC
+
+```protobuf
+service BeerService {
+  rpc GetBeer(GetBeerRequest) returns (Beer);
+  rpc ListBeers(ListBeersRequest) returns (stream Beer);
+  rpc CreateBeer(CreateBeerRequest) returns (Beer);
+}
+
+message Beer {
+  string id = 1;
+  string name = 2;
+  double abv = 3;
+  int32 ibu = 4;
+}
+```
+
+**Pontos fortes**: Protocol Buffers (serialização binária) — significativamente mais eficiente em CPU e tamanho do que JSON, streaming bidireccional nativo, geração automática de clientes tipados, contract-first por definição.
+
+**Pontos fracos**: não funciona nativamente no browser (requer gRPC-Web proxy), depuração mais difícil (binário, não legível), sem suporte nativo em CDNs e proxies HTTP tradicionais, menos tooling fora do ecossistema Google/CNCF.
+
+### Quando usar cada um
+
+| Cenário                              | Escolha    | Razão                                                   |
+|--------------------------------------|------------|----------------------------------------------------------|
+| API pública                          | REST       | Universalidade, documentação fácil, caching HTTP         |
+| Frontend com vistas complexas        | GraphQL    | Flexibilidade de queries, elimina over/underfetching     |
+| Comunicação entre microserviços      | gRPC       | Performance, schemas tipados, streaming                  |
+| Sistema com requisitos de tempo real | gRPC       | Streaming bidireccional nativo                           |
+| API com leitura intensiva e CDN      | REST       | Caching HTTP trivial com ETag e Cache-Control            |
+
+---
+
+## OpenAPI / Swagger — Contract-First Design
+
+OpenAPI (anteriormente Swagger) é uma especificação para descrever APIs REST de forma machine-readable. A abordagem **contract-first** define o contrato antes de escrever código — o oposto de gerar documentação a partir do código existente.
+
+```yaml
+openapi: 3.1.0
+info:
+  title: Brewnary API
+  version: 2.0.0
+  description: API para gestão de cervejarias e cervejas artesanais
+
+paths:
+  /api/beers:
+    get:
+      operationId: listBeers
+      summary: Listar cervejas com paginação cursor-based
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: after
+          in: query
+          description: Cursor opaco para paginação
+          schema:
+            type: string
+        - name: style
+          in: query
+          schema:
+            type: string
+            enum: [ipa, stout, lager, wheat, sour, porter]
+      responses:
+        '200':
+          description: Lista paginada de cervejas
+          headers:
+            X-RateLimit-Remaining:
+              schema:
+                type: integer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BeerListResponse'
+        '429':
+          description: Rate limit excedido
+          content:
+            application/problem+json:
+              schema:
+                $ref: '#/components/schemas/ProblemDetail'
+
+components:
+  schemas:
+    Beer:
+      type: object
+      required: [id, name, style, abv]
+      properties:
+        id:
+          type: string
+          format: ulid
+        name:
+          type: string
+          maxLength: 200
+        style:
+          type: string
+        abv:
+          type: number
+          minimum: 0
+          maximum: 100
+        ibu:
+          type: integer
+          minimum: 0
+
+    BeerListResponse:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Beer'
+        pagination:
+          $ref: '#/components/schemas/CursorPagination'
+
+    CursorPagination:
+      type: object
+      properties:
+        has_next:
+          type: boolean
+        next_cursor:
+          type: string
+          nullable: true
+        has_previous:
+          type: boolean
+        previous_cursor:
+          type: string
+          nullable: true
+
+    ProblemDetail:
+      type: object
+      properties:
+        type:
+          type: string
+          format: uri
+        title:
+          type: string
+        status:
+          type: integer
+        detail:
+          type: string
+```
+
+A partir desta especificação é possível gerar: clientes HTTP tipados (TypeScript, Go, Rust, Java), stubs de servidor, testes de contrato, documentação interactiva (Swagger UI, Redoc), mocks para desenvolvimento frontend paralelo.
+
+Ferramentas como `openapi-generator`, `oapi-codegen` (Go) e `orval` (TypeScript) automatizam esta geração.
+
+---
+
+## HATEOAS na Prática
+
+HATEOAS é a constraint mais polémica de REST. Na teoria, permite que o cliente navegue a API inteira a partir de um único entry point, sem precisar de conhecer URIs a priori — como um humano a navegar um website seguindo links.
+
+### HAL (Hypertext Application Language)
+
+```json
+{
+  "_embedded": {
+    "beers": [
+      {
+        "id": "ipa-001",
+        "name": "West Coast IPA",
+        "_links": {
+          "self": { "href": "/api/beers/ipa-001" },
+          "brewery": { "href": "/api/breweries/b7a3f1e2" }
+        }
+      }
+    ]
+  },
+  "_links": {
+    "self": { "href": "/api/beers?page=2" },
+    "next": { "href": "/api/beers?page=3" },
+    "prev": { "href": "/api/beers?page=1" }
+  }
+}
+```
+
+### JSON:API
+
+```json
+{
+  "data": [
+    {
+      "type": "beers",
+      "id": "ipa-001",
+      "attributes": {
+        "name": "West Coast IPA",
+        "abv": 6.8
+      },
+      "relationships": {
+        "brewery": {
+          "data": { "type": "breweries", "id": "b7a3f1e2" },
+          "links": {
+            "related": "/api/breweries/b7a3f1e2"
+          }
+        }
+      },
+      "links": {
+        "self": "/api/beers/ipa-001"
+      }
+    }
+  ],
+  "links": {
+    "self": "/api/beers?page[number]=2",
+    "next": "/api/beers?page[number]=3",
+    "prev": "/api/beers?page[number]=1"
+  }
+}
+```
+
+### Por que quase ninguém implementa HATEOAS
+
+1. **Overhead de payload**: os links adicionam volume significativo a cada resposta
+2. **Clientes ignoram os links**: a maioria dos SDKs e frontends hardcodam as URIs — os links são enviados mas nunca consumidos
+3. **Complexidade de implementação**: gerar links correctos que reflectem permissões do utilizador, estado do recurso e acções disponíveis é significativamente mais complexo do que servir dados estáticos
+4. **Falta de tooling**: não há convenção universal para o formato dos links (HAL, JSON:API, Siren, Collection+JSON — cada um com semânticas diferentes)
+5. **GraphQL oferece uma alternativa**: para clientes que precisam de flexibilidade na descoberta de dados, GraphQL com introspecção resolve o problema de forma diferente
+
+A posição pragmática da indústria: implementar REST nível 2 (verbos e status codes correctos) com documentação OpenAPI abrangente é suficiente para a maioria dos cenários. HATEOAS acrescenta complexidade desproporcional ao benefício, excepto em APIs com workflows complexos de estado (ex: processos de pagamento com múltiplos passos, máquinas de estado visíveis ao cliente).
+
+---
+
+## Resumo Operacional
+
+Uma API REST de qualidade de produção implementa, no mínimo:
+
+1. **URIs baseadas em recursos** com substantivos no plural e hierarquia clara
+2. **Uso correcto dos métodos HTTP** respeitando safety e idempotência
+3. **Status codes precisos** — 201 para criação, 204 para operações sem body, 409 para conflitos, 422 para validação
+4. **Content negotiation** via `Accept` e `Content-Type`
+5. **Paginação cursor-based** para qualquer endpoint que devolve colecções
+6. **Filtragem e sorting** via query parameters com rejeição de parâmetros desconhecidos
+7. **Error handling consistente** seguindo RFC 7807 / RFC 9457
+8. **Rate limiting** com headers informativos e resposta 429
+9. **Caching** com `ETag`, `Cache-Control` e suporte a conditional requests
+10. **Versionamento** explícito desde a primeira versão pública
+11. **Especificação OpenAPI** como source of truth do contrato
+12. **CORS** correctamente configurado para clientes browser

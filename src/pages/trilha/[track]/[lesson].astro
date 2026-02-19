@@ -1,0 +1,56 @@
+---
+import TrackLayout from '../../../layouts/TrackLayout.astro';
+import ProgressTracker from '../../../components/react/ProgressTracker';
+import { getCollection, render } from 'astro:content';
+import { toSlug, getTrackColor } from '../../../lib/tracks';
+
+export async function getStaticPaths() {
+  const allLessons = await getCollection('lessons');
+  return allLessons.map((lesson) => {
+    const slug = toSlug(lesson.id);
+    return {
+      params: {
+        track: lesson.data.track,
+        lesson: slug,
+      },
+      props: { lesson },
+    };
+  });
+}
+
+const { lesson } = Astro.props;
+const { track, lesson: lessonSlug } = Astro.params;
+
+const allLessons = await getCollection('lessons');
+const trackLessons = allLessons.filter((l) => l.data.track === track).sort((a, b) => a.data.order - b.data.order);
+
+const currentIndex = trackLessons.findIndex((l) => toSlug(l.id) === lessonSlug);
+const prevLesson =
+  currentIndex > 0
+    ? { slug: toSlug(trackLessons[currentIndex - 1].id), title: trackLessons[currentIndex - 1].data.title }
+    : null;
+const nextLesson =
+  currentIndex < trackLessons.length - 1
+    ? { slug: toSlug(trackLessons[currentIndex + 1].id), title: trackLessons[currentIndex + 1].data.title }
+    : null;
+
+const { Content, headings } = await render(lesson);
+
+const trackColor = getTrackColor(track!);
+---
+
+<TrackLayout
+  title={lesson.data.title}
+  description={lesson.data.description}
+  track={track!}
+  currentLesson={lessonSlug}
+  headings={headings}
+  prevLesson={prevLesson}
+  nextLesson={nextLesson}
+>
+  <Content />
+
+  <div class="mt-10 flex items-center gap-4">
+    <ProgressTracker client:load lessonId={`${track}/${lessonSlug}`} trackColor={trackColor} />
+  </div>
+</TrackLayout>

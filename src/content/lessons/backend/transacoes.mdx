@@ -1,0 +1,1070 @@
+---
+title: "Transações"
+description: "Controle de concorrência, isolamento, MVCC, locking, sagas e padrões para integridade de dados em sistemas distribuídos"
+track: "backend"
+order: 12
+section: "Banco de Dados"
+priority: "high"
+tags: ["sql", "banco-de-dados", "transações", "acid", "concorrência", "mvcc", "locks", "saga", "2pc"]
+prerequisites: ["sql-modelagem"]
+keyTakeaways:
+  - "ACID não é binário — cada propriedade tem trade-offs e níveis de garantia configuráveis"
+  - "MVCC permite leituras sem bloquear escritas usando snapshots de versões (xmin/xmax no PostgreSQL)"
+  - "Isolation levels são um espectro: quanto mais forte o isolamento, maior o custo de concorrência"
+  - "Em sistemas distribuídos, 2PC bloqueia e Sagas compensam — escolha conforme a tolerância a inconsistências temporárias"
+  - "Idempotência e o outbox pattern são fundamentais para garantir consistência em arquiteturas orientadas a eventos"
+---
+
+## Transações — Muito Além do BEGIN/COMMIT
+
+Uma transação não é apenas um `BEGIN` seguido de `COMMIT`. É uma unidade de trabalho que carrega
+garantias fundamentais sobre o estado dos seus dados. Entender profundamente como transações funcionam
+— desde o undo log até o Two-Phase Commit — é o que separa um engenheiro que "usa banco de dados"
+de um que projeta sistemas que não perdem dinheiro.
+
+---
+
+## 1. ACID em Profundidade
+
+### Atomicity (Atomicidade) — O Undo Log
+
+Atomicidade garante que todas as operações de uma transação são aplicadas, ou nenhuma é.
+O mecanismo subjacente é o **undo log** (rollback segment no Oracle, undo tablespace no InnoDB).
+
+Cada operação de escrita gera um registro inverso no undo log **antes** de modificar a página de dados:
+
+```
+Operação original:     UPDATE accounts SET balance = 500 WHERE id = 1;  (antes: 1000)
+Registro no undo log:  UPDATE accounts SET balance = 1000 WHERE id = 1;
+```
+
+Se a transação executa `ROLLBACK` (ou o processo morre), o banco percorre o undo log na ordem inversa
+e aplica cada operação de compensação, restaurando o estado anterior.
+
+```sql
+BEGIN;
+  UPDATE accounts SET balance = balance - 500 WHERE id = 1;  -- undo log: +500
+  UPDATE accounts SET balance = balance + 500 WHERE id = 2;  -- undo log: -500
+  -- crash aqui: o recovery process lê o undo log e reverte ambas
+COMMIT;
+```
+
+### Consistency (Consistência) — Constraints como Invariantes
+
+Consistência significa que uma transação leva o banco de um estado válido a outro estado válido.
+O banco garante isso através de **constraints** declarativos:
+
+```sql
+-- Constraints são invariantes verificadas automaticamente
+ALTER TABLE accounts ADD CONSTRAINT chk_balance CHECK (balance >= 0);
+ALTER TABLE transfers ADD CONSTRAINT fk_source
+  FOREIGN KEY (source_id) REFERENCES accounts(id);
+ALTER TABLE accounts ADD CONSTRAINT uq_email UNIQUE (email);
+
+-- Se qualquer constraint é violada, a transação inteira aborta
+BEGIN;
+  UPDATE accounts SET balance = -100 WHERE id = 1;
+  -- ERROR: new row for relation "accounts" violates check constraint "chk_balance"
+  -- Transação automaticamente abortada
+COMMIT;
+```
+
+Consistência também depende da **lógica da aplicação**. O banco não sabe que a soma dos saldos
+deve permanecer constante — isso é responsabilidade do seu código.
+
+### Isolation (Isolamento) — Controle de Concorrência
+
+Isolamento define o grau de visibilidade entre transações concorrentes. É o "I" mais complexo
+do ACID e será detalhado nas seções seguintes.
+
+### Durability (Durabilidade) — WAL e Redo Log
+
+Durabilidade garante que, após o `COMMIT`, os dados sobrevivem a crashes. O mecanismo é o
+**Write-Ahead Log (WAL)**, também chamado de redo log.
+
+O protocolo é:
+
+1. A transação escreve as modificações no WAL (disco sequencial — rápido)
+2. O banco retorna `COMMIT` para o cliente
+3. As páginas de dados em memória (buffer pool) são escritas em disco **depois**, de forma assíncrona
+
+```
+Fluxo do COMMIT:
+
+  App  ──COMMIT──▶  Buffer Pool (memória)
+                        │
+                        ▼
+                    WAL / Redo Log (disco sequencial) ──▶ fsync()
+                        │
+                        │  (retorna sucesso para o app)
+                        ▼
+                    Checkpoint (periódico)
+                        │
+                        ▼
+                    Data Files (disco aleatório)
+```
+
+No PostgreSQL, o WAL fica em `pg_wal/`. O parâmetro `synchronous_commit` controla se o `COMMIT`
+espera o fsync do WAL:
+
+- `on` (padrão): espera fsync — durável, mais lento
+- `off`: não espera — rápido, mas pode perder transações recentes em crash
+- `remote_apply`: espera a réplica aplicar — máxima durabilidade
+
+---
+
+## 2. Anomalias de Concorrência
+
+Quando múltiplas transações executam simultaneamente, várias anomalias podem ocorrer:
+
+### Dirty Read (Leitura Suja)
+
+Uma transação lê dados que **ainda não foram commitados** por outra transação.
+
+```
+T1: BEGIN;
+T1: UPDATE products SET price = 1 WHERE id = 42;    -- preço era 100
+
+T2: BEGIN;
+T2: SELECT price FROM products WHERE id = 42;         -- lê 1 (dado não commitado!)
+
+T1: ROLLBACK;                                         -- T1 desfaz a alteração
+
+T2: -- tomou decisão baseada em dado que nunca existiu de verdade
+```
+
+### Non-Repeatable Read (Leitura Não Repetível)
+
+Uma transação lê a mesma linha duas vezes e obtém valores **diferentes** porque outra
+transação fez commit entre as leituras.
+
+```
+T1: BEGIN;
+T1: SELECT balance FROM accounts WHERE id = 1;       -- lê 1000
+
+T2: BEGIN;
+T2: UPDATE accounts SET balance = 500 WHERE id = 1;
+T2: COMMIT;
+
+T1: SELECT balance FROM accounts WHERE id = 1;       -- lê 500 (mudou!)
+T1: -- decisão inconsistente: a primeira leitura dizia 1000
+```
+
+### Phantom Read (Leitura Fantasma)
+
+Uma transação executa a mesma query com `WHERE` duas vezes e obtém **linhas diferentes**
+porque outra transação inseriu ou deletou linhas que satisfazem o predicado.
+
+```
+T1: BEGIN;
+T1: SELECT COUNT(*) FROM orders WHERE status = 'pending';  -- retorna 5
+
+T2: BEGIN;
+T2: INSERT INTO orders (status) VALUES ('pending');
+T2: COMMIT;
+
+T1: SELECT COUNT(*) FROM orders WHERE status = 'pending';  -- retorna 6 (fantasma!)
+```
+
+### Write Skew
+
+Duas transações leem o mesmo dado, fazem verificações baseadas nessa leitura,
+e escrevem em **linhas diferentes** — mas a combinação das escritas viola uma invariante.
+
+```
+-- Regra de negócio: pelo menos 1 médico deve estar de plantão
+-- Atualmente: médico A e médico B estão de plantão
+
+T1: BEGIN;
+T1: SELECT COUNT(*) FROM doctors WHERE on_call = true;  -- lê 2, ok para sair
+
+T2: BEGIN;
+T2: SELECT COUNT(*) FROM doctors WHERE on_call = true;  -- lê 2, ok para sair
+
+T1: UPDATE doctors SET on_call = false WHERE id = 'A';
+T1: COMMIT;
+
+T2: UPDATE doctors SET on_call = false WHERE id = 'B';
+T2: COMMIT;
+
+-- Resultado: 0 médicos de plantão — invariante violada!
+```
+
+### Lost Update (Atualização Perdida)
+
+Duas transações leem o mesmo valor, calculam um novo valor baseado na leitura,
+e escrevem — a segunda escrita sobrescreve a primeira.
+
+```
+-- Saldo inicial: 1000
+
+T1: BEGIN;
+T1: SELECT balance FROM accounts WHERE id = 1;  -- lê 1000
+T1: -- calcula: 1000 + 200 = 1200
+
+T2: BEGIN;
+T2: SELECT balance FROM accounts WHERE id = 1;  -- lê 1000
+T2: -- calcula: 1000 + 300 = 1300
+
+T1: UPDATE accounts SET balance = 1200 WHERE id = 1;
+T1: COMMIT;
+
+T2: UPDATE accounts SET balance = 1300 WHERE id = 1;  -- sobrescreve T1!
+T2: COMMIT;
+
+-- Resultado: 1300 (deveria ser 1500 = 1000 + 200 + 300)
+-- A atualização de T1 foi perdida
+```
+
+---
+
+## 3. Níveis de Isolamento (Isolation Levels)
+
+O SQL standard define quatro níveis. Cada um permite ou previne certas anomalias:
+
+```
+┌──────────────────────┬─────────────┬────────────────────┬──────────────┬─────────────┐
+│ Nível                │ Dirty Read  │ Non-Repeatable Read│ Phantom Read │ Write Skew  │
+├──────────────────────┼─────────────┼────────────────────┼──────────────┼─────────────┤
+│ READ UNCOMMITTED     │ Possível    │ Possível           │ Possível     │ Possível    │
+│ READ COMMITTED       │ Prevenido   │ Possível           │ Possível     │ Possível    │
+│ REPEATABLE READ      │ Prevenido   │ Prevenido          │ Possível*    │ Possível*   │
+│ SERIALIZABLE         │ Prevenido   │ Prevenido          │ Prevenido    │ Prevenido   │
+└──────────────────────┴─────────────┴────────────────────┴──────────────┴─────────────┘
+
+* No PostgreSQL, REPEATABLE READ usa snapshot isolation que também previne phantom reads,
+  mas NÃO previne write skew. Já no MySQL/InnoDB, REPEATABLE READ usa gap locks
+  que previnem phantoms mas de forma diferente.
+```
+
+```sql
+-- Definindo o nível de isolamento
+SET TRANSACTION ISOLATION LEVEL READ COMMITTED;
+BEGIN;
+  -- operações aqui
+COMMIT;
+
+-- Ou por sessão inteira
+SET SESSION CHARACTERISTICS AS TRANSACTION ISOLATION LEVEL SERIALIZABLE;
+```
+
+### READ UNCOMMITTED
+
+Praticamente não usado em produção. O PostgreSQL nem implementa — trata como READ COMMITTED.
+Permite dirty reads. Útil apenas para relatórios aproximados onde performance é crítica
+e precisão é irrelevante.
+
+### READ COMMITTED (padrão do PostgreSQL)
+
+Cada `SELECT` vê apenas dados commitados **no momento da execução daquele statement**.
+Dois SELECTs na mesma transação podem ver dados diferentes se houve commit entre eles.
+
+```sql
+-- T1 está em READ COMMITTED
+BEGIN;
+  SELECT balance FROM accounts WHERE id = 1;  -- vê 1000
+
+  -- T2 faz UPDATE e COMMIT aqui, mudando para 800
+
+  SELECT balance FROM accounts WHERE id = 1;  -- vê 800 (non-repeatable read!)
+COMMIT;
+```
+
+### REPEATABLE READ
+
+A transação trabalha com um **snapshot** tirado no início da primeira query.
+Todas as leituras subsequentes veem esse mesmo snapshot, independente de commits externos.
+
+```sql
+-- T1 está em REPEATABLE READ
+BEGIN;
+  SELECT balance FROM accounts WHERE id = 1;  -- vê 1000 (snapshot tirado aqui)
+
+  -- T2 faz UPDATE e COMMIT aqui, mudando para 800
+
+  SELECT balance FROM accounts WHERE id = 1;  -- ainda vê 1000 (mesmo snapshot)
+COMMIT;
+```
+
+Se T1 tentar atualizar uma linha que T2 já modificou e commitou, T1 recebe um erro:
+
+```
+ERROR: could not serialize access due to concurrent update
+```
+
+A aplicação deve tratar isso com **retry**.
+
+### SERIALIZABLE
+
+Garante que o resultado é equivalente a alguma execução serial das transações.
+O PostgreSQL implementa via **Serializable Snapshot Isolation (SSI)** — detecta dependências
+de leitura-escrita entre transações e aborta as que causariam anomalias.
+
+```sql
+-- Prevenindo write skew com SERIALIZABLE
+SET TRANSACTION ISOLATION LEVEL SERIALIZABLE;
+BEGIN;
+  SELECT COUNT(*) FROM doctors WHERE on_call = true;  -- lê 2
+  UPDATE doctors SET on_call = false WHERE id = 'A';
+COMMIT;
+-- Se T2 tentar fazer o mesmo concorrentemente, uma das duas será abortada
+-- ERROR: could not serialize access due to read/write dependencies
+```
+
+O custo: mais transações abortadas e retry necessário. Toda aplicação que usa SERIALIZABLE
+**deve** ter lógica de retry.
+
+---
+
+## 4. MVCC — Multi-Version Concurrency Control
+
+MVCC é o mecanismo que permite leitores não bloquearem escritores e vice-versa.
+Em vez de trancar linhas para leitura, o banco mantém **múltiplas versões** de cada linha.
+
+### Implementação no PostgreSQL
+
+Cada tupla (linha) no PostgreSQL tem campos de sistema ocultos:
+
+- **`xmin`**: ID da transação que **criou** esta versão da tupla
+- **`xmax`**: ID da transação que **deletou/atualizou** esta versão (0 se ainda ativa)
+- **`ctid`**: localização física da tupla (page, offset)
+
+```sql
+-- Visualizando campos de sistema
+SELECT xmin, xmax, ctid, * FROM accounts WHERE id = 1;
+
+--  xmin | xmax | ctid  | id | balance
+-- ------+------+-------+----+---------
+--   100 |    0 | (0,1) |  1 |    1000
+```
+
+Quando uma transação (txid = 200) atualiza essa linha:
+
+```
+Versão antiga: xmin=100, xmax=200, ctid=(0,1) → aponta para (0,5)
+Versão nova:   xmin=200, xmax=0,   ctid=(0,5)
+```
+
+A versão antiga **não é deletada imediatamente**. Ela permanece visível para transações
+que iniciaram antes de txid 200. O **VACUUM** remove versões antigas que não são mais
+visíveis para nenhuma transação ativa (dead tuples).
+
+### Transaction Snapshots
+
+Quando uma transação inicia (em REPEATABLE READ) ou executa um statement (em READ COMMITTED),
+ela tira um **snapshot** que contém:
+
+- `xmin`: menor txid ainda ativa — tudo abaixo é visível
+- `xmax`: próximo txid a ser atribuído — tudo acima é invisível
+- `xip_list`: lista de txids ativos no momento do snapshot
+
+```sql
+-- Verificando o snapshot atual
+SELECT txid_current_snapshot();
+-- Retorna algo como: 100:105:100,102,104
+-- Significado: xmin=100, xmax=105, ativos=[100,102,104]
+
+-- Uma tupla com xmin=101 é visível? 101 não está em xip_list e 101 < 105 → SIM
+-- Uma tupla com xmin=102 é visível? 102 está em xip_list (ainda ativo) → NÃO
+-- Uma tupla com xmin=106 é visível? 106 >= 105 → NÃO
+```
+
+### Regras de Visibilidade
+
+Para determinar se uma versão de tupla é visível para uma transação T:
+
+```
+1. Se xmin não commitou (e não é T) → INVISÍVEL
+2. Se xmin commitou e xmin está no snapshot de T como ativo → INVISÍVEL
+3. Se xmax = 0 ou xmax não commitou → VISÍVEL (ninguém deletou/atualizou)
+4. Se xmax commitou e está FORA do snapshot de T → INVISÍVEL (deletada antes de T)
+5. Caso contrário → VISÍVEL
+```
+
+### VACUUM e Bloat
+
+Como o MVCC não deleta versões antigas imediatamente, a tabela acumula **dead tuples**
+(bloat). O `autovacuum` do PostgreSQL roda periodicamente para limpar.
+
+```sql
+-- Verificar dead tuples
+SELECT relname, n_dead_tup, n_live_tup,
+       round(n_dead_tup::numeric / GREATEST(n_live_tup, 1) * 100, 2) AS dead_pct
+FROM pg_stat_user_tables
+WHERE n_dead_tup > 1000
+ORDER BY n_dead_tup DESC;
+
+-- Forçar VACUUM manualmente (cuidado em produção)
+VACUUM (VERBOSE, ANALYZE) accounts;
+```
+
+Transações longas impedem o VACUUM de limpar versões antigas, causando table bloat.
+**Nunca** deixe transações abertas por longos períodos em produção.
+
+---
+
+## 5. Locking
+
+MVCC resolve conflitos de leitura vs escrita, mas escritas concorrentes na mesma linha
+ainda precisam de **locks** explícitos.
+
+### Row-Level Locks
+
+```sql
+-- FOR UPDATE: lock exclusivo na linha — bloqueia outras escritas E outros FOR UPDATE
+SELECT * FROM accounts WHERE id = 1 FOR UPDATE;
+
+-- FOR SHARE: lock compartilhado — permite outros FOR SHARE, bloqueia escritas
+SELECT * FROM accounts WHERE id = 1 FOR SHARE;
+
+-- FOR NO KEY UPDATE: como FOR UPDATE, mas permite FOR KEY SHARE
+-- (útil quando você atualiza colunas que não são FK)
+SELECT * FROM accounts WHERE id = 1 FOR NO KEY UPDATE;
+
+-- FOR KEY SHARE: o mais fraco — bloqueia apenas DELETE e updates em colunas de FK
+SELECT * FROM accounts WHERE id = 1 FOR KEY SHARE;
+```
+
+### SKIP LOCKED — Filas de Trabalho sem Broker
+
+`SKIP LOCKED` pula linhas que já estão trancadas por outras transações.
+Isso transforma uma tabela em uma fila de trabalho rudimentar:
+
+```sql
+-- Worker pega o próximo job não processado, sem esperar por locks
+BEGIN;
+  SELECT id, payload FROM jobs
+  WHERE status = 'pending'
+  ORDER BY created_at
+  LIMIT 1
+  FOR UPDATE SKIP LOCKED;
+
+  -- processa o job...
+
+  UPDATE jobs SET status = 'done' WHERE id = $1;
+COMMIT;
+```
+
+Múltiplos workers podem executar isso concorrentemente sem conflito — cada um pega
+um job diferente. Sem `SKIP LOCKED`, o segundo worker ficaria bloqueado esperando o primeiro.
+
+### NOWAIT — Falhar Rápido
+
+```sql
+-- Em vez de esperar, retorna erro imediatamente se a linha está trancada
+SELECT * FROM accounts WHERE id = 1 FOR UPDATE NOWAIT;
+-- ERROR: could not obtain lock on row in relation "accounts"
+```
+
+### Table-Level Locks
+
+```sql
+-- ACCESS SHARE: adquirido implicitamente por SELECT (conflita apenas com ACCESS EXCLUSIVE)
+-- ROW SHARE: adquirido por SELECT FOR UPDATE/SHARE
+-- ROW EXCLUSIVE: adquirido por INSERT/UPDATE/DELETE
+-- ACCESS EXCLUSIVE: adquirido por ALTER TABLE, DROP TABLE, VACUUM FULL
+
+-- Explicitamente (raramente necessário):
+LOCK TABLE accounts IN SHARE MODE;  -- bloqueia escritas, permite leituras
+```
+
+### Advisory Locks — Locks Lógicos
+
+Locks que não estão associados a nenhuma linha ou tabela — você define a semântica.
+
+```sql
+-- Lock baseado em um ID numérico qualquer
+SELECT pg_advisory_lock(12345);
+-- ... seção crítica ...
+SELECT pg_advisory_unlock(12345);
+
+-- Try-lock (não bloqueia, retorna boolean)
+SELECT pg_try_advisory_lock(12345);  -- retorna true se conseguiu
+
+-- Advisory lock no nível de transação (libera no COMMIT/ROLLBACK)
+SELECT pg_advisory_xact_lock(12345);
+
+-- Caso de uso: evitar processamento duplicado
+SELECT pg_advisory_xact_lock(hashtext('process-order-' || order_id::text));
+```
+
+---
+
+## 6. Deadlock
+
+Deadlock ocorre quando duas ou mais transações esperam mutuamente por locks que a outra detém.
+
+```
+T1: BEGIN; UPDATE accounts SET balance = 0 WHERE id = 1;  -- lock na linha 1
+T2: BEGIN; UPDATE accounts SET balance = 0 WHERE id = 2;  -- lock na linha 2
+T1: UPDATE accounts SET balance = 0 WHERE id = 2;         -- espera T2 liberar linha 2
+T2: UPDATE accounts SET balance = 0 WHERE id = 1;         -- espera T1 liberar linha 1
+
+-- Deadlock! Ambas esperam eternamente.
+```
+
+### Detecção: Wait-For Graph
+
+O PostgreSQL mantém um grafo de espera (wait-for graph). Periodicamente (a cada
+`deadlock_timeout`, padrão 1s), ele verifica se há **ciclos** no grafo.
+Se encontrar, aborta a transação que causou o ciclo.
+
+```
+Wait-For Graph:
+
+  T1 ──espera──▶ T2
+  T2 ──espera──▶ T1    ← ciclo detectado!
+
+  PostgreSQL aborta T2:
+  ERROR: deadlock detected
+  DETAIL: Process 1234 waits for ShareLock on transaction 567;
+          blocked by process 5678.
+          Process 5678 waits for ShareLock on transaction 123;
+          blocked by process 1234.
+```
+
+### Prevenção e Estratégias de Retry
+
+```sql
+-- 1. Ordenar os locks sempre na mesma ordem
+-- Em vez de trancar em ordem arbitrária, ordene por ID:
+BEGIN;
+  SELECT * FROM accounts WHERE id IN (1, 2) ORDER BY id FOR UPDATE;
+  -- Sempre adquire lock no id=1 primeiro, depois id=2
+COMMIT;
+
+-- 2. Configurar timeout
+SET lock_timeout = '5s';       -- timeout para adquirir locks
+SET statement_timeout = '30s'; -- timeout para statements
+```
+
+```javascript
+// 3. Retry com exponential backoff
+async function executeWithRetry(fn, maxRetries = 3) {
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (error) {
+      const isRetryable =
+        error.code === '40001' || // serialization_failure
+        error.code === '40P01';   // deadlock_detected
+
+      if (!isRetryable || attempt === maxRetries - 1) throw error;
+
+      const delay = Math.min(100 * Math.pow(2, attempt), 5000);
+      const jitter = Math.random() * delay * 0.1;
+      await new Promise(r => setTimeout(r, delay + jitter));
+    }
+  }
+}
+```
+
+---
+
+## 7. Two-Phase Commit (2PC)
+
+Quando uma transação precisa abranger **múltiplos bancos de dados** (ou serviços),
+o 2PC coordena o commit atômico.
+
+### Protocolo
+
+```
+Fase 1 — PREPARE (votação):
+
+  Coordinator ──PREPARE──▶ Participant A
+  Coordinator ──PREPARE──▶ Participant B
+
+  Participant A ──YES──▶ Coordinator   (gravou em WAL, prometeu que pode commitar)
+  Participant B ──YES──▶ Coordinator
+
+Fase 2 — COMMIT (decisão):
+
+  Coordinator ──COMMIT──▶ Participant A
+  Coordinator ──COMMIT──▶ Participant B
+
+  (Se qualquer participant votou NO na fase 1, coordinator envia ABORT para todos)
+```
+
+### No PostgreSQL
+
+```sql
+-- Participant prepara
+BEGIN;
+  UPDATE accounts SET balance = balance - 100 WHERE id = 1;
+PREPARE TRANSACTION 'transfer-abc-123';
+-- A transação fica "preparada" — sobrevive crash, mas locks permanecem!
+
+-- Depois, o coordinator confirma ou aborta:
+COMMIT PREPARED 'transfer-abc-123';
+-- ou
+ROLLBACK PREPARED 'transfer-abc-123';
+
+-- Verificar transações preparadas pendentes (PERIGO se ficarem órfãs)
+SELECT * FROM pg_prepared_xacts;
+```
+
+### Problemas do 2PC
+
+- **Bloqueante**: se o coordinator morre após a fase 1, os participants ficam com locks
+  mantidos indefinidamente (transação preparada). Requer intervenção manual.
+- **Latência**: duas fases de rede, no mínimo 2 round-trips.
+- **Acoplamento forte**: todos os participantes devem estar disponíveis simultaneamente.
+
+Por esses motivos, 2PC raramente é usado entre microsserviços. Prefere-se **Sagas**.
+
+---
+
+## 8. Saga Pattern
+
+Uma Saga é uma sequência de transações locais onde cada etapa tem uma **transação compensatória**
+que desfaz seu efeito em caso de falha.
+
+### Choreography (Coreografia)
+
+Cada serviço publica eventos e reage a eventos de outros serviços. Não há coordenador central.
+
+```
+Serviço de Pedidos:
+  1. Cria pedido (status: PENDING)
+  2. Publica: OrderCreated
+
+Serviço de Pagamento:
+  3. Escuta OrderCreated
+  4. Processa pagamento
+  5. Publica: PaymentProcessed (ou PaymentFailed)
+
+Serviço de Estoque:
+  6. Escuta PaymentProcessed
+  7. Reserva itens
+  8. Publica: StockReserved (ou StockInsufficient)
+
+Serviço de Pedidos:
+  9. Escuta StockReserved → confirma pedido
+  OU
+  9. Escuta PaymentFailed → cancela pedido (compensação)
+  9. Escuta StockInsufficient → reembolsa pagamento (compensação)
+```
+
+### Orchestration (Orquestração)
+
+Um orquestrador central coordena os passos e as compensações.
+
+```
+OrderSaga Orchestrator:
+  ┌──────────────────────────────────────────────────────────┐
+  │                                                          │
+  │  1. CreateOrder ──────▶ 2. ProcessPayment                │
+  │       │ (compensar:          │ (compensar:               │
+  │       │  CancelOrder)        │  RefundPayment)           │
+  │       │                      │                           │
+  │       │                      ▼                           │
+  │       │               3. ReserveStock                    │
+  │       │                    │ (compensar:                 │
+  │       │                    │  ReleaseStock)              │
+  │       │                    │                             │
+  │       │                    ▼                             │
+  │       │               4. ConfirmOrder                    │
+  │       │                                                  │
+  │  Se qualquer passo falha:                                │
+  │  → executa compensações na ordem inversa                 │
+  └──────────────────────────────────────────────────────────┘
+```
+
+### Choreography vs Orchestration
+
+```
+Choreography:
+  + Baixo acoplamento entre serviços
+  + Sem ponto único de falha
+  - Fluxo difícil de entender e debugar
+  - Dependências cíclicas podem surgir
+
+Orchestration:
+  + Fluxo explícito e fácil de entender
+  + Compensações centralizadas
+  - Orquestrador é ponto único de falha
+  - Maior acoplamento com o orquestrador
+```
+
+---
+
+## 9. Write-Ahead Log (WAL) em Detalhes
+
+O WAL é a espinha dorsal da durabilidade e da replicação no PostgreSQL.
+
+### Estrutura
+
+```
+pg_wal/
+├── 000000010000000000000001   (16 MB cada segmento)
+├── 000000010000000000000002
+├── 000000010000000000000003
+└── ...
+
+Cada segmento contém WAL records:
+┌──────────────────────────────────────────┐
+│ LSN (Log Sequence Number)                │
+│ Transaction ID                           │
+│ Resource Manager (heap, btree, etc.)     │
+│ Dados da modificação (before/after)      │
+└──────────────────────────────────────────┘
+```
+
+### Checkpoint
+
+O checkpoint é o processo que garante que as páginas de dados em disco estão atualizadas
+até um certo ponto do WAL. Após um checkpoint, WAL records anteriores podem ser reciclados.
+
+```sql
+-- Verificar último checkpoint
+SELECT pg_current_wal_lsn(),
+       pg_walfile_name(pg_current_wal_lsn());
+
+-- Configurações de checkpoint
+-- checkpoint_timeout = 5min      (tempo máximo entre checkpoints)
+-- max_wal_size = 1GB             (tamanho máximo do WAL antes de forçar checkpoint)
+-- checkpoint_completion_target = 0.9  (espalhar I/O ao longo de 90% do intervalo)
+```
+
+### Recovery
+
+Após um crash, o PostgreSQL executa o **crash recovery**:
+
+1. Encontra o último checkpoint no WAL
+2. Reaplicar (replay) todos os WAL records após esse checkpoint
+3. Para transações que não commitaram: usa o undo log para reverter
+4. Banco volta a um estado consistente
+
+---
+
+## 10. Transações Distribuídas
+
+### Problemas Fundamentais
+
+O **teorema CAP** diz que um sistema distribuído não pode ter simultaneamente:
+Consistency, Availability e Partition tolerance. Na prática, partições de rede acontecem,
+então você escolhe entre C (abortar operações) ou A (aceitar inconsistência temporária).
+
+### Eventual Consistency
+
+Em vez de garantir consistência imediata entre todos os nós, o sistema garante que,
+na ausência de novas escritas, todos os nós convergirão para o mesmo estado.
+
+### Consenso: Paxos e Raft
+
+Algoritmos de consenso permitem que um grupo de nós concorde sobre um valor,
+mesmo que alguns nós falhem.
+
+**Raft** (mais didático que Paxos) funciona em termos simplificados:
+
+```
+1. Eleição de líder:
+   - Nós começam como followers
+   - Se um follower não recebe heartbeat do líder, inicia eleição
+   - Candidato pede votos; se obtém maioria, vira líder
+
+2. Replicação de log:
+   - Cliente envia escrita ao líder
+   - Líder anexa ao log e replica para followers
+   - Quando maioria confirma (quorum), entry é "committed"
+   - Líder notifica o cliente do sucesso
+
+3. Segurança:
+   - Apenas nós com log atualizado podem ser eleitos líder
+   - Garantia: se uma entry foi committed, estará em todos os futuros líderes
+```
+
+Sistemas como CockroachDB, TiDB e YugabyteDB usam Raft internamente para replicar
+transações distribuídas com semântica SERIALIZABLE.
+
+---
+
+## 11. Optimistic vs Pessimistic Concurrency Control
+
+### Pessimistic: Lock Antecipado
+
+Adquire o lock **antes** de ler/modificar, assumindo que conflitos são prováveis.
+
+```sql
+-- Pessimistic: tranca a linha antes de qualquer operação
+BEGIN;
+  SELECT * FROM products WHERE id = 42 FOR UPDATE;
+  -- calcula novo preço...
+  UPDATE products SET price = 150 WHERE id = 42;
+COMMIT;
+```
+
+Bom quando: alta contenção, conflitos são frequentes, operações são curtas.
+
+### Optimistic: Verificar no Final
+
+Não adquire lock. Verifica no momento da escrita se o dado mudou desde a leitura.
+
+```sql
+-- Optimistic: usa coluna de versão
+BEGIN;
+  SELECT price, version FROM products WHERE id = 42;
+  -- lê: price=100, version=3
+  -- calcula novo preço...
+
+  UPDATE products
+  SET price = 150, version = version + 1
+  WHERE id = 42 AND version = 3;
+  -- Se 0 rows affected → alguém atualizou antes → retry
+
+  -- Verificar se atualizou
+  -- Se rowcount = 0: ROLLBACK e retry
+  -- Se rowcount = 1: COMMIT
+COMMIT;
+```
+
+```javascript
+// Optimistic locking com ETag em APIs REST
+// GET /products/42
+// Response: { price: 100 }
+// Header: ETag: "v3"
+
+// PUT /products/42
+// Header: If-Match: "v3"
+// Body: { price: 150 }
+
+// Se versão mudou:
+// Response: 412 Precondition Failed
+// Cliente deve re-ler e tentar novamente
+```
+
+Bom quando: baixa contenção, leituras são muito mais frequentes que escritas, operações podem ser longas.
+
+---
+
+## 12. Idempotência
+
+Uma operação é **idempotente** se executá-la múltiplas vezes produz o mesmo resultado
+que executá-la uma única vez. Em sistemas distribuídos, retries são inevitáveis,
+então idempotência é obrigatória.
+
+### Idempotency Keys
+
+```sql
+-- Tabela de idempotência
+CREATE TABLE idempotency_keys (
+  key         TEXT PRIMARY KEY,
+  response    JSONB NOT NULL,
+  status_code INTEGER NOT NULL,
+  created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Índice para limpeza periódica de registros antigos
+CREATE INDEX idx_idempotency_created ON idempotency_keys (created_at);
+```
+
+```javascript
+async function processPayment(req, res) {
+  const idempotencyKey = req.headers['idempotency-key'];
+  if (!idempotencyKey) return res.status(400).json({ error: 'Idempotency-Key obrigatório' });
+
+  // Verificar se já processou
+  const existing = await db.query(
+    'SELECT response, status_code FROM idempotency_keys WHERE key = $1',
+    [idempotencyKey]
+  );
+
+  if (existing.rows.length > 0) {
+    // Retorna a mesma resposta anterior — idempotente
+    return res.status(existing.rows[0].status_code).json(existing.rows[0].response);
+  }
+
+  // Processar e salvar resposta atomicamente
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    // Inserir com lock para evitar race condition
+    await client.query(
+      `INSERT INTO idempotency_keys (key, response, status_code)
+       VALUES ($1, '{}', 0)
+       ON CONFLICT (key) DO NOTHING`,
+      [idempotencyKey]
+    );
+
+    const payment = await processActualPayment(req.body);
+
+    await client.query(
+      `UPDATE idempotency_keys
+       SET response = $1, status_code = 200
+       WHERE key = $2`,
+      [JSON.stringify(payment), idempotencyKey]
+    );
+
+    await client.query('COMMIT');
+    return res.status(200).json(payment);
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+```
+
+### Padrões Naturalmente Idempotentes
+
+```sql
+-- Idempotente: SET (resultado absoluto)
+UPDATE accounts SET balance = 500 WHERE id = 1;
+
+-- NÃO idempotente: INCREMENT (resultado relativo)
+UPDATE accounts SET balance = balance + 100 WHERE id = 1;
+
+-- Tornar idempotente via deduplicação:
+INSERT INTO balance_changes (transaction_id, account_id, amount)
+VALUES ('txn-abc-123', 1, 100)
+ON CONFLICT (transaction_id) DO NOTHING;
+-- Depois: balance = SUM(amount) FROM balance_changes WHERE account_id = 1
+```
+
+---
+
+## 13. Padrões Práticos para Consistência
+
+### Transactional Outbox Pattern
+
+O problema: você precisa atualizar o banco **e** publicar um evento (ex: Kafka).
+Se fizer separadamente, pode falhar entre um e outro — dados inconsistentes.
+
+```
+❌ Abordagem ingênua (não confiável):
+  1. UPDATE no banco     ← sucesso
+  2. Publicar no Kafka   ← falha (mensagem perdida!)
+
+  Ou pior:
+  1. Publicar no Kafka   ← sucesso
+  2. UPDATE no banco     ← falha (evento sem dados correspondentes!)
+```
+
+Solução: escrever o evento em uma tabela **outbox** na mesma transação que a modificação.
+
+```sql
+-- Tabela outbox
+CREATE TABLE outbox (
+  id           BIGSERIAL PRIMARY KEY,
+  aggregate_id TEXT NOT NULL,
+  event_type   TEXT NOT NULL,
+  payload      JSONB NOT NULL,
+  created_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+  published_at TIMESTAMPTZ          -- NULL = não publicado
+);
+
+-- Transação atômica: dado + evento
+BEGIN;
+  UPDATE orders SET status = 'confirmed' WHERE id = 42;
+
+  INSERT INTO outbox (aggregate_id, event_type, payload)
+  VALUES ('order-42', 'OrderConfirmed', '{"orderId": 42, "total": 299.90}');
+COMMIT;
+-- Ambos ou nenhum — atomicidade do banco local garante consistência
+```
+
+Um processo separado (poller ou CDC) lê a tabela outbox e publica no broker:
+
+```javascript
+// Polling da outbox (simples, mas menos eficiente)
+async function publishOutboxEvents() {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+
+    const { rows } = await client.query(
+      `SELECT id, event_type, payload FROM outbox
+       WHERE published_at IS NULL
+       ORDER BY id
+       LIMIT 100
+       FOR UPDATE SKIP LOCKED`
+    );
+
+    for (const row of rows) {
+      await kafka.send({
+        topic: row.event_type,
+        messages: [{ value: JSON.stringify(row.payload) }],
+      });
+    }
+
+    const ids = rows.map(r => r.id);
+    if (ids.length > 0) {
+      await client.query(
+        `UPDATE outbox SET published_at = now() WHERE id = ANY($1)`,
+        [ids]
+      );
+    }
+
+    await client.query('COMMIT');
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
+```
+
+### Change Data Capture (CDC)
+
+Em vez de polling na outbox, use **CDC** para capturar mudanças diretamente do WAL.
+Ferramentas como **Debezium** conectam no slot de replicação lógica do PostgreSQL
+e emitem eventos para Kafka automaticamente.
+
+```
+PostgreSQL WAL  ──▶  Debezium Connector  ──▶  Kafka Topic
+
+Vantagens sobre polling:
+  - Latência quase zero (lê do WAL stream em tempo real)
+  - Não precisa de tabela outbox (captura qualquer tabela)
+  - Não gera carga de SELECT no banco
+
+Desvantagens:
+  - Infraestrutura adicional (Kafka Connect, Debezium)
+  - Slot de replicação deve ser monitorado (se o consumer parar,
+    o PostgreSQL mantém WAL indefinidamente → disco cheio)
+```
+
+```sql
+-- Criando um slot de replicação lógica para CDC
+SELECT pg_create_logical_replication_slot('debezium_slot', 'pgoutput');
+
+-- Monitorar lag do slot
+SELECT slot_name,
+       pg_wal_lsn_diff(pg_current_wal_lsn(), confirmed_flush_lsn) AS lag_bytes
+FROM pg_replication_slots;
+```
+
+---
+
+## Resumo — Quando Usar o Quê
+
+```
+┌─────────────────────────────────┬───────────────────────────────────────────┐
+│ Cenário                         │ Abordagem                                 │
+├─────────────────────────────────┼───────────────────────────────────────────┤
+│ Operação em 1 banco, dados      │ Transação local com isolation level       │
+│ críticos                        │ adequado (READ COMMITTED ou REPEATABLE    │
+│                                 │ READ) + locking explícito se necessário   │
+├─────────────────────────────────┼───────────────────────────────────────────┤
+│ Operação em 1 banco, alta       │ Optimistic locking (version column)       │
+│ concorrência em poucas linhas   │ + retry com backoff                       │
+├─────────────────────────────────┼───────────────────────────────────────────┤
+│ Operação entre microsserviços   │ Saga (orchestration para fluxos           │
+│ (consistência eventual ok)      │ complexos, choreography para simples)     │
+├─────────────────────────────────┼───────────────────────────────────────────┤
+│ Banco + broker de mensagens     │ Transactional outbox pattern              │
+│                                 │ ou CDC (Debezium)                         │
+├─────────────────────────────────┼───────────────────────────────────────────┤
+│ APIs que recebem retries        │ Idempotency keys + deduplicação           │
+│                                 │                                           │
+├─────────────────────────────────┼───────────────────────────────────────────┤
+│ Fila de jobs sem broker         │ FOR UPDATE SKIP LOCKED                    │
+│ dedicado                        │                                           │
+├─────────────────────────────────┼───────────────────────────────────────────┤
+│ Máxima correção, sem            │ SERIALIZABLE + retry obrigatório          │
+│ anomalias possíveis             │                                           │
+└─────────────────────────────────┴───────────────────────────────────────────┘
+```

@@ -1,0 +1,54 @@
+---
+interface Props {
+  id: string;
+  title: string;
+  description: string;
+  color: string;
+  lessonCount: number;
+}
+
+const { id, title, description, color, lessonCount } = Astro.props;
+---
+
+<a
+  href={`/trilha/${id}`}
+  data-track-id={id}
+  data-lesson-count={lessonCount}
+  class="group block rounded-[var(--radius-card)] border border-[var(--color-border)] bg-[var(--color-bg-alt)] p-5 transition-colors hover:border-[var(--color-text-muted)]"
+>
+  <div class="flex gap-3.5">
+    <div class="mt-0.5 w-0.5 shrink-0 rounded-full" style={`background-color: ${color}; height: 2.5rem;`}></div>
+    <div class="min-w-0 flex-1">
+      <h3 class="mb-1 text-sm font-bold">{title}</h3>
+      <p class="mb-3 line-clamp-2 text-xs leading-relaxed text-[var(--color-text-muted)]">
+        {description}
+      </p>
+      <div class="progress-bar mb-2 hidden">
+        <div class="mb-1 flex items-center justify-between">
+          <span class="progress-label font-mono text-[10px] text-[var(--color-text-muted)]"></span>
+        </div>
+        <div class="h-1 w-full rounded-full bg-[var(--color-border)]">
+          <div class="h-1 rounded-full transition-all duration-300" style={`background-color: ${color}; width: 0%`}>
+          </div>
+        </div>
+      </div>
+      <div class="flex items-center justify-between">
+        <span class="font-mono text-[11px] text-[var(--color-text-muted)]">
+          {lessonCount} artigos
+        </span>
+        <svg
+          class="h-4 w-4 text-[var(--color-text-muted)] transition-colors group-hover:text-[var(--color-text)]"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+          aria-hidden="true"
+        >
+          <path d="M5 12h14"></path><path d="m12 5 7 7-7 7"></path>
+        </svg>
+      </div>
+    </div>
+  </div>
+</a>

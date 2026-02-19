@@ -1,0 +1,1710 @@
+---
+title: "Next.js — SSR, SSG e Full-Stack React"
+description: "App Router, Server Components, SSR, SSG, ISR, API Routes, middleware, caching, deploy e as decisões arquiteturais para aplicações React em produção"
+track: "frontend"
+order: 14
+section: "Frameworks"
+priority: "high"
+tags: ["nextjs", "react", "ssr", "ssg", "server-components", "app-router", "full-stack"]
+prerequisites: ["react-internals", "typescript"]
+keyTakeaways:
+  - "Next.js é o framework React full-stack dominante: App Router com Server Components é o padrão moderno, mas Pages Router ainda é amplamente usado"
+  - "Server Components (RSC) rodam no servidor e enviam HTML + payload serializado — reduzem bundle size e permitem acesso direto a banco/filesystem"
+  - "SSR, SSG, ISR e PPR são estratégias de rendering com trade-offs distintos entre freshness, performance e custo de infraestrutura"
+  - "O sistema de caching do Next.js tem 4 camadas: Request Memoization, Data Cache, Full Route Cache e Router Cache — entender cada uma evita bugs sutis"
+  - "Middleware, route handlers, server actions e revalidation são as primitivas para construir aplicações full-stack sem API separada"
+---
+
+> **Ponto chave:** Next.js não é "React com rotas". É um framework full-stack que controla como, quando e onde cada componente é renderizado. Entender as estratégias de rendering, o sistema de caching e os limites entre servidor e cliente é o que separa um dev que "usa Next" de um que domina o framework.
+
+---
+
+## 1. Por que Next.js
+
+### 1.1 Os Problemas que o React Puro Não Resolve
+
+Uma aplicação React com Vite (SPA pura) tem limitações reais em produção:
+
+```
+Problema 1: SEO
+  SPA renderiza no client → crawler recebe <div id="root"></div>
+  Google indexa SPAs, mas com delay e inconsistência.
+  Redes sociais (OG tags) e bots simples não executam JS.
+
+Problema 2: Performance percebida
+  SPA: baixa HTML vazio → baixa JS bundle → executa → fetch dados → renderiza
+  SSR: servidor entrega HTML completo → usuário vê conteúdo imediatamente
+  Diferença de LCP pode ser de segundos em conexões lentas.
+
+Problema 3: Data fetching no client
+  Waterfalls: componente monta → useEffect → fetch → filho monta → useEffect → fetch
+  Cada nível da árvore adiciona uma round-trip.
+  No servidor, o fetch é local (microsegundos vs centenas de ms).
+
+Problema 4: Bundle size
+  SPA envia TODO o JavaScript para o client.
+  Uma lib de markdown rendering (50KB) usada em uma página de blog
+  é baixada por todos os usuários, mesmo os que nunca acessam o blog.
+```
+
+### 1.2 O que o Next.js Adiciona
+
+```
+React puro (Vite/CRA):
+  - Client-side rendering only
+  - Sem routing built-in
+  - Sem server-side data fetching
+  - Bundle único (sem code splitting automático por rota)
+
+Next.js:
+  - Server Components (zero JS no client por padrão)
+  - SSR, SSG, ISR, PPR — rendering strategy por rota
+  - File-based routing com layouts aninhados
+  - API routes / Route Handlers
+  - Middleware (edge runtime)
+  - Image/Font/Script optimization
+  - Caching automático em múltiplas camadas
+```
+
+### 1.3 App Router vs Pages Router
+
+O Next.js tem dois sistemas de routing que coexistem:
+
+```
+Pages Router (pre-13, ainda suportado):
+  pages/
+    index.tsx         → /
+    about.tsx         → /about
+    blog/[slug].tsx   → /blog/:slug
+    api/hello.ts      → /api/hello
+
+  - getServerSideProps (SSR), getStaticProps (SSG), getStaticPaths
+  - Tudo é Client Component por padrão
+  - _app.tsx e _document.tsx para layout global
+
+App Router (13+, padrão atual):
+  app/
+    page.tsx          → /
+    about/page.tsx    → /about
+    blog/[slug]/page.tsx → /blog/:slug
+    api/hello/route.ts   → /api/hello
+
+  - Server Components por padrão
+  - Layouts aninhados com state preservado
+  - Streaming com Suspense
+  - Server Actions
+  - Parallel e intercepting routes
+```
+
+**Quando usar cada um:**
+
+```
+App Router (escolha padrão para projetos novos):
+  ✓ Server Components e bundle size reduzido
+  ✓ Streaming e loading states granulares
+  ✓ Layouts aninhados sem re-render
+  ✓ Server Actions para mutations
+
+Pages Router (ainda válido):
+  ✓ Projetos existentes — migração gradual é possível
+  ✓ Bibliotecas que ainda não suportam RSC
+  ✓ Equipes que já dominam o modelo mental
+```
+
+### 1.4 Quando NÃO Usar Next.js
+
+```
+Use Vite + React quando:
+  - A aplicação é um dashboard autenticado (SEO irrelevante)
+  - Não precisa de SSR/SSG
+  - Quer controle total sobre bundling e infra
+  - Equipe pequena e deploy em S3/CDN estático
+
+Use Remix quando:
+  - Prefere o modelo de web standards (Form, Request, Response)
+  - Quer progressive enhancement real
+  - Não quer ficar preso ao ecossistema Vercel
+
+Use Astro quando:
+  - O site é primariamente conteúdo (blog, docs, marketing)
+  - Quer zero JS por padrão e islands architecture
+```
+
+---
+
+## 2. App Router e File-Based Routing
+
+### 2.1 Estrutura do Diretório app/
+
+Cada rota no App Router é um diretório dentro de `app/`. O Next.js reconhece arquivos especiais por convenção de nome:
+
+```
+app/
+├── layout.tsx          # Layout raiz (obrigatório, wraps todas as páginas)
+├── page.tsx            # Rota / (home)
+├── loading.tsx         # UI de loading (Suspense boundary automático)
+├── error.tsx           # Error boundary automático
+├── not-found.tsx       # UI para 404
+├── global-error.tsx    # Error boundary para o layout raiz
+│
+├── about/
+│   └── page.tsx        # /about
+│
+├── blog/
+│   ├── page.tsx        # /blog
+│   └── [slug]/
+│       ├── page.tsx    # /blog/meu-post (rota dinâmica)
+│       └── loading.tsx # Loading específico para esta rota
+│
+├── dashboard/
+│   ├── layout.tsx      # Layout aninhado (sidebar, header do dashboard)
+│   ├── page.tsx        # /dashboard
+│   ├── settings/
+│   │   └── page.tsx    # /dashboard/settings (herda layout do dashboard)
+│   └── [...catchAll]/
+│       └── page.tsx    # /dashboard/qualquer/coisa (catch-all)
+│
+└── api/
+    └── webhook/
+        └── route.ts    # POST /api/webhook (Route Handler)
+```
+
+### 2.2 Layout, Page e Template
+
+```tsx
+// app/layout.tsx — Layout raiz (renderiza uma vez, NÃO re-renderiza na navegação)
+import type { Metadata } from 'next'
+
+export const metadata: Metadata = {
+  title: { default: 'Meu App', template: '%s | Meu App' },
+  description: 'Descrição do app',
+}
+
+export default function RootLayout({
+  children,
+}: {
+  children: React.ReactNode
+}) {
+  return (
+    <html lang="pt-BR">
+      <body>
+        <nav>
+          {/* Navbar persistente — não re-renderiza entre páginas */}
+        </nav>
+        <main>{children}</main>
+      </body>
+    </html>
+  )
+}
+```
+
+```tsx
+// app/dashboard/layout.tsx — Layout aninhado
+export default function DashboardLayout({
+  children,
+}: {
+  children: React.ReactNode
+}) {
+  return (
+    <div className="flex">
+      <aside className="w-64">
+        {/* Sidebar do dashboard — preserva state entre sub-rotas */}
+      </aside>
+      <section className="flex-1">{children}</section>
+    </div>
+  )
+}
+```
+
+**Diferenca entre layout.tsx e template.tsx:**
+
+```
+layout.tsx:
+  - Renderiza uma vez e preserva state entre navegações
+  - Ideal para navbars, sidebars, providers
+  - children muda, mas o layout não re-monta
+
+template.tsx:
+  - Re-monta a cada navegação (nova instância)
+  - Útil para animações de entrada/saída (useEffect roda a cada navegação)
+  - Fica entre o layout e o page na hierarquia
+```
+
+### 2.3 Loading, Error e Not Found
+
+```tsx
+// app/dashboard/loading.tsx — Suspense boundary automático
+export default function DashboardLoading() {
+  return <div className="animate-pulse">Carregando dashboard...</div>
+}
+
+// O Next.js wrapa o page.tsx automaticamente:
+// <Suspense fallback={<Loading />}>
+//   <Page />
+// </Suspense>
+```
+
+```tsx
+// app/dashboard/error.tsx — Error boundary automático
+'use client' // Error boundaries PRECISAM ser Client Components
+
+import { useEffect } from 'react'
+
+export default function DashboardError({
+  error,
+  reset,
+}: {
+  error: Error & { digest?: string }
+  reset: () => void
+}) {
+  useEffect(() => {
+    // Log para serviço de monitoramento
+    console.error(error)
+  }, [error])
+
+  return (
+    <div>
+      <h2>Algo deu errado no dashboard</h2>
+      <p>{error.message}</p>
+      <button onClick={() => reset()}>Tentar novamente</button>
+    </div>
+  )
+}
+```
+
+```tsx
+// app/not-found.tsx — Página 404 customizada
+import Link from 'next/link'
+
+export default function NotFound() {
+  return (
+    <div>
+      <h2>Página não encontrada</h2>
+      <Link href="/">Voltar para o início</Link>
+    </div>
+  )
+}
+```
+
+### 2.4 Route Groups e Organização
+
+Route groups permitem organizar arquivos sem afetar a URL:
+
+```
+app/
+├── (marketing)/            # Grupo — NÃO aparece na URL
+│   ├── layout.tsx          # Layout próprio para marketing
+│   ├── page.tsx            # /
+│   ├── about/page.tsx      # /about
+│   └── pricing/page.tsx    # /pricing
+│
+├── (dashboard)/            # Grupo — NÃO aparece na URL
+│   ├── layout.tsx          # Layout próprio com sidebar
+│   ├── dashboard/page.tsx  # /dashboard
+│   └── settings/page.tsx   # /settings
+│
+└── (auth)/                 # Grupo para páginas de auth
+    ├── layout.tsx          # Layout sem navbar
+    ├── login/page.tsx      # /login
+    └── register/page.tsx   # /register
+```
+
+### 2.5 Parallel Routes e Intercepting Routes
+
+**Parallel Routes** renderizam múltiplas páginas na mesma view:
+
+```
+app/
+├── layout.tsx
+├── @analytics/           # Slot "analytics"
+│   └── page.tsx
+├── @team/                # Slot "team"
+│   └── page.tsx
+└── page.tsx
+```
+
+```tsx
+// app/layout.tsx — recebe os slots como props
+export default function Layout({
+  children,
+  analytics,
+  team,
+}: {
+  children: React.ReactNode
+  analytics: React.ReactNode
+  team: React.ReactNode
+}) {
+  return (
+    <div>
+      {children}
+      <div className="grid grid-cols-2">
+        {analytics}
+        {team}
+      </div>
+    </div>
+  )
+}
+```
+
+**Intercepting Routes** permitem mostrar uma rota dentro do contexto atual (ex: modal de foto sem perder o feed):
+
+```
+app/
+├── feed/
+│   ├── page.tsx              # Lista de posts
+│   └── (..)photo/[id]/       # Intercepta /photo/[id] mostrando um modal
+│       └── page.tsx
+├── photo/[id]/
+│   └── page.tsx              # Página full do photo (acesso direto ou refresh)
+```
+
+```
+Convenção de interceptação:
+  (.)  → mesmo nível
+  (..) → um nível acima
+  (..)(..) → dois níveis acima
+  (...) → raiz do app
+```
+
+---
+
+## 3. Server Components vs Client Components
+
+### 3.1 O Modelo Mental
+
+No App Router, **todo componente é Server Component por padrão**. Server Components rodam exclusivamente no servidor — o JavaScript deles nunca é enviado ao browser.
+
+```
+Server Component (padrão):
+  ✓ Acessa banco de dados diretamente
+  ✓ Lê arquivos do filesystem
+  ✓ Usa secrets/env vars do servidor
+  ✓ Zero impacto no bundle size do client
+  ✗ Não pode usar useState, useEffect, useRef
+  ✗ Não pode usar event handlers (onClick, onChange)
+  ✗ Não pode usar browser APIs (window, document)
+
+Client Component ('use client'):
+  ✓ Interatividade (state, effects, events)
+  ✓ Browser APIs
+  ✓ Hooks do React
+  ✗ Código vai para o bundle do client
+  ✗ Não pode importar diretamente Server Components
+```
+
+### 3.2 A Diretiva 'use client'
+
+```tsx
+'use client' // Esta diretiva marca o BOUNDARY — este componente e tudo que ele
+             // importa será incluído no bundle do client
+
+import { useState } from 'react'
+
+export function Counter() {
+  const [count, setCount] = useState(0)
+
+  return (
+    <button onClick={() => setCount(count + 1)}>
+      Contagem: {count}
+    </button>
+  )
+}
+```
+
+**Regra fundamental:** `'use client'` define uma **fronteira de serialização**. Tudo acima é servidor, tudo abaixo (incluindo imports) é client.
+
+```
+                        SERVIDOR
+─────────────────────────────────────
+  ServerPage (pode fazer fetch direto)
+      │
+      ├── ServerHeader (HTML puro, zero JS)
+      │
+      ├── ClientInteractiveSection ← 'use client' boundary
+      │       │
+      │       ├── ClientForm (useState, onChange)
+      │       └── ClientButton (onClick)
+      │
+      └── ServerFooter (HTML puro, zero JS)
+─────────────────────────────────────
+                        CLIENT
+```
+
+### 3.3 Patterns de Composição
+
+**Pattern 1: Empurrar 'use client' para as folhas**
+
+```tsx
+// RUIM: marca a página inteira como Client Component
+'use client'
+
+export default function ProductPage() {
+  const [qty, setQty] = useState(1)
+
+  return (
+    <div>
+      <h1>Produto X</h1>           {/* Estático — não precisava de JS */}
+      <p>Descrição longa...</p>    {/* Estático — não precisava de JS */}
+      <img src="/product.jpg" />   {/* Estático — não precisava de JS */}
+      <QuantitySelector qty={qty} onChange={setQty} />  {/* Interativo */}
+    </div>
+  )
+}
+```
+
+```tsx
+// BOM: só o componente interativo é Client Component
+// app/products/[id]/page.tsx — Server Component (padrão)
+import { getProduct } from '@/lib/db'
+import { QuantitySelector } from './quantity-selector'
+
+export default async function ProductPage({
+  params,
+}: {
+  params: Promise<{ id: string }>
+}) {
+  const { id } = await params
+  const product = await getProduct(id)  // Fetch direto no servidor
+
+  return (
+    <div>
+      <h1>{product.name}</h1>           {/* Zero JS */}
+      <p>{product.description}</p>      {/* Zero JS */}
+      <img src={product.imageUrl} />    {/* Zero JS */}
+      <QuantitySelector productId={id} /> {/* Só este é client */}
+    </div>
+  )
+}
+```
+
+```tsx
+// app/products/[id]/quantity-selector.tsx
+'use client'
+
+import { useState } from 'react'
+
+export function QuantitySelector({ productId }: { productId: string }) {
+  const [qty, setQty] = useState(1)
+
+  return (
+    <div>
+      <button onClick={() => setQty(q => Math.max(1, q - 1))}>-</button>
+      <span>{qty}</span>
+      <button onClick={() => setQty(q => q + 1)}>+</button>
+    </div>
+  )
+}
+```
+
+**Pattern 2: Server Component como children de Client Component**
+
+```tsx
+// Client Components NÃO podem importar Server Components,
+// mas podem RECEBÊ-LOS como children (ou qualquer prop React.ReactNode)
+
+'use client'
+export function Modal({ children }: { children: React.ReactNode }) {
+  const [open, setOpen] = useState(false)
+
+  return (
+    <>
+      <button onClick={() => setOpen(true)}>Abrir</button>
+      {open && <dialog open>{children}</dialog>}
+    </>
+  )
+}
+
+// Em um Server Component:
+import { Modal } from './modal'
+import { ProductDetails } from './product-details' // Server Component
+
+export default async function Page() {
+  return (
+    <Modal>
+      {/* ProductDetails roda no servidor, mas é renderizado dentro do Modal */}
+      <ProductDetails />
+    </Modal>
+  )
+}
+```
+
+### 3.4 Serialization Boundary
+
+Props passadas de Server para Client Components precisam ser **serializáveis**:
+
+```
+Serializável (pode passar como prop):
+  ✓ Primitivos: string, number, boolean, null, undefined
+  ✓ Arrays e objetos simples (sem métodos)
+  ✓ Date (serializado como string)
+  ✓ FormData
+  ✓ React elements (JSX) — incluindo Server Components como children
+
+NÃO serializável:
+  ✗ Funções (exceto Server Actions)
+  ✗ Classes com métodos
+  ✗ Instâncias de Map, Set, WeakMap
+  ✗ Símbolos
+  ✗ Streams, ReadableStream
+```
+
+---
+
+## 4. Rendering Strategies
+
+### 4.1 Visão Geral
+
+```
+Estratégia    Quando renderiza    HTML gerado    Freshness    Performance
+──────────────────────────────────────────────────────────────────────────
+SSG           Build time          Estático       Stale        Máxima (CDN)
+ISR           Build + revalida    Estático*      Configurável Muito boa
+SSR           Cada request        Dinâmico       Sempre fresh Boa
+Streaming     Cada request        Progressivo    Sempre fresh Boa (TTFB rápido)
+PPR           Build + request     Híbrido        Parcial      Excelente
+```
+
+### 4.2 Static Site Generation (SSG)
+
+No App Router, uma rota é estática por padrão se não usa nada dinâmico:
+
+```tsx
+// app/about/page.tsx — automaticamente SSG
+// Sem fetch dinâmico, sem cookies, sem headers → HTML gerado no build
+
+export default function AboutPage() {
+  return (
+    <div>
+      <h1>Sobre nós</h1>
+      <p>Conteúdo estático gerado no build.</p>
+    </div>
+  )
+}
+```
+
+Para rotas dinâmicas com SSG, use `generateStaticParams`:
+
+```tsx
+// app/blog/[slug]/page.tsx
+import { getAllPosts, getPost } from '@/lib/posts'
+
+// Gera as rotas estáticas no build
+export async function generateStaticParams() {
+  const posts = await getAllPosts()
+  return posts.map((post) => ({ slug: post.slug }))
+}
+
+export default async function BlogPost({
+  params,
+}: {
+  params: Promise<{ slug: string }>
+}) {
+  const { slug } = await params
+  const post = await getPost(slug)
+
+  return (
+    <article>
+      <h1>{post.title}</h1>
+      <div dangerouslySetInnerHTML={{ __html: post.content }} />
+    </article>
+  )
+}
+```
+
+### 4.3 Server-Side Rendering (SSR)
+
+Uma rota se torna SSR (dinâmica) quando usa funções dinâmicas:
+
+```tsx
+// app/dashboard/page.tsx — SSR (renderiza a cada request)
+import { cookies, headers } from 'next/headers'
+
+export default async function DashboardPage() {
+  const cookieStore = await cookies()
+  const token = cookieStore.get('session')?.value
+
+  const headersList = await headers()
+  const ip = headersList.get('x-forwarded-for')
+
+  const data = await fetch('https://api.example.com/dashboard', {
+    headers: { Authorization: `Bearer ${token}` },
+    cache: 'no-store',  // Explicitamente desabilita cache
+  })
+
+  const dashboard = await data.json()
+
+  return <DashboardView data={dashboard} />
+}
+```
+
+**O que torna uma rota dinâmica:**
+
+```
+Funções que forçam SSR:
+  cookies()          — leitura de cookies (depende do request)
+  headers()          — leitura de headers (depende do request)
+  searchParams       — prop de page que depende de query string
+
+Opções de fetch:
+  fetch(url, { cache: 'no-store' })    — desabilita cache
+  fetch(url, { next: { revalidate: 0 } })  — mesmo efeito
+
+Config explícita:
+  export const dynamic = 'force-dynamic'  — força SSR
+  export const dynamic = 'force-static'   — força SSG
+```
+
+### 4.4 Incremental Static Regeneration (ISR)
+
+ISR combina o melhor de SSG e SSR: serve HTML estático, mas revalida em background:
+
+```tsx
+// app/products/page.tsx — ISR com revalidação a cada 60 segundos
+export const revalidate = 60 // segundos
+
+export default async function ProductsPage() {
+  const products = await fetch('https://api.example.com/products', {
+    next: { revalidate: 60 },  // Alternativa: configurar no fetch
+  })
+
+  const data = await products.json()
+
+  return (
+    <ul>
+      {data.map((p: { id: string; name: string; price: number }) => (
+        <li key={p.id}>{p.name} — R$ {p.price}</li>
+      ))}
+    </ul>
+  )
+}
+```
+
+```
+Fluxo ISR (stale-while-revalidate):
+
+  Request 1 (build ou primeiro acesso):
+    → Renderiza no servidor → salva HTML no cache → serve
+
+  Request 2 (dentro de 60s):
+    → Serve HTML do cache instantaneamente (CDN hit)
+
+  Request 3 (após 60s):
+    → Serve HTML stale do cache (usuário não espera)
+    → Em background: re-renderiza a página com dados frescos
+    → Salva novo HTML no cache
+
+  Request 4:
+    → Serve o HTML fresco gerado no background
+```
+
+### 4.5 Streaming com Suspense
+
+Streaming envia HTML progressivamente, melhorando TTFB e UX:
+
+```tsx
+// app/dashboard/page.tsx
+import { Suspense } from 'react'
+import { RevenueChart } from './revenue-chart'
+import { LatestOrders } from './latest-orders'
+import { UserStats } from './user-stats'
+
+export default function DashboardPage() {
+  return (
+    <div>
+      <h1>Dashboard</h1>
+
+      {/* UserStats é rápido — renderiza no HTML inicial */}
+      <Suspense fallback={<StatsSkeleton />}>
+        <UserStats />
+      </Suspense>
+
+      <div className="grid grid-cols-2 gap-4">
+        {/* RevenueChart é lento — streama quando pronto */}
+        <Suspense fallback={<ChartSkeleton />}>
+          <RevenueChart />
+        </Suspense>
+
+        {/* LatestOrders é lento — streama independentemente */}
+        <Suspense fallback={<OrdersSkeleton />}>
+          <LatestOrders />
+        </Suspense>
+      </div>
+    </div>
+  )
+}
+```
+
+```
+Fluxo de streaming:
+
+  1. Servidor envia HTML com <h1>Dashboard</h1> + skeletons → TTFB rápido
+  2. UserStats resolve → servidor envia chunk HTML para substituir o skeleton
+  3. RevenueChart resolve → servidor envia chunk (independente dos outros)
+  4. LatestOrders resolve → servidor envia último chunk
+  5. Página completa — cada seção apareceu assim que ficou pronta
+```
+
+### 4.6 Partial Prerendering (PPR)
+
+PPR é a estratégia mais recente — combina shell estático com partes dinâmicas:
+
+```tsx
+// next.config.ts
+import type { NextConfig } from 'next'
+
+const nextConfig: NextConfig = {
+  experimental: {
+    ppr: true,  // Habilita Partial Prerendering
+  },
+}
+
+export default nextConfig
+```
+
+```tsx
+// app/product/[id]/page.tsx — PPR
+import { Suspense } from 'react'
+import { ProductInfo } from './product-info'
+import { UserReviews } from './user-reviews'
+import { RecommendedProducts } from './recommended'
+
+export default function ProductPage({
+  params,
+}: {
+  params: Promise<{ id: string }>
+}) {
+  return (
+    <div>
+      {/* Parte estática: gerada no build, servida do CDN */}
+      <ProductInfo params={params} />
+
+      {/* Parte dinâmica: renderizada no request, streamed */}
+      <Suspense fallback={<ReviewsSkeleton />}>
+        <UserReviews params={params} />
+      </Suspense>
+
+      {/* Parte dinâmica: personalizada por usuário */}
+      <Suspense fallback={<RecommendedSkeleton />}>
+        <RecommendedProducts />
+      </Suspense>
+    </div>
+  )
+}
+```
+
+```
+PPR combina SSG + Streaming:
+  - O shell (header, layout, conteúdo estático) é pré-renderizado no build
+  - As partes dinâmicas (dentro de Suspense) são renderizadas no request
+  - Resultado: TTFB de um site estático com freshness de SSR
+```
+
+---
+
+## 5. Data Fetching e Caching
+
+### 5.1 Fetch no Server Component
+
+No App Router, data fetching acontece diretamente nos Server Components com `async/await`:
+
+```tsx
+// app/posts/page.tsx — Server Component (async é suportado naturalmente)
+export default async function PostsPage() {
+  // fetch() no Next.js é estendido com opções de cache
+  const res = await fetch('https://api.example.com/posts', {
+    next: {
+      revalidate: 3600,      // ISR: revalida a cada 1 hora
+      tags: ['posts'],        // Tag para revalidação sob demanda
+    },
+  })
+
+  if (!res.ok) throw new Error('Falha ao carregar posts')
+
+  const posts: Post[] = await res.json()
+
+  return (
+    <ul>
+      {posts.map((post) => (
+        <li key={post.id}>{post.title}</li>
+      ))}
+    </ul>
+  )
+}
+```
+
+### 5.2 As 4 Camadas de Cache
+
+O Next.js tem um sistema de caching em 4 camadas. Entender cada uma evita bugs sutis e comportamentos inesperados:
+
+```
+Camada 1: REQUEST MEMOIZATION (Server, por request)
+─────────────────────────────────────────────────────
+  O que faz: deduplica fetch() idênticos dentro do MESMO request
+  Escopo: dura apenas um render do servidor
+  Onde: React estende fetch() para memorizar por URL + options
+
+  Cenário: Layout e Page ambos fazem fetch('/api/user')
+    → Apenas 1 request HTTP é feito (o segundo retorna do cache em memória)
+
+  Não precisa de configuração — é automático.
+  Só funciona com GET requests via fetch().
+
+
+Camada 2: DATA CACHE (Server, persistente)
+─────────────────────────────────────────────────────
+  O que faz: armazena respostas de fetch() entre requests e deploys
+  Escopo: persistente (sobrevive a redeploys na Vercel)
+  Comportamento padrão: cache HABILITADO (fetch() faz cache por padrão)
+
+  Para desabilitar:
+    fetch(url, { cache: 'no-store' })
+    fetch(url, { next: { revalidate: 0 } })
+
+  Para revalidar:
+    fetch(url, { next: { revalidate: 3600 } })  — time-based
+    revalidateTag('posts')                        — on-demand
+    revalidatePath('/posts')                      — on-demand por rota
+
+
+Camada 3: FULL ROUTE CACHE (Server, persistente)
+─────────────────────────────────────────────────────
+  O que faz: armazena o HTML e RSC Payload de rotas estáticas
+  Escopo: persistente (gerado no build para SSG, regenerado no ISR)
+
+  Rotas estáticas: HTML + RSC payload cacheados no CDN
+  Rotas dinâmicas: NÃO são cacheadas (SSR a cada request)
+
+  Para invalidar: revalidatePath() ou revalidateTag() invalidam
+  tanto o Data Cache quanto o Full Route Cache.
+
+
+Camada 4: ROUTER CACHE (Client, em memória)
+─────────────────────────────────────────────────────
+  O que faz: armazena RSC payload de rotas visitadas no browser
+  Escopo: sessão do usuário (limpa no refresh)
+
+  - Prefetch de <Link> armazena no Router Cache
+  - Navegação para rota já visitada é instantânea (sem request ao servidor)
+  - Rotas estáticas: prefetch completo
+  - Rotas dinâmicas: prefetch parcial (só o layout compartilhado)
+
+  Para invalidar:
+    router.refresh()          — limpa o Router Cache da rota atual
+    revalidatePath/Tag        — invalida no próximo request
+    cookies.set/delete        — invalida automaticamente (segurança)
+```
+
+### 5.3 Opting Out de Cache
+
+```tsx
+// Opção 1: no-store no fetch individual
+const data = await fetch('https://api.example.com/live-data', {
+  cache: 'no-store',
+})
+
+// Opção 2: segment config (aplica à rota inteira)
+export const dynamic = 'force-dynamic'
+export const revalidate = 0
+
+// Opção 3: usando funções dinâmicas (cookies, headers, searchParams)
+import { cookies } from 'next/headers'
+
+export default async function Page() {
+  const cookieStore = await cookies() // Torna a rota dinâmica automaticamente
+  // ...
+}
+```
+
+### 5.4 Revalidação On-Demand
+
+```tsx
+// app/api/revalidate/route.ts — Webhook que revalida cache
+import { revalidateTag, revalidatePath } from 'next/cache'
+import { NextRequest } from 'next/server'
+
+export async function POST(request: NextRequest) {
+  const secret = request.headers.get('x-revalidation-secret')
+
+  if (secret !== process.env.REVALIDATION_SECRET) {
+    return Response.json({ error: 'Unauthorized' }, { status: 401 })
+  }
+
+  const { tag, path } = await request.json()
+
+  if (tag) {
+    revalidateTag(tag)    // Invalida todos os fetch() com essa tag
+  }
+
+  if (path) {
+    revalidatePath(path)  // Invalida a rota inteira
+  }
+
+  return Response.json({ revalidated: true, now: Date.now() })
+}
+```
+
+### 5.5 Data Fetching sem fetch() — unstable_cache
+
+Para acessos a banco de dados (Prisma, Drizzle) que não usam `fetch()`:
+
+```tsx
+import { unstable_cache } from 'next/cache'
+import { db } from '@/lib/db'
+
+const getCachedUser = unstable_cache(
+  async (userId: string) => {
+    return db.user.findUnique({ where: { id: userId } })
+  },
+  ['user-by-id'],          // Cache key prefix
+  {
+    revalidate: 900,        // 15 minutos
+    tags: ['users'],        // Tag para revalidação sob demanda
+  }
+)
+
+export default async function UserProfile({
+  params,
+}: {
+  params: Promise<{ id: string }>
+}) {
+  const { id } = await params
+  const user = await getCachedUser(id)
+
+  return <div>{user?.name}</div>
+}
+```
+
+---
+
+## 6. Server Actions
+
+### 6.1 O que São
+
+Server Actions são funções assíncronas que rodam no servidor e podem ser chamadas diretamente do client. Substituem a necessidade de criar API routes para mutations simples.
+
+```tsx
+// A diretiva 'use server' marca a função como uma Server Action
+// Pode ser usada em arquivo separado ou inline em Server Components
+
+// app/actions/posts.ts
+'use server'
+
+import { revalidatePath } from 'next/cache'
+import { db } from '@/lib/db'
+import { z } from 'zod'
+
+const createPostSchema = z.object({
+  title: z.string().min(3).max(200),
+  content: z.string().min(10),
+})
+
+export async function createPost(formData: FormData) {
+  const parsed = createPostSchema.safeParse({
+    title: formData.get('title'),
+    content: formData.get('content'),
+  })
+
+  if (!parsed.success) {
+    return { error: parsed.error.flatten().fieldErrors }
+  }
+
+  await db.post.create({
+    data: {
+      title: parsed.data.title,
+      content: parsed.data.content,
+    },
+  })
+
+  revalidatePath('/posts')  // Invalida o cache da lista de posts
+}
+```
+
+### 6.2 Usando com Forms
+
+```tsx
+// app/posts/new/page.tsx — Server Component com form
+import { createPost } from '@/app/actions/posts'
+
+export default function NewPostPage() {
+  return (
+    <form action={createPost}>
+      <label htmlFor="title">Título</label>
+      <input id="title" name="title" type="text" required />
+
+      <label htmlFor="content">Conteúdo</label>
+      <textarea id="content" name="content" required />
+
+      <button type="submit">Publicar</button>
+    </form>
+  )
+}
+```
+
+### 6.3 Com useActionState (Feedback e Validação)
+
+```tsx
+'use client'
+
+import { useActionState } from 'react'
+import { createPost } from '@/app/actions/posts'
+
+// A Server Action precisa receber prevState como primeiro argumento
+// quando usada com useActionState
+type ActionState = {
+  error?: Record<string, string[]>
+  success?: boolean
+}
+
+export function CreatePostForm() {
+  const [state, formAction, isPending] = useActionState<ActionState, FormData>(
+    async (_prevState, formData) => {
+      const result = await createPost(formData)
+      if (result?.error) return { error: result.error }
+      return { success: true }
+    },
+    { error: undefined, success: undefined }
+  )
+
+  return (
+    <form action={formAction}>
+      <input name="title" type="text" required />
+      {state.error?.title && (
+        <p className="text-red-500">{state.error.title[0]}</p>
+      )}
+
+      <textarea name="content" required />
+      {state.error?.content && (
+        <p className="text-red-500">{state.error.content[0]}</p>
+      )}
+
+      <button type="submit" disabled={isPending}>
+        {isPending ? 'Publicando...' : 'Publicar'}
+      </button>
+
+      {state.success && <p className="text-green-500">Post criado!</p>}
+    </form>
+  )
+}
+```
+
+### 6.4 Optimistic Updates
+
+```tsx
+'use client'
+
+import { useOptimistic } from 'react'
+import { toggleLike } from '@/app/actions/likes'
+
+type Post = {
+  id: string
+  title: string
+  liked: boolean
+  likeCount: number
+}
+
+export function PostCard({ post }: { post: Post }) {
+  const [optimisticPost, addOptimistic] = useOptimistic(
+    post,
+    (currentPost, _action: 'toggle') => ({
+      ...currentPost,
+      liked: !currentPost.liked,
+      likeCount: currentPost.liked
+        ? currentPost.likeCount - 1
+        : currentPost.likeCount + 1,
+    })
+  )
+
+  async function handleLike() {
+    addOptimistic('toggle')         // Atualiza UI imediatamente
+    await toggleLike(post.id)       // Server Action em background
+    // Se falhar, o React reverte automaticamente para o state real
+  }
+
+  return (
+    <div>
+      <h2>{optimisticPost.title}</h2>
+      <button onClick={handleLike}>
+        {optimisticPost.liked ? '❤️' : '🤍'} {optimisticPost.likeCount}
+      </button>
+    </div>
+  )
+}
+```
+
+### 6.5 Seguranca em Server Actions
+
+```tsx
+'use server'
+
+import { auth } from '@/lib/auth'
+import { redirect } from 'next/navigation'
+
+export async function deletePost(postId: string) {
+  // SEMPRE valide autenticação em Server Actions
+  // Elas são endpoints HTTP — qualquer pessoa pode chamá-las
+  const session = await auth()
+
+  if (!session?.user) {
+    redirect('/login')
+  }
+
+  // Valide autorização
+  const post = await db.post.findUnique({ where: { id: postId } })
+
+  if (post?.authorId !== session.user.id) {
+    throw new Error('Não autorizado')
+  }
+
+  // Valide input (nunca confie no client)
+  if (typeof postId !== 'string' || postId.length === 0) {
+    throw new Error('ID inválido')
+  }
+
+  await db.post.delete({ where: { id: postId } })
+  revalidatePath('/posts')
+}
+```
+
+---
+
+## 7. API Routes e Middleware
+
+### 7.1 Route Handlers
+
+Route Handlers substituem as API Routes do Pages Router:
+
+```tsx
+// app/api/posts/route.ts
+import { NextRequest, NextResponse } from 'next/server'
+import { db } from '@/lib/db'
+
+// GET /api/posts
+export async function GET(request: NextRequest) {
+  const { searchParams } = request.nextUrl
+  const page = parseInt(searchParams.get('page') ?? '1')
+  const limit = 20
+
+  const posts = await db.post.findMany({
+    skip: (page - 1) * limit,
+    take: limit,
+    orderBy: { createdAt: 'desc' },
+  })
+
+  return NextResponse.json(posts)
+}
+
+// POST /api/posts
+export async function POST(request: NextRequest) {
+  const body = await request.json()
+
+  const post = await db.post.create({ data: body })
+
+  return NextResponse.json(post, { status: 201 })
+}
+```
+
+```tsx
+// app/api/posts/[id]/route.ts — Rota dinâmica
+import { NextRequest, NextResponse } from 'next/server'
+
+export async function GET(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  const { id } = await params
+  const post = await db.post.findUnique({ where: { id } })
+
+  if (!post) {
+    return NextResponse.json({ error: 'Not found' }, { status: 404 })
+  }
+
+  return NextResponse.json(post)
+}
+
+export async function DELETE(
+  request: NextRequest,
+  { params }: { params: Promise<{ id: string }> }
+) {
+  const { id } = await params
+  await db.post.delete({ where: { id } })
+
+  return new NextResponse(null, { status: 204 })
+}
+```
+
+**Quando usar Route Handlers vs Server Actions:**
+
+```
+Server Actions:
+  - Mutations disparadas pelo usuário (forms, buttons)
+  - Integração nativa com revalidation e redirect
+  - Suporta progressive enhancement (funciona sem JS)
+
+Route Handlers:
+  - Webhooks de serviços externos
+  - APIs públicas consumidas por outros clients (mobile, terceiros)
+  - Streaming responses (SSE, file download)
+  - Quando precisa de controle fino sobre headers/status codes
+```
+
+### 7.2 Middleware
+
+Middleware roda no Edge Runtime antes de cada request, ideal para auth, redirects e headers:
+
+```tsx
+// middleware.ts (na raiz do projeto, fora de app/)
+import { NextResponse } from 'next/server'
+import type { NextRequest } from 'next/server'
+
+export function middleware(request: NextRequest) {
+  const { pathname } = request.nextUrl
+
+  // Exemplo 1: Redirect baseado em condição
+  if (pathname === '/old-page') {
+    return NextResponse.redirect(new URL('/new-page', request.url))
+  }
+
+  // Exemplo 2: Proteção de rotas
+  const token = request.cookies.get('session')?.value
+
+  if (pathname.startsWith('/dashboard') && !token) {
+    const loginUrl = new URL('/login', request.url)
+    loginUrl.searchParams.set('redirect', pathname)
+    return NextResponse.redirect(loginUrl)
+  }
+
+  // Exemplo 3: Adicionar headers
+  const response = NextResponse.next()
+  response.headers.set('x-request-id', crypto.randomUUID())
+
+  return response
+}
+
+// Matcher: define em quais rotas o middleware roda
+export const config = {
+  matcher: [
+    // Roda em tudo EXCETO arquivos estáticos e _next
+    '/((?!_next/static|_next/image|favicon.ico|.*\\.(?:svg|png|jpg|jpeg|gif|webp)$).*)',
+  ],
+}
+```
+
+### 7.3 Pattern: Auth com Middleware
+
+```tsx
+// middleware.ts — Pattern completo de autenticação
+import { NextResponse } from 'next/server'
+import type { NextRequest } from 'next/server'
+import { verifyToken } from '@/lib/auth-edge'  // Versão Edge-compatible do JWT verify
+
+const publicRoutes = ['/', '/login', '/register', '/about', '/pricing']
+
+export async function middleware(request: NextRequest) {
+  const { pathname } = request.nextUrl
+
+  // Rotas públicas: não precisa de auth
+  if (publicRoutes.includes(pathname)) {
+    return NextResponse.next()
+  }
+
+  // API routes: validação diferente (Bearer token)
+  if (pathname.startsWith('/api/')) {
+    const authHeader = request.headers.get('authorization')
+    if (!authHeader?.startsWith('Bearer ')) {
+      return NextResponse.json({ error: 'Unauthorized' }, { status: 401 })
+    }
+
+    const token = authHeader.split(' ')[1]
+    const payload = await verifyToken(token)
+
+    if (!payload) {
+      return NextResponse.json({ error: 'Invalid token' }, { status: 401 })
+    }
+
+    // Injeta user info nos headers para os Route Handlers
+    const response = NextResponse.next()
+    response.headers.set('x-user-id', payload.sub)
+    return response
+  }
+
+  // Rotas protegidas: cookie-based auth
+  const sessionCookie = request.cookies.get('session')?.value
+
+  if (!sessionCookie) {
+    return NextResponse.redirect(
+      new URL(`/login?redirect=${pathname}`, request.url)
+    )
+  }
+
+  const payload = await verifyToken(sessionCookie)
+
+  if (!payload) {
+    const response = NextResponse.redirect(new URL('/login', request.url))
+    response.cookies.delete('session')
+    return response
+  }
+
+  return NextResponse.next()
+}
+```
+
+**Limitacoes do Edge Runtime no Middleware:**
+
+```
+O Middleware roda no Edge Runtime (V8 isolate, NÃO Node.js).
+
+Não disponível:
+  ✗ fs, path, child_process (APIs do Node.js)
+  ✗ Conexões TCP diretas (banco de dados via driver nativo)
+  ✗ Bibliotecas que dependem de Node.js APIs
+
+Disponível:
+  ✓ fetch() (Web API)
+  ✓ crypto.subtle (Web Crypto)
+  ✓ TextEncoder/TextDecoder
+  ✓ Headers, Request, Response (Web APIs)
+  ✓ Bibliotecas edge-compatible (jose para JWT, por exemplo)
+
+Consequência: validação de JWT no middleware deve usar
+jose (Edge-compatible) em vez de jsonwebtoken (Node-only).
+```
+
+---
+
+## 8. Deploy e Performance
+
+### 8.1 Deploy na Vercel
+
+A Vercel é a plataforma criada pelo time do Next.js. O deploy é zero-config:
+
+```
+Vantagens:
+  - Automatic Edge Network (CDN global)
+  - Serverless Functions para SSR/API routes
+  - ISR nativo (Data Cache persistente entre deploys)
+  - Preview deployments por PR
+  - Analytics e Speed Insights integrados
+
+Considerações:
+  - Vendor lock-in para features avançadas (ISR persistente, Edge Middleware)
+  - Custos escalam com tráfego (serverless pricing)
+  - Limites de cold start em serverless functions
+```
+
+### 8.2 Self-Hosting com Docker
+
+```tsx
+// next.config.ts — output standalone para Docker
+import type { NextConfig } from 'next'
+
+const nextConfig: NextConfig = {
+  output: 'standalone',  // Gera um build auto-contido com dependências
+}
+
+export default nextConfig
+```
+
+```dockerfile
+# Dockerfile multi-stage para Next.js
+FROM node:20-alpine AS base
+
+# Instala dependências
+FROM base AS deps
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci --only=production
+
+# Build da aplicação
+FROM base AS builder
+WORKDIR /app
+COPY --from=deps /app/node_modules ./node_modules
+COPY . .
+RUN npm run build
+
+# Imagem final (mínima)
+FROM base AS runner
+WORKDIR /app
+
+ENV NODE_ENV=production
+ENV NEXT_TELEMETRY_DISABLED=1
+
+RUN addgroup --system --gid 1001 nodejs
+RUN adduser --system --uid 1001 nextjs
+
+# Copia apenas o necessário do standalone output
+COPY --from=builder /app/public ./public
+COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
+COPY --from=builder --chown=nextjs:nodejs /app/.next/static ./.next/static
+
+USER nextjs
+
+EXPOSE 3000
+ENV PORT=3000
+ENV HOSTNAME="0.0.0.0"
+
+CMD ["node", "server.js"]
+```
+
+```
+Resultado do standalone output:
+  .next/standalone/
+  ├── server.js          # Servidor Node.js minimalista
+  ├── node_modules/      # Apenas dependências de produção (tree-shaken)
+  └── .next/             # Build output
+
+  Tamanho típico: ~50MB vs ~500MB+ com node_modules completo
+```
+
+### 8.3 Otimizacao de Imagens
+
+```tsx
+// O componente Image do Next.js otimiza automaticamente
+import Image from 'next/image'
+
+export function ProductImage({ src, alt }: { src: string; alt: string }) {
+  return (
+    <Image
+      src={src}
+      alt={alt}
+      width={800}
+      height={600}
+      // Otimizações automáticas:
+      // - Converte para WebP/AVIF
+      // - Gera srcset responsivo
+      // - Lazy loading por padrão
+      // - Previne CLS com width/height
+      placeholder="blur"          // Mostra blur enquanto carrega
+      blurDataURL="/placeholder.png"
+      sizes="(max-width: 768px) 100vw, 50vw"
+      priority={false}            // true para imagens above-the-fold (LCP)
+    />
+  )
+}
+```
+
+### 8.4 Bundle Analysis
+
+```bash
+# Instalar o analyzer
+npm install @next/bundle-analyzer
+
+# next.config.ts
+import type { NextConfig } from 'next'
+import withBundleAnalyzer from '@next/bundle-analyzer'
+
+const nextConfig: NextConfig = {
+  // ... config
+}
+
+export default withBundleAnalyzer({
+  enabled: process.env.ANALYZE === 'true',
+})(nextConfig)
+
+# Rodar análise
+ANALYZE=true npm run build
+# Abre um relatório visual com o tamanho de cada módulo
+```
+
+```
+Estratégias para reduzir bundle size:
+
+1. Server Components (padrão no App Router)
+   → Bibliotecas usadas só no servidor (marked, prisma) = zero client JS
+
+2. Dynamic imports para componentes pesados
+   import dynamic from 'next/dynamic'
+   const HeavyChart = dynamic(() => import('./chart'), {
+     loading: () => <ChartSkeleton />,
+     ssr: false,  // Se não precisa de SSR, nem roda no servidor
+   })
+
+3. Substituir bibliotecas pesadas
+   moment.js (300KB) → date-fns (tree-shakeable) ou Temporal API
+   lodash (70KB) → lodash-es (tree-shakeable) ou métodos nativos
+
+4. Barrel file problem
+   import { Button } from '@/components'  // Importa TUDO do barrel
+   import { Button } from '@/components/button'  // Importa só o necessário
+
+   Ou configure optimizePackageImports no next.config.ts:
+   experimental: {
+     optimizePackageImports: ['@/components', 'lucide-react'],
+   }
+```
+
+### 8.5 Core Web Vitals no Next.js
+
+```tsx
+// Monitoramento de Web Vitals
+// app/components/web-vitals.tsx
+'use client'
+
+import { useReportWebVitals } from 'next/web-vitals'
+
+export function WebVitals() {
+  useReportWebVitals((metric) => {
+    // Envia para analytics (ex: Vercel Analytics, DataDog, etc.)
+    console.log(metric)
+
+    // metric.name: 'LCP' | 'FID' | 'CLS' | 'INP' | 'TTFB' | 'FCP'
+    // metric.value: número (ms para timing, score para CLS)
+    // metric.rating: 'good' | 'needs-improvement' | 'poor'
+  })
+
+  return null
+}
+```
+
+```
+Checklist de performance no Next.js:
+
+LCP (Largest Contentful Paint):
+  □ Imagens hero com priority={true} no componente Image
+  □ Fonts com next/font (evita FOUT/FOIT)
+  □ Preload de dados críticos
+  □ Evitar client-side fetch para conteúdo above-the-fold (usar RSC)
+
+INP (Interaction to Next Paint):
+  □ Mover lógica pesada para Server Components
+  □ useTransition para updates não-urgentes
+  □ Dynamic import para componentes pesados
+  □ Evitar hydration mismatch (causa re-renders completos)
+
+CLS (Cumulative Layout Shift):
+  □ width + height em todas as imagens
+  □ Skeleton loaders com dimensões fixas
+  □ Evitar inject de conteúdo acima do fold após load
+  □ Font display swap com tamanhos consistentes (next/font)
+
+TTFB (Time to First Byte):
+  □ ISR/SSG para rotas que podem ser estáticas
+  □ Streaming com Suspense para rotas dinâmicas
+  □ Edge Runtime para middleware leve
+  □ CDN na frente (Vercel, Cloudflare, etc.)
+```
+
+### 8.6 Configuracoes Avancadas do next.config.ts
+
+```tsx
+import type { NextConfig } from 'next'
+
+const nextConfig: NextConfig = {
+  // Output mode
+  output: 'standalone',               // Para Docker/self-hosting
+
+  // Imagens de domínios externos
+  images: {
+    remotePatterns: [
+      {
+        protocol: 'https',
+        hostname: '**.example.com',    // Wildcard para subdomínios
+      },
+    ],
+  },
+
+  // Headers customizados
+  async headers() {
+    return [
+      {
+        source: '/api/:path*',
+        headers: [
+          { key: 'Access-Control-Allow-Origin', value: 'https://meusite.com' },
+          { key: 'Access-Control-Allow-Methods', value: 'GET, POST, OPTIONS' },
+        ],
+      },
+    ]
+  },
+
+  // Redirects (processados antes de rotas)
+  async redirects() {
+    return [
+      {
+        source: '/blog/:slug',
+        destination: '/posts/:slug',
+        permanent: true,               // 308 (SEO: transfere ranking)
+      },
+    ]
+  },
+
+  // Rewrites (proxy transparente)
+  async rewrites() {
+    return [
+      {
+        source: '/api/v1/:path*',
+        destination: 'https://api-legacy.example.com/:path*',
+      },
+    ]
+  },
+
+  // Otimização de imports (tree-shaking em barrel files)
+  experimental: {
+    optimizePackageImports: ['lucide-react', '@headlessui/react'],
+  },
+}
+
+export default nextConfig
+```
+
+---
+
+## Mapa Mental: Decisoes Arquiteturais
+
+```
+Preciso de SEO?
+├── Não → SPA (Vite + React) pode ser suficiente
+└── Sim → Next.js
+        │
+        Conteúdo muda com frequência?
+        ├── Não (ou raramente) → SSG + ISR
+        │     Exemplo: blog, docs, e-commerce catalog
+        │
+        ├── A cada request → SSR
+        │     Exemplo: dashboard personalizado, feed social
+        │
+        └── Parte estática + parte dinâmica → PPR
+              Exemplo: página de produto (info estática + reviews dinâmicas)
+
+Preciso de API?
+├── Mutations simples (CRUD) → Server Actions
+├── API pública / webhooks → Route Handlers
+└── API complexa com muitos consumers → Backend separado (NestJS, Go, etc.)
+
+Onde deployar?
+├── Mínimo esforço → Vercel (zero-config, ISR nativo)
+├── Controle total → Docker + standalone output
+└── Edge performance → Cloudflare Workers (com adapter)
+```
+
+---
+
+## Erros Comuns e Como Evitar
+
+```
+1. "Hydration mismatch" — HTML do servidor ≠ HTML do client
+   Causa: usar Date.now(), Math.random(), ou window em render
+   Fix: useEffect para valores client-only, ou suppressHydrationWarning
+
+2. "Cannot use useState in a Server Component"
+   Causa: tentou usar hooks em componente sem 'use client'
+   Fix: extrair a parte interativa para um Client Component separado
+
+3. Cache servindo dados stale e você não sabe por quê
+   Causa: Data Cache + Full Route Cache + Router Cache combinados
+   Fix: entender qual camada está cacheando e usar revalidate/no-store
+
+4. Server Action não atualiza a UI
+   Causa: esqueceu de chamar revalidatePath/revalidateTag após mutação
+   Fix: sempre revalidar o cache relevante no final da action
+
+5. Middleware pesado aumentando latência
+   Causa: operações complexas no Edge Runtime (ex: consultas a banco)
+   Fix: middleware deve ser leve — validar JWT, redirect, headers apenas
+
+6. Bundle size não diminuiu com App Router
+   Causa: 'use client' no topo de componentes que poderiam ser Server
+   Fix: empurrar 'use client' para as folhas da árvore de componentes
+
+7. "Dynamic server usage" em rota que deveria ser estática
+   Causa: cookies(), headers() ou searchParams usados na rota
+   Fix: mover a lógica dinâmica para dentro de Suspense (PPR) ou aceitar SSR
+```

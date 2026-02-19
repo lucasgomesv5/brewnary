@@ -1,0 +1,79 @@
+---
+title: "Clean Code"
+author: "Robert C. Martin (Uncle Bob)"
+description: "Escreva codigo que outros humanos conseguem entender"
+category: "Codigo"
+priority: "essential"
+order: 2
+coverColor: "#10B981"
+---
+
+## Por que ler
+
+Codigo e lido 10x mais que escrito. Clean Code ensina a escrever codigo que OUTROS HUMANOS (incluindo voce no futuro) conseguem entender. E o livro mais citado em entrevistas quando perguntam "que livros de programacao voce recomenda?"
+
+## Conceitos-chave do livro
+
+**Nomes Significativos:**
+```javascript
+// ❌ O que é d? E o que 86400 significa?
+const d = Date.now() - 86400000;
+
+// ✅ Autoexplicativo. Não precisa de comentário.
+const ONE_DAY_MS = 24 * 60 * 60 * 1000;
+const oneDayAgo = Date.now() - ONE_DAY_MS;
+```
+
+**Funcoes Pequenas e com Uma Responsabilidade:**
+```javascript
+// ❌ Faz validação, formatação, salvamento e notificação
+function processUser(data) {
+  if (!data.email || !data.name) throw new Error('Invalid');
+  data.email = data.email.toLowerCase().trim();
+  data.name = data.name.trim();
+  const user = await db.save(data);
+  await sendEmail(user.email, 'Welcome!');
+  await logActivity('user_created', user.id);
+  return user;
+}
+
+// ✅ Cada função faz UMA coisa
+function validateUser(data) { /* ... */ }
+function normalizeUser(data) { /* ... */ }
+function createUser(data) { /* ... */ }
+function notifyNewUser(user) { /* ... */ }
+```
+
+**Comentarios -- O bom e o ruim:**
+```javascript
+// ❌ Comentário que repete o código (inútil)
+i++; // Incrementa i
+
+// ❌ Comentário que compensa código ruim
+// Verifica se o funcionário tem direito a todos os benefícios
+if ((employee.flags & HOURLY_FLAG) && (employee.age > 65)) { }
+
+// ✅ Renomeia para não precisar de comentário
+if (employee.isEligibleForFullBenefits()) { }
+
+// ✅ Comentários BONS: explicam o PORQUÊ, não o QUÃO
+// Usamos regex em vez de split porque o input pode conter
+// delimitadores escapados que split não reconhece
+const parts = input.match(COMPLEX_REGEX);
+```
+
+**O Principio do Escoteiro (Boy Scout Rule):**
+"Deixe o codigo mais limpo do que encontrou." Nao precisa refatorar tudo. Melhorar um nome de variavel, extrair uma funcao, ja conta.
+
+**Lei de Demeter (Tell, Don't Ask):**
+```javascript
+// ❌ "Train wreck" — cadeia de chamadas expõe estrutura interna
+const zip = order.getCustomer().getAddress().getZipCode();
+
+// ✅ Peça o que precisa diretamente
+const zip = order.getShippingZipCode();
+```
+
+### Aviso importante
+
+O livro usa Java nos exemplos e algumas opinioes do Uncle Bob sao controversas (como "nenhum comentario e bom" levado ao extremo). Leia com espirito critico -- absorva os principios, adapte ao seu contexto.

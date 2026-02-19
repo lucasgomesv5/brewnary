@@ -1,0 +1,319 @@
+---
+title: "Bundlers e Build Tools"
+description: "Webpack, Vite, esbuild, Rollup e Turbopack: module bundling, code splitting, tree shaking, hot module replacement e o ecossistema moderno de build"
+track: "frontend"
+order: 18
+section: "Qualidade e Performance"
+priority: "medium"
+tags: ["bundler", "webpack", "vite", "esbuild", "rollup", "code-splitting", "tree-shaking", "HMR"]
+prerequisites: ["typescript"]
+keyTakeaways:
+  - "Bundlers resolvem o grafo de dependências dos seus imports e produzem bundles otimizados para o browser — sem eles, cada import seria um request HTTP separado"
+  - "Vite usa esbuild para dev (pré-bundling de node_modules) e Rollup para build de produção — combinando velocidade de desenvolvimento com otimização de output"
+  - "Tree shaking elimina código morto via análise estática de ES Modules — export sem import correspondente é removido do bundle final"
+  - "Code splitting com dynamic import() divide o bundle em chunks carregados sob demanda — essencial para performance de SPAs grandes"
+  - "Hot Module Replacement (HMR) atualiza módulos no browser sem refresh completo, preservando o estado da aplicação durante desenvolvimento"
+  - "Source maps mapeiam código bundled/minificado de volta ao código original — essenciais para debugging em produção e desenvolvimento"
+---
+
+# Bundlers e Build Tools
+
+Quando você escreve `import React from 'react'`, o browser não sabe o que fazer com isso. Browsers entendem `<script src="...">` com URLs, não imports de node_modules. Bundlers são as ferramentas que transformam seu código modular (com imports, TypeScript, JSX, CSS Modules) em assets otimizados que o browser pode executar. Entender como funcionam é a diferença entre configurar seu build com confiança e copiar configs do Stack Overflow sem saber por quê.
+
+---
+
+## 1. Por Que Bundlers Existem
+
+### 1.1 O Problema
+
+```javascript
+// Sem bundler, cada import seria um request HTTP separado:
+// main.js → importa react (1 request)
+//         → importa react-dom (1 request)
+//         → importa lodash (1 request)
+//         → importa ./components/Header (1 request)
+//         → importa ./components/Footer (1 request)
+//         → ... centenas de módulos
+// = centenas de requests HTTP sequenciais = aplicação lenta
+```
+
+### 1.2 O Que Um Bundler Faz
+
+1. **Resolve** o grafo de dependências (a partir de um entry point)
+2. **Transforma** cada módulo (TypeScript → JS, JSX → JS, Sass → CSS)
+3. **Concatena** módulos em poucos arquivos (bundles)
+4. **Otimiza** (minificação, tree shaking, code splitting)
+5. **Gera** assets finais (JS, CSS, HTML, source maps)
+
+```
+src/main.tsx ──→ [Bundler] ──→ dist/assets/main-a1b2c3.js (150KB)
+  ├── react           │         dist/assets/vendor-d4e5f6.js (45KB)
+  ├── react-dom       │         dist/assets/main-g7h8i9.css (12KB)
+  ├── ./App.tsx        │         dist/index.html
+  ├── ./styles.css     │         dist/assets/main-a1b2c3.js.map
+  └── ...             │
+```
+
+---
+
+## 2. Conceitos Fundamentais
+
+### 2.1 Entry Points e Output
+
+```javascript
+// webpack.config.js
+module.exports = {
+  entry: './src/main.tsx',           // Ponto de entrada
+  output: {
+    path: path.resolve(__dirname, 'dist'),
+    filename: '[name]-[contenthash].js', // Hash para cache busting
+  },
+};
+```
+
+O `contenthash` no filename garante que o browser invalida o cache quando o conteúdo muda, mas mantém cache quando o conteúdo é o mesmo.
+
+### 2.2 Loaders e Plugins (Webpack)
+
+**Loaders** transformam arquivos individuais:
+
+```javascript
+module: {
+  rules: [
+    { test: /\.tsx?$/, use: 'ts-loader' },      // TypeScript → JS
+    { test: /\.css$/,  use: ['style-loader', 'css-loader'] }, // CSS
+    { test: /\.svg$/,  use: '@svgr/webpack' },   // SVG → React component
+  ],
+},
+```
+
+**Plugins** operam no bundle inteiro:
+
+```javascript
+plugins: [
+  new HtmlWebpackPlugin({ template: './src/index.html' }),
+  new MiniCssExtractPlugin({ filename: '[name]-[contenthash].css' }),
+  new BundleAnalyzerPlugin(), // Visualiza tamanho do bundle
+],
+```
+
+### 2.3 Tree Shaking
+
+Tree shaking remove código exportado mas nunca importado. Funciona apenas com ES Modules (`import`/`export`), não com CommonJS (`require`):
+
+```javascript
+// utils.js
+export function used() { return 'Fico no bundle'; }
+export function unused() { return 'Sou removida'; } // Tree-shaken!
+
+// main.js
+import { used } from './utils'; // unused é eliminada do bundle
+```
+
+**Requisitos para tree shaking funcionar:**
+- ES Modules (não CommonJS)
+- `sideEffects: false` no package.json (ou lista de arquivos com side effects)
+- Modo production (tree shaking é desabilitado em dev)
+
+```json
+// package.json
+{
+  "sideEffects": false
+  // ou: "sideEffects": ["*.css", "./src/polyfills.js"]
+}
+```
+
+### 2.4 Code Splitting
+
+```javascript
+// Static import — incluído no bundle principal
+import Header from './components/Header';
+
+// Dynamic import — carregado sob demanda (chunk separado)
+const AdminPanel = lazy(() => import('./components/AdminPanel'));
+// Gera: admin-panel-x1y2z3.js (carregado apenas quando necessário)
+```
+
+```javascript
+// React com Suspense para code splitting por rota
+import { lazy, Suspense } from 'react';
+
+const Home = lazy(() => import('./pages/Home'));
+const Dashboard = lazy(() => import('./pages/Dashboard'));
+const Settings = lazy(() => import('./pages/Settings'));
+
+function App() {
+  return (
+    <Suspense fallback={<Loading />}>
+      <Routes>
+        <Route path="/" element={<Home />} />
+        <Route path="/dashboard" element={<Dashboard />} />
+        <Route path="/settings" element={<Settings />} />
+      </Routes>
+    </Suspense>
+  );
+}
+// Cada rota é um chunk separado — carregado apenas quando visitada
+```
+
+---
+
+## 3. Vite: O Bundler Moderno
+
+### 3.1 Por Que Vite É Rápido
+
+**Em desenvolvimento:** Vite NÃO faz bundle. Ele serve módulos ES nativos diretamente ao browser:
+
+```
+Browser pede: /src/main.tsx
+  → Vite transforma (TypeScript → JS) on-demand
+  → Serve como ES Module nativo
+  → Browser resolve imports via HTTP
+
+// node_modules são pré-bundled com esbuild (uma única vez)
+// Seu código é servido sem bundling — mudou 1 arquivo, atualiza 1 módulo
+```
+
+**Em produção:** Vite usa Rollup para gerar bundles otimizados com tree shaking, code splitting e minificação.
+
+### 3.2 Configuração Vite
+
+```typescript
+// vite.config.ts
+import { defineConfig } from 'vite';
+import react from '@vitejs/plugin-react';
+
+export default defineConfig({
+  plugins: [react()],
+  build: {
+    rollupOptions: {
+      output: {
+        // Separar vendor libraries em chunk próprio
+        manualChunks: {
+          vendor: ['react', 'react-dom'],
+        },
+      },
+    },
+    sourcemap: true, // Source maps para produção
+  },
+  server: {
+    port: 3000,
+    proxy: {
+      '/api': 'http://localhost:8080', // Proxy para backend local
+    },
+  },
+});
+```
+
+### 3.3 HMR (Hot Module Replacement)
+
+HMR atualiza módulos no browser sem refresh, preservando estado:
+
+```
+Você edita Button.tsx
+  → Vite detecta mudança (file watcher)
+  → Transforma apenas Button.tsx
+  → Envia update via WebSocket
+  → Browser substitui o módulo antigo pelo novo
+  → React re-renderiza apenas o componente afetado
+  → Estado do app preservado!
+```
+
+Sem HMR: edita → refresh completo → perde state → navega de volta.
+Com HMR: edita → componente atualiza → state intacto.
+
+---
+
+## 4. Comparação de Bundlers
+
+| Bundler | Linguagem | Dev Speed | Prod Output | Ecosystem |
+|---------|-----------|-----------|-------------|-----------|
+| **Webpack** | JavaScript | Lento | Excelente | Enorme (loaders, plugins) |
+| **Vite** | JS + esbuild | Muito rápido | Excelente (Rollup) | Crescendo rapidamente |
+| **esbuild** | Go | Extremamente rápido | Bom | Mínimo (low-level) |
+| **Rollup** | JavaScript | Médio | Excelente (tree shaking) | Bom (libraries) |
+| **Turbopack** | Rust | Muito rápido | Em desenvolvimento | Next.js |
+
+**Quando usar cada um:**
+- **Vite** — default para novos projetos (React, Vue, Svelte)
+- **Webpack** — projetos legados ou com necessidades muito específicas de customização
+- **Rollup** — build de libraries (output limpo, tree-shakeable)
+- **esbuild** — etapa de transformação rápida dentro de outras ferramentas
+- **Turbopack** — dentro do Next.js (não usado standalone)
+
+---
+
+## 5. Source Maps
+
+Source maps mapeiam código transformado (bundled, minificado) de volta ao código original:
+
+```javascript
+// Código original (src/utils.ts:15)
+function calculateTotal(items: CartItem[]): number {
+  return items.reduce((sum, item) => sum + item.price * item.qty, 0);
+}
+
+// Código em produção (main-a1b2c3.js)
+function r(e){return e.reduce((t,n)=>t+n.price*n.qty,0)}
+
+// Source map (main-a1b2c3.js.map) mapeia:
+// r → calculateTotal
+// main-a1b2c3.js:1:col42 → src/utils.ts:15:col3
+```
+
+```javascript
+// vite.config.ts
+build: {
+  sourcemap: true,        // Gera .map files separados
+  // sourcemap: 'hidden', // Gera .map mas não referencia no JS
+  // (upload para Sentry/Datadog, não expõe ao público)
+},
+```
+
+---
+
+## 6. Otimização de Bundle
+
+### 6.1 Analisando o Bundle
+
+```bash
+# Vite/Rollup
+npx vite-bundle-visualizer
+
+# Webpack
+npx webpack-bundle-analyzer stats.json
+```
+
+### 6.2 Checklist de Otimização
+
+```javascript
+// 1. Imports específicos (não importe a lib inteira)
+import { format } from 'date-fns';       // ✅ Tree-shakeable
+import _ from 'lodash';                    // ❌ 70KB+ inteiro
+import groupBy from 'lodash/groupBy';      // ✅ Só o que precisa
+
+// 2. Dynamic imports para código pesado
+const Chart = lazy(() => import('recharts')); // Carrega só quando necessário
+
+// 3. Externalize dependencies grandes em CDN
+// vite.config.ts
+build: {
+  rollupOptions: {
+    external: ['three'], // Three.js via CDN, não no bundle
+  },
+},
+
+// 4. Compression
+// Servidor deve servir com gzip ou brotli
+// Brotli é ~15-20% menor que gzip para JS/CSS
+```
+
+---
+
+## 7. Referências e Aprofundamento
+
+- **Vite Documentation** — guia oficial com configuração e plugins
+- **Webpack Documentation** — referência completa de loaders, plugins e otimização
+- **Rollup Documentation** — bundling para libraries
+- **"Module Bundlers Explained"** (Fireship) — overview visual dos conceitos
+- **web.dev: Code Splitting** — guia do Google sobre code splitting e lazy loading

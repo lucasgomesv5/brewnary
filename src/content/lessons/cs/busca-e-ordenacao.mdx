@@ -1,0 +1,725 @@
+---
+title: "Algoritmos de Busca e Ordenação"
+description: "Busca linear, busca binária, merge sort, quick sort, heap sort, algoritmos não-comparativos e análise formal de complexidade"
+track: "cs"
+order: 13
+section: "Algoritmos"
+priority: "high"
+tags: ["busca", "ordenação", "binary-search", "merge-sort", "quick-sort", "heap-sort", "timsort", "algoritmos"]
+prerequisites: ["arrays", "big-o-notation", "recursao-e-dp"]
+keyTakeaways:
+  - "Busca binária reduz 1 bilhão de elementos a no máximo 30 comparações (O(log n))"
+  - "Merge Sort é O(n log n) sempre e estável; Quick Sort é O(n log n) médio e in-place"
+  - "O lower bound de ordenação por comparação é Ω(n log n) — provado via árvore de decisão"
+  - "Array.prototype.sort() no V8 usa TimSort, um híbrido de Merge + Insertion Sort adaptativo"
+---
+
+# Algoritmos de Busca e Ordenação
+
+## 1. Busca Linear — O(n)
+
+A busca linear é o algoritmo mais elementar: percorre cada elemento sequencialmente até encontrar o alvo ou esgotar o array. Não exige pré-condição sobre a ordenação dos dados.
+
+```typescript
+function linearSearch<T>(arr: T[], target: T): number {
+  for (let i = 0; i < arr.length; i++) {
+    if (arr[i] === target) return i;
+  }
+  return -1;
+}
+```
+
+**Análise formal:** No pior caso (elemento ausente ou na última posição), executamos exatamente *n* comparações. No caso médio, assumindo distribuição uniforme de probabilidade para a posição do alvo, o número esperado de comparações é *(n + 1) / 2*. Portanto, a busca linear é **Θ(n)** no pior caso e **Θ(n)** no caso médio.
+
+A busca linear é a única opção quando os dados **não estão ordenados** e não há estrutura auxiliar (hash table, árvore, etc.). Para coleções pequenas (n < 64), a localidade de cache e a ausência de overhead de branching tornam a busca linear competitiva ou até superior à busca binária na prática.
+
+---
+
+## 2. Busca Binária — O(log n)
+
+### 2.1 Pré-requisito e Conceito
+
+A busca binária **exige que o array esteja ordenado**. A cada iteração, comparamos o alvo com o elemento do meio e descartamos metade do espaço de busca.
+
+### 2.2 Prova Formal de que Binary Search é O(log n)
+
+**Teorema:** A busca binária realiza no máximo ⌊log₂(n)⌋ + 1 comparações.
+
+**Prova por indução no tamanho do espaço de busca:**
+
+Seja *T(n)* o número máximo de comparações para um array de tamanho *n*.
+
+- **Base:** *T(1) = 1*. Com um elemento, fazemos uma comparação.
+- **Passo indutivo:** Para um array de tamanho *n > 1*, fazemos uma comparação com o elemento do meio. Independentemente do resultado, o subproblema restante tem tamanho no máximo *⌊n/2⌋*. Logo:
+
+  *T(n) = T(⌊n/2⌋) + 1*
+
+Resolvendo a recorrência por expansão:
+
+  *T(n) = T(⌊n/2⌋) + 1 = T(⌊n/4⌋) + 2 = ... = T(1) + ⌊log₂(n)⌋ = ⌊log₂(n)⌋ + 1*
+
+Portanto, *T(n) = O(log n)*. ∎
+
+**Implicação prática:** Com 1 bilhão de elementos, fazemos no máximo *⌊log₂(10⁹)⌋ + 1 = 30* comparações.
+
+### 2.3 Implementação Correta (Evitando Off-by-One Errors)
+
+O maior desafio da busca binária é acertar os limites. Existem dois estilos canônicos:
+
+```typescript
+// Estilo 1: [left, right] — intervalo fechado
+function binarySearch(arr: number[], target: number): number {
+  let left = 0;
+  let right = arr.length - 1; // right é inclusivo
+
+  while (left <= right) { // <= porque right é inclusivo
+    // Evita overflow de inteiros (relevante em C/C++/Java):
+    const mid = left + Math.floor((right - left) / 2);
+
+    if (arr[mid] === target) return mid;
+    if (arr[mid] < target) left = mid + 1;
+    else right = mid - 1;
+  }
+  return -1;
+}
+
+// Estilo 2: [left, right) — intervalo semi-aberto
+function binarySearchHalfOpen(arr: number[], target: number): number {
+  let left = 0;
+  let right = arr.length; // right é exclusivo
+
+  while (left < right) { // < porque right é exclusivo
+    const mid = left + Math.floor((right - left) / 2);
+
+    if (arr[mid] === target) return mid;
+    if (arr[mid] < target) left = mid + 1;
+    else right = mid; // NÃO mid - 1, porque right é exclusivo
+  }
+  return -1;
+}
+```
+
+**Nota sobre overflow:** A expressão `(left + right) / 2` pode causar overflow de inteiro em linguagens com inteiros de tamanho fixo (C, C++, Java). A forma segura é `left + (right - left) / 2`. Em JavaScript/TypeScript isso não é um problema porque `Number` é um float de 64 bits, mas é um hábito essencial.
+
+### 2.4 Variações: Lower Bound e Upper Bound
+
+Essas variações são fundamentais e aparecem em problemas como "encontre a primeira/última ocorrência" ou "encontre o ponto de inserção".
+
+```typescript
+// Lower bound: retorna o índice do PRIMEIRO elemento >= target
+// Equivalente a std::lower_bound em C++
+function lowerBound(arr: number[], target: number): number {
+  let left = 0;
+  let right = arr.length;
+
+  while (left < right) {
+    const mid = left + Math.floor((right - left) / 2);
+    if (arr[mid] < target) left = mid + 1;
+    else right = mid;
+  }
+  return left;
+}
+
+// Upper bound: retorna o índice do PRIMEIRO elemento > target
+// Equivalente a std::upper_bound em C++
+function upperBound(arr: number[], target: number): number {
+  let left = 0;
+  let right = arr.length;
+
+  while (left < right) {
+    const mid = left + Math.floor((right - left) / 2);
+    if (arr[mid] <= target) left = mid + 1;
+    else right = mid;
+  }
+  return left;
+}
+
+// Contar ocorrências de target em array ordenado: O(log n)
+function countOccurrences(arr: number[], target: number): number {
+  return upperBound(arr, target) - lowerBound(arr, target);
+}
+```
+
+### 2.5 Busca em Array Rotacionado
+
+Um array rotacionado é um array ordenado que sofreu uma rotação cíclica (e.g., `[4, 5, 6, 7, 0, 1, 2]`). A busca binária pode ser adaptada observando que **pelo menos uma das metades sempre está ordenada**.
+
+```typescript
+function searchRotatedArray(arr: number[], target: number): number {
+  let left = 0;
+  let right = arr.length - 1;
+
+  while (left <= right) {
+    const mid = left + Math.floor((right - left) / 2);
+
+    if (arr[mid] === target) return mid;
+
+    // Metade esquerda está ordenada
+    if (arr[left] <= arr[mid]) {
+      if (arr[left] <= target && target < arr[mid]) {
+        right = mid - 1; // target está na metade esquerda ordenada
+      } else {
+        left = mid + 1;
+      }
+    }
+    // Metade direita está ordenada
+    else {
+      if (arr[mid] < target && target <= arr[right]) {
+        left = mid + 1; // target está na metade direita ordenada
+      } else {
+        right = mid - 1;
+      }
+    }
+  }
+  return -1;
+}
+```
+
+**Complexidade:** Continua O(log n) — a cada passo descartamos metade do array. A invariante é que sempre conseguimos determinar qual metade está ordenada e se o target pode estar nela.
+
+---
+
+## 3. Lower Bound de Ordenação por Comparação — Ω(n log n)
+
+### 3.1 O Teorema
+
+**Teorema:** Qualquer algoritmo de ordenação baseado em comparações requer **Ω(n log n)** comparações no pior caso.
+
+### 3.2 Prova via Árvore de Decisão
+
+Qualquer algoritmo de ordenação por comparação pode ser modelado como uma **árvore de decisão binária**:
+
+- Cada nó interno representa uma comparação `a[i] ≤ a[j]?`
+- Cada folha representa uma permutação de saída
+- O caminho da raiz a uma folha é a sequência de comparações para uma entrada específica
+
+**Argumento:**
+
+1. Existem **n!** permutações possíveis de *n* elementos.
+2. Cada permutação deve corresponder a pelo menos uma folha (senão o algoritmo não consegue produzir aquela ordenação).
+3. Uma árvore binária de altura *h* tem no máximo **2ʰ** folhas.
+4. Portanto: **2ʰ ≥ n!**, o que implica **h ≥ log₂(n!)**.
+
+### 3.3 Aplicando a Aproximação de Stirling
+
+A fórmula de Stirling nos dá:
+
+*n! ≈ √(2πn) · (n/e)ⁿ*
+
+Tomando o logaritmo:
+
+*log₂(n!) = log₂(√(2πn)) + n·log₂(n/e)*
+
+*log₂(n!) = ½·log₂(2πn) + n·log₂(n) - n·log₂(e)*
+
+*log₂(n!) = n·log₂(n) - n·log₂(e) + O(log n)*
+
+*log₂(n!) ≈ n·log₂(n) - 1.443·n + O(log n)*
+
+Portanto:
+
+*h ≥ log₂(n!) = **Ω(n log n)***
+
+Isso prova que **nenhum algoritmo de ordenação por comparação pode ser assintoticamente mais rápido que O(n log n)**. Merge Sort e Heap Sort atingem esse bound, provando que o lower bound é **tight** (Θ(n log n)).
+
+**Corolário:** Algoritmos como Counting Sort, Radix Sort e Bucket Sort conseguem O(n) porque **não usam comparações** — eles exploram propriedades específicas das chaves (valores inteiros limitados, dígitos, etc.).
+
+---
+
+## 4. Insertion Sort — O(n²)
+
+### 4.1 Algoritmo
+
+Insertion Sort constrói o array ordenado um elemento por vez, inserindo cada novo elemento na posição correta dentro da porção já ordenada.
+
+```typescript
+function insertionSort(arr: number[]): number[] {
+  for (let i = 1; i < arr.length; i++) {
+    const key = arr[i];
+    let j = i - 1;
+
+    // Move os elementos maiores que key uma posição para frente
+    while (j >= 0 && arr[j] > key) {
+      arr[j + 1] = arr[j];
+      j--;
+    }
+    arr[j + 1] = key;
+  }
+  return arr;
+}
+```
+
+### 4.2 Análise de Complexidade
+
+- **Pior caso (array em ordem reversa):** Cada elemento *i* requer *i* comparações/trocas. Total: *1 + 2 + ... + (n-1) = n(n-1)/2 = **Θ(n²)***
+- **Melhor caso (array já ordenado):** Cada elemento requer 1 comparação e 0 trocas. Total: ***Θ(n)***
+- **Caso médio:** Cada elemento é inserido, em média, na metade da porção ordenada. Total: *n(n-1)/4 = **Θ(n²)***
+
+### 4.3 Por que Insertion Sort é Ótimo para Arrays Pequenos
+
+1. **Overhead mínimo:** Sem chamadas recursivas, sem alocação de memória auxiliar, sem cálculos de pivô.
+2. **Cache-friendly:** Acessa elementos sequencialmente na memória — excelente localidade espacial.
+3. **Adaptativo:** É **Θ(n + d)** onde *d* é o número de inversões. Para arrays quase-ordenados (poucas inversões), se aproxima de O(n).
+4. **Estável:** Mantém a ordem relativa de elementos iguais.
+
+Por essas razões, TimSort usa Insertion Sort para sub-arrays pequenos (tipicamente ≤ 32 ou 64 elementos), e Introsort (usado em `std::sort` do C++) faz o mesmo fallback.
+
+---
+
+## 5. Merge Sort — O(n log n)
+
+### 5.1 Algoritmo (Divide and Conquer)
+
+```typescript
+function mergeSort(arr: number[]): number[] {
+  if (arr.length <= 1) return arr;
+
+  const mid = Math.floor(arr.length / 2);
+  const left = mergeSort(arr.slice(0, mid));
+  const right = mergeSort(arr.slice(mid));
+
+  return merge(left, right);
+}
+
+function merge(left: number[], right: number[]): number[] {
+  const result: number[] = [];
+  let i = 0;
+  let j = 0;
+
+  while (i < left.length && j < right.length) {
+    if (left[i] <= right[j]) { // <= garante estabilidade
+      result.push(left[i++]);
+    } else {
+      result.push(right[j++]);
+    }
+  }
+
+  // Copia os elementos restantes
+  while (i < left.length) result.push(left[i++]);
+  while (j < right.length) result.push(right[j++]);
+
+  return result;
+}
+```
+
+### 5.2 Análise via Recorrência
+
+A recorrência do Merge Sort é:
+
+*T(n) = 2·T(n/2) + O(n)*
+
+**Resolução por expansão (telescoping):**
+
+*T(n) = 2·T(n/2) + cn*
+
+*= 2·[2·T(n/4) + c·n/2] + cn = 4·T(n/4) + 2cn*
+
+*= 4·[2·T(n/8) + c·n/4] + 2cn = 8·T(n/8) + 3cn*
+
+*= ...*
+
+*= 2ᵏ·T(n/2ᵏ) + k·cn*
+
+Quando *2ᵏ = n* (ou seja, *k = log₂(n)*):
+
+*T(n) = n·T(1) + cn·log₂(n) = **Θ(n log n)***
+
+Isso também pode ser obtido pelo **Teorema Mestre**: *T(n) = a·T(n/b) + O(nᵈ)* com *a = 2, b = 2, d = 1*. Como *a = bᵈ*, estamos no Caso 2: *T(n) = Θ(nᵈ · log n) = Θ(n log n)*.
+
+### 5.3 Propriedades
+
+- **Estabilidade:** Sim — o `<=` na comparação do merge garante que elementos iguais da metade esquerda vêm antes dos da direita, preservando a ordem original.
+- **In-place:** Não — requer O(n) de memória auxiliar para o merge.
+- **Melhor/pior/médio caso:** Todos são Θ(n log n). O Merge Sort é **insensível** à distribuição dos dados.
+
+### 5.4 External Merge Sort
+
+O Merge Sort é a base do **external sorting** (ordenação de dados que não cabem em memória RAM). O procedimento:
+
+1. Divide o arquivo em *chunks* que cabem em memória.
+2. Ordena cada chunk em memória (com qualquer algoritmo).
+3. Faz **merge k-way** dos chunks ordenados, lendo/escrevendo de/para disco.
+
+Isso é usado em sistemas como Hadoop MapReduce, em bancos de dados para `ORDER BY` em datasets grandes, e no comando `sort` do Unix quando o input excede a memória disponível.
+
+---
+
+## 6. Quick Sort — O(n log n) médio, O(n²) pior caso
+
+### 6.1 Particionamento de Lomuto
+
+A versão clássica usa o último elemento como pivô:
+
+```typescript
+function quickSortLomuto(arr: number[], lo = 0, hi = arr.length - 1): number[] {
+  if (lo < hi) {
+    const p = partitionLomuto(arr, lo, hi);
+    quickSortLomuto(arr, lo, p - 1);
+    quickSortLomuto(arr, p + 1, hi);
+  }
+  return arr;
+}
+
+function partitionLomuto(arr: number[], lo: number, hi: number): number {
+  const pivot = arr[hi];
+  let i = lo - 1;
+
+  for (let j = lo; j < hi; j++) {
+    if (arr[j] <= pivot) {
+      i++;
+      [arr[i], arr[j]] = [arr[j], arr[i]];
+    }
+  }
+  [arr[i + 1], arr[hi]] = [arr[hi], arr[i + 1]];
+  return i + 1;
+}
+```
+
+**Lomuto faz mais swaps que necessário** — em média, ~n/2 swaps por partição, porque o ponteiro *i* só avança quando encontra um elemento ≤ pivô.
+
+### 6.2 Particionamento de Hoare
+
+O esquema de Hoare usa dois ponteiros que se movem em direções opostas:
+
+```typescript
+function quickSortHoare(arr: number[], lo = 0, hi = arr.length - 1): number[] {
+  if (lo < hi) {
+    const p = partitionHoare(arr, lo, hi);
+    quickSortHoare(arr, lo, p);      // Nota: inclui p
+    quickSortHoare(arr, p + 1, hi);
+  }
+  return arr;
+}
+
+function partitionHoare(arr: number[], lo: number, hi: number): number {
+  const pivot = arr[lo + Math.floor((hi - lo) / 2)];
+  let i = lo - 1;
+  let j = hi + 1;
+
+  while (true) {
+    do { i++; } while (arr[i] < pivot);
+    do { j--; } while (arr[j] > pivot);
+
+    if (i >= j) return j;
+    [arr[i], arr[j]] = [arr[j], arr[i]];
+  }
+}
+```
+
+**Hoare faz ~n/6 swaps em média** (3x menos que Lomuto). Além disso, quando todos os elementos são iguais, Lomuto degrada para O(n²) enquanto Hoare particiona no meio.
+
+### 6.3 Randomized Quick Sort
+
+A escolha determinística do pivô permite construir inputs adversários. A solução é **aleatorizar** a escolha do pivô:
+
+```typescript
+function randomizedPartition(arr: number[], lo: number, hi: number): number {
+  const randomIndex = lo + Math.floor(Math.random() * (hi - lo + 1));
+  [arr[randomIndex], arr[hi]] = [arr[hi], arr[randomIndex]];
+  return partitionLomuto(arr, lo, hi);
+}
+```
+
+**Análise do caso médio randomizado:** O número esperado de comparações é *2n·Hₙ ≈ 2n·ln(n) ≈ 1.39·n·log₂(n)*. Isso é apenas ~39% mais comparações que o Merge Sort, mas com melhor localidade de cache e sem alocação de memória auxiliar.
+
+### 6.4 IntroSort — O Melhor dos Dois Mundos
+
+O Quick Sort tem pior caso O(n²), que é inaceitável em cenários adversariais (DoS em APIs de ordenação, por exemplo). A solução é o **Introsort** (Introspective Sort), usado em `std::sort` do C++:
+
+1. Começa com Quick Sort (Hoare).
+2. Se a profundidade de recursão exceder *2·⌊log₂(n)⌋*, troca para **Heap Sort** (garantindo O(n log n) no pior caso).
+3. Para sub-arrays ≤ 16 elementos, usa **Insertion Sort**.
+
+Resultado: **O(n log n) no pior caso, performance prática do Quick Sort.**
+
+---
+
+## 7. Heap Sort — O(n log n)
+
+### 7.1 Algoritmo
+
+O Heap Sort usa uma max-heap (árvore binária completa onde cada pai ≥ seus filhos) representada como array:
+
+```typescript
+function heapSort(arr: number[]): number[] {
+  const n = arr.length;
+
+  // Build max-heap (bottom-up): O(n)
+  for (let i = Math.floor(n / 2) - 1; i >= 0; i--) {
+    heapify(arr, n, i);
+  }
+
+  // Extract: move o max para o final e restaura a heap
+  for (let i = n - 1; i > 0; i--) {
+    [arr[0], arr[i]] = [arr[i], arr[0]]; // swap max com último
+    heapify(arr, i, 0); // restaura heap na porção reduzida
+  }
+
+  return arr;
+}
+
+function heapify(arr: number[], heapSize: number, rootIdx: number): void {
+  let largest = rootIdx;
+  const left = 2 * rootIdx + 1;
+  const right = 2 * rootIdx + 2;
+
+  if (left < heapSize && arr[left] > arr[largest]) largest = left;
+  if (right < heapSize && arr[right] > arr[largest]) largest = right;
+
+  if (largest !== rootIdx) {
+    [arr[rootIdx], arr[largest]] = [arr[largest], arr[rootIdx]];
+    heapify(arr, heapSize, largest);
+  }
+}
+```
+
+### 7.2 Análise
+
+- **Build-heap é O(n):** Apesar de parecer O(n log n) à primeira vista, a análise correta considera que a maioria dos nós está em níveis baixos. Somando: *Σ (n/2ʰ⁺¹)·O(h) para h = 0 até log n* = O(n·Σ h/2ʰ) = O(n) (a série converge para 2).
+- **Extract é O(n log n):** *n* extrações, cada uma com heapify de O(log n).
+- **Total: O(n log n)** em todos os casos.
+
+### 7.3 Propriedades
+
+- **In-place:** Sim — usa O(1) de memória auxiliar.
+- **Estável:** Não — o swap entre o root e o último elemento quebra a estabilidade.
+- **Cache locality:** Péssima — os acessos ao array saltam entre posições distantes (pai → filho: *i → 2i+1*), causando muitos cache misses. Na prática, isso torna o Heap Sort 2-5x mais lento que o Quick Sort, apesar de ambos serem O(n log n).
+
+O Heap Sort é usado como **fallback** no IntroSort justamente por ser O(n log n) garantido e in-place, mesmo que sua performance prática não seja a melhor.
+
+---
+
+## 8. Algoritmos Não-Comparativos — Quebrando o Lower Bound
+
+Esses algoritmos não usam comparações entre elementos, portanto o lower bound Ω(n log n) **não se aplica**.
+
+### 8.1 Counting Sort — O(n + k)
+
+Conta a frequência de cada valor e reconstrói o array. Funciona quando os valores são inteiros em um range limitado *[0, k)*.
+
+```typescript
+function countingSort(arr: number[], maxVal: number): number[] {
+  const count = new Array(maxVal + 1).fill(0);
+  const output = new Array(arr.length);
+
+  // Conta frequências
+  for (const val of arr) count[val]++;
+
+  // Acumula (prefix sum) — garante estabilidade
+  for (let i = 1; i <= maxVal; i++) count[i] += count[i - 1];
+
+  // Constrói output de trás para frente (estabilidade)
+  for (let i = arr.length - 1; i >= 0; i--) {
+    output[count[arr[i]] - 1] = arr[i];
+    count[arr[i]]--;
+  }
+
+  return output;
+}
+```
+
+**Complexidade:** O(n + k) tempo e espaço. Se *k = O(n)*, é linear. Se *k >> n*, o custo explode e não vale a pena.
+
+### 8.2 Radix Sort — O(d · (n + k))
+
+Ordena por cada dígito, do menos significativo para o mais significativo (LSD — Least Significant Digit), usando um algoritmo estável (tipicamente Counting Sort) como sub-rotina.
+
+```typescript
+function radixSort(arr: number[]): number[] {
+  if (arr.length === 0) return arr;
+
+  const max = Math.max(...arr);
+  let result = [...arr];
+
+  // Processa cada dígito (base 10)
+  for (let exp = 1; Math.floor(max / exp) > 0; exp *= 10) {
+    result = countingSortByDigit(result, exp);
+  }
+
+  return result;
+}
+
+function countingSortByDigit(arr: number[], exp: number): number[] {
+  const output = new Array(arr.length);
+  const count = new Array(10).fill(0);
+
+  for (const val of arr) {
+    const digit = Math.floor(val / exp) % 10;
+    count[digit]++;
+  }
+
+  for (let i = 1; i < 10; i++) count[i] += count[i - 1];
+
+  for (let i = arr.length - 1; i >= 0; i--) {
+    const digit = Math.floor(arr[i] / exp) % 10;
+    output[count[digit] - 1] = arr[i];
+    count[digit]--;
+  }
+
+  return output;
+}
+```
+
+**Complexidade:** O(d · (n + k)) onde *d* é o número de dígitos e *k* é a base. Para inteiros de 32 bits com base 256: *d = 4*, *k = 256*, portanto O(4 · (n + 256)) = **O(n)**. Na prática, Radix Sort é extremamente rápido para grandes volumes de inteiros.
+
+### 8.3 Bucket Sort — O(n) caso médio
+
+Distribui os elementos em *buckets* (baldes) baseados no valor, ordena cada bucket individualmente (com Insertion Sort, por exemplo), e concatena.
+
+```typescript
+function bucketSort(arr: number[], bucketCount: number = arr.length): number[] {
+  if (arr.length <= 1) return arr;
+
+  const min = Math.min(...arr);
+  const max = Math.max(...arr);
+  const range = max - min + 1;
+
+  const buckets: number[][] = Array.from({ length: bucketCount }, () => []);
+
+  // Distribui nos buckets
+  for (const val of arr) {
+    const idx = Math.min(
+      Math.floor(((val - min) / range) * bucketCount),
+      bucketCount - 1
+    );
+    buckets[idx].push(val);
+  }
+
+  // Ordena cada bucket (Insertion Sort para buckets pequenos)
+  const result: number[] = [];
+  for (const bucket of buckets) {
+    insertionSort(bucket);
+    result.push(...bucket);
+  }
+
+  return result;
+}
+```
+
+**Complexidade:** Se os elementos estão **uniformemente distribuídos**, cada bucket tem O(1) elementos em média, e o total é **O(n)**. No pior caso (todos no mesmo bucket), degrada para O(n²) se o sub-sort for Insertion Sort, ou O(n log n) se for Merge Sort.
+
+---
+
+## 9. TimSort — O Algoritmo da Vida Real
+
+### 9.1 Origem e Adoção
+
+TimSort foi projetado por Tim Peters em 2002 para a linguagem Python. Hoje é o algoritmo de ordenação padrão em:
+
+- **Python** (`list.sort()` e `sorted()`)
+- **Java** (`Arrays.sort()` para objetos, desde Java 7)
+- **V8/JavaScript** (`Array.prototype.sort()` desde 2019)
+- **Rust** (`slice::sort` — variante estável)
+- **Swift**, **Android**, entre outros
+
+### 9.2 Como Funciona
+
+TimSort é um **merge sort adaptativo** que explora a ordem pré-existente nos dados reais. Os dados do mundo real raramente são completamente aleatórios — frequentemente contêm "runs" (sequências já ordenadas).
+
+**Etapas principais:**
+
+1. **Identificação de runs:** Percorre o array identificando sequências que já estão ordenadas (ascendentes) ou estritamente decrescentes (invertidas para se tornarem ascendentes). Um run mínimo tem tamanho `minrun`, tipicamente entre 32 e 64, calculado para que o número de runs seja uma potência de 2 ou próximo.
+
+2. **Extensão com Insertion Sort:** Se um run natural é menor que `minrun`, ele é estendido usando **binary insertion sort** (Insertion Sort onde a posição de inserção é encontrada por busca binária) — O(n²) comparações mas com constante muito pequena para n ≤ 64.
+
+3. **Merge com regras inteligentes:** Os runs são colocados em uma pilha e merged seguindo invariantes que garantem balanceamento:
+   - Se a pilha tem runs A, B, C (do topo): *|A| > |B| + |C|* e *|B| > |C|*
+   - Quando uma invariante é violada, faz merge dos dois menores
+
+4. **Galloping mode:** Durante o merge de dois runs, se os elementos de um run dominam consistentemente (muitos elementos consecutivos vêm do mesmo lado), o TimSort entra em **modo galope** — usa busca binária exponencial para encontrar o ponto onde os runs se intercalam, pulando grandes blocos de uma vez.
+
+### 9.3 Por que TimSort é Superior na Prática
+
+```typescript
+// Demonstração: TimSort se beneficia de dados quase-ordenados
+// Em V8, Array.prototype.sort() usa TimSort internamente
+
+const n = 1_000_000;
+
+// Cenário 1: dados aleatórios — TimSort ≈ Merge Sort (ambos n log n)
+const random = Array.from({ length: n }, () => Math.random());
+console.time('random');
+random.sort((a, b) => a - b);
+console.timeEnd('random');
+
+// Cenário 2: dados quase-ordenados — TimSort ≈ O(n)
+// porque identifica os runs naturais e faz poucos merges
+const almostSorted = Array.from({ length: n }, (_, i) => i);
+// Perturba levemente
+for (let i = 0; i < 100; i++) {
+  const a = Math.floor(Math.random() * n);
+  const b = Math.floor(Math.random() * n);
+  [almostSorted[a], almostSorted[b]] = [almostSorted[b], almostSorted[a]];
+}
+console.time('almost sorted');
+almostSorted.sort((a, b) => a - b);
+console.timeEnd('almost sorted'); // Significativamente mais rápido
+```
+
+**Complexidade do TimSort:**
+- **Pior caso:** O(n log n)
+- **Melhor caso:** O(n) — quando o array já está ordenado (um único run)
+- **Espaço:** O(n) — buffer para o merge
+- **Estável:** Sim
+
+---
+
+## 10. `Array.prototype.sort()` no V8
+
+Até 2018, o V8 usava Quick Sort (Lomuto) para arrays grandes e Insertion Sort para arrays pequenos. Isso tinha dois problemas:
+
+1. **Não era estável** — a especificação ECMAScript 2019 passou a exigir estabilidade.
+2. **O(n²) no pior caso** — possibilitava DoS em código que chamava `.sort()` com input controlado por atacantes.
+
+Desde 2019, o V8 usa **TimSort**, resolvendo ambos os problemas. A implementação é feita em **Torque** (a linguagem interna do V8 para builtins) e não em C++, para permitir melhor integração com o pipeline de otimização.
+
+```typescript
+// O comparador deve ser consistente (transitividade e anti-simetria)
+// Se não for, o comportamento é indefinido
+
+// CORRETO:
+[3, 1, 2].sort((a, b) => a - b); // [1, 2, 3]
+
+// INCORRETO (retorna boolean, não number):
+[3, 1, 2].sort((a, b) => a > b); // Comportamento imprevisível
+
+// CORRETO para strings:
+['banana', 'abacaxi', 'cereja'].sort((a, b) => a.localeCompare(b));
+```
+
+---
+
+## 11. Comparação Prática — Tabela de Referência
+
+| Algoritmo | Melhor | Médio | Pior | Espaço | Estável | In-place |
+|---|---|---|---|---|---|---|
+| Insertion Sort | Θ(n) | Θ(n²) | Θ(n²) | O(1) | Sim | Sim |
+| Merge Sort | Θ(n log n) | Θ(n log n) | Θ(n log n) | O(n) | Sim | Não |
+| Quick Sort | Θ(n log n) | Θ(n log n) | Θ(n²) | O(log n)* | Não | Sim |
+| Heap Sort | Θ(n log n) | Θ(n log n) | Θ(n log n) | O(1) | Não | Sim |
+| TimSort | Θ(n) | Θ(n log n) | Θ(n log n) | O(n) | Sim | Não |
+| Counting Sort | Θ(n + k) | Θ(n + k) | Θ(n + k) | O(n + k) | Sim | Não |
+| Radix Sort | Θ(d(n+k)) | Θ(d(n+k)) | Θ(d(n+k)) | O(n + k) | Sim | Não |
+| Bucket Sort | Θ(n) | Θ(n) | Θ(n²) | O(n + k) | Sim** | Não |
+
+*\* O(log n) para a pilha de recursão.*
+*\*\* Depende do algoritmo usado nos sub-buckets.*
+
+### Critérios de Escolha
+
+**Estabilidade** — Necessária quando a ordem relativa de elementos com a mesma chave importa. Exemplo: ordenar uma planilha por "departamento" após já estar ordenada por "nome" — sem estabilidade, a ordem por nome dentro do mesmo departamento se perde.
+
+**In-place** — Relevante quando memória é restrita (sistemas embarcados, processamento de datasets que ocupam quase toda a RAM disponível).
+
+**Cache Locality** — Quick Sort e Insertion Sort acessam memória sequencialmente, maximizando hits no cache L1/L2. Merge Sort e especialmente Heap Sort fazem acessos mais dispersos. Na prática, isso pode representar uma diferença de 2-5x em performance real, mesmo para a mesma complexidade assintótica.
+
+**Adaptividade** — TimSort e Insertion Sort são adaptativos: performam melhor em dados parcialmente ordenados. Merge Sort, Heap Sort e Quick Sort clássico são insensíveis à ordem pré-existente.
+
+### Regra Prática para Escolha
+
+- **Uso geral:** Use o `.sort()` nativo da linguagem (TimSort na maioria dos runtimes modernos).
+- **Dados inteiros com range limitado:** Radix Sort ou Counting Sort.
+- **Memória extremamente limitada + pior caso garantido:** Heap Sort.
+- **Dados que não cabem em memória:** External Merge Sort.
+- **Performance máxima com pior caso garantido:** IntroSort (Quick Sort + Heap Sort + Insertion Sort).
+- **Sub-arrays pequenos (n ≤ 64):** Insertion Sort, sempre.

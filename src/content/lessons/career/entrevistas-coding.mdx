@@ -1,0 +1,642 @@
+---
+title: "Entrevistas Técnicas: Coding"
+description: "Preparação sistemática para coding interviews — framework UMPIRE, padrões de problemas, complexidade e timeline de 4-8 semanas"
+track: "career"
+order: 4
+section: "Entrevistas"
+priority: "high"
+tags: ["entrevistas", "coding", "algoritmos", "leetcode", "patterns"]
+prerequisites: []
+keyTakeaways:
+  - "Siga o framework UMPIRE: Understand, Match, Plan, Implement, Review, Evaluate — estrutura sua resposta e impressiona o entrevistador"
+  - "Os patterns mais comuns são Sliding Window, Two Pointers, Fast/Slow, HashMap, BFS/DFS, Binary Search e Dynamic Programming"
+  - "Pense em voz alta, diga a abordagem brute force primeiro, analise a complexidade e otimize antes de escrever código"
+---
+
+## A Realidade das Coding Interviews
+
+Coding interviews não medem se você é um bom engenheiro. Elas medem se você **preparou-se sistematicamente** para um formato específico de avaliação. Engenheiros experientes com 15 anos de experiência falham em coding interviews se não praticarem. Isso é normal e esperado — trate como uma habilidade separada que precisa ser treinada.
+
+```
+O que coding interviews realmente avaliam:
+┌─────────────────────────────────────────────────────────┐
+│ 1. Comunicação: você pensa em voz alta?                 │
+│ 2. Estruturação: você organiza antes de codar?          │
+│ 3. Conhecimento algorítmico: reconhece padrões?         │
+│ 4. Implementação: traduz ideia em código funcional?     │
+│ 5. Teste: valida a solução com exemplos e edge cases?   │
+│ 6. Análise: sabe avaliar complexidade de tempo/espaço?  │
+└─────────────────────────────────────────────────────────┘
+```
+
+---
+
+## O Framework UMPIRE
+
+### Understand (2-3 minutos)
+
+Antes de tocar no teclado, **entenda o problema completamente**.
+
+```
+Perguntas que você DEVE fazer:
+─────────────────────────────
+□ Qual é o input? (tipo, tamanho, range de valores)
+□ Qual é o output esperado? (tipo, formato)
+□ O input pode ser vazio? Null? Negativo?
+□ Há duplicatas? Como tratá-las?
+□ O input já está ordenado?
+□ Qual é o tamanho máximo do input? (define complexidade aceitável)
+□ Há restrições de memória?
+□ Posso modificar o input original?
+
+Exemplos de esclarecimentos que mudam a solução:
+  "O array está ordenado?" → Se sim, Two Pointers em vez de HashMap
+  "Pode haver duplicatas?" → Afeta a estrutura de dados escolhida
+  "O input cabe na memória?" → Se não, precisa de streaming/external sort
+  "Preciso do índice ou do valor?" → Muda o retorno e a estrutura
+```
+
+### Match (1-2 minutos)
+
+Reconheça o **padrão** do problema. A maioria dos problemas de entrevista cai em ~15 categorias.
+
+```
+Sinal no problema                    | Padrão provável
+-------------------------------------|---------------------------
+"Subarray/substring contígua"        | Sliding Window
+"Array ordenado, encontrar par"      | Two Pointers
+"Detectar ciclo em lista/grafo"      | Fast/Slow Pointers
+"Intervalos sobrepostos"             | Merge Intervals
+"Top K elementos"                    | Heap (Priority Queue)
+"Buscar em dados ordenados"          | Binary Search
+"Menor caminho, nível por nível"     | BFS
+"Todos os caminhos, permutações"     | DFS / Backtracking
+"Subproblemas sobrepostos"           | Dynamic Programming
+"Contagem rápida, lookup O(1)"       | HashMap / Set
+"Expressões, parênteses, aninhados"  | Stack
+"Strings com frequência de chars"    | HashMap + counting
+"Árvore binária, percursos"          | DFS (in/pre/post-order)
+"Grafo com pesos"                    | Dijkstra / Bellman-Ford
+"Prefixo comum, autocomplete"        | Trie
+```
+
+### Plan (2-3 minutos)
+
+Verbalize o algoritmo **antes** de implementar. Escreva pseudocódigo ou passos.
+
+```
+Exemplo de planejamento em voz alta:
+
+"Ok, preciso encontrar o maior subarray cuja soma é ≤ k.
+ O input não está ordenado e pode ter negativos.
+
+ Abordagem brute force: testar todos os subarrays O(n²).
+ Posso otimizar? O array pode ter negativos, então sliding window
+ pura não funciona. Vou usar prefix sums + binary search.
+
+ Plano:
+ 1. Calcular prefix sums
+ 2. Para cada posição j, buscar o menor i tal que
+    prefix[j] - prefix[i] ≤ k
+ 3. Usar binary search no array de prefix sums
+
+ Complexidade: O(n log n) tempo, O(n) espaço."
+```
+
+### Implement (15-20 minutos)
+
+Escreva código limpo, modular e com nomes descritivos.
+
+```typescript
+// BOM: nomes claros, estrutura legível
+function maxSubarraySum(nums: number[], k: number): number {
+  let windowStart = 0;
+  let windowSum = 0;
+  let maxSum = -Infinity;
+
+  for (let windowEnd = 0; windowEnd < nums.length; windowEnd++) {
+    windowSum += nums[windowEnd];
+
+    while (windowSum > k && windowStart <= windowEnd) {
+      windowSum -= nums[windowStart];
+      windowStart++;
+    }
+
+    maxSum = Math.max(maxSum, windowSum);
+  }
+
+  return maxSum === -Infinity ? 0 : maxSum;
+}
+
+// RUIM: variáveis crípticas, difícil de seguir
+function f(a: number[], k: number): number {
+  let i = 0, s = 0, m = -Infinity;
+  for (let j = 0; j < a.length; j++) {
+    s += a[j];
+    while (s > k && i <= j) { s -= a[i]; i++; }
+    m = Math.max(m, s);
+  }
+  return m === -Infinity ? 0 : m;
+}
+```
+
+### Review (2-3 minutos)
+
+Trace o código manualmente com um exemplo.
+
+```
+Input: nums = [2, 1, 5, 1, 3, 2], k = 7
+
+Passo a passo:
+  windowEnd=0: windowSum=2, maxSum=2
+  windowEnd=1: windowSum=3, maxSum=3
+  windowEnd=2: windowSum=8 > 7 → shrink: windowSum=6, maxSum=6
+  windowEnd=3: windowSum=7, maxSum=7
+  windowEnd=4: windowSum=10 > 7 → shrink: windowSum=9 > 7 → shrink:
+               windowSum=4, maxSum=7
+  windowEnd=5: windowSum=6, maxSum=7
+
+Output: 7 ✓
+```
+
+### Evaluate (1-2 minutos)
+
+Analise complexidade e discuta trade-offs.
+
+```
+Tempo:  O(n) — cada elemento é adicionado e removido do window no máximo 1 vez
+Espaço: O(1) — apenas variáveis escalares
+
+Trade-offs:
+- Esta solução assume que todos os números são não-negativos
+- Para negativos, precisaríamos de prefix sums → O(n log n)
+- Poderia usar deque para manter índices → O(n) com negativos
+```
+
+---
+
+## Padrões Detalhados com Implementação
+
+### 1. Sliding Window (Janela Deslizante)
+
+```typescript
+// Problema: Menor substring contendo todas as letras de um target
+// Exemplo: s = "ADOBECODEBANC", t = "ABC" → "BANC"
+
+function minWindow(s: string, t: string): string {
+  const need = new Map<string, number>();
+  for (const char of t) {
+    need.set(char, (need.get(char) ?? 0) + 1);
+  }
+
+  let have = 0;
+  const required = need.size;
+  const window = new Map<string, number>();
+
+  let result = "";
+  let resultLen = Infinity;
+  let left = 0;
+
+  for (let right = 0; right < s.length; right++) {
+    const char = s[right];
+    window.set(char, (window.get(char) ?? 0) + 1);
+
+    if (need.has(char) && window.get(char) === need.get(char)) {
+      have++;
+    }
+
+    while (have === required) {
+      // Atualiza resultado se janela menor
+      if (right - left + 1 < resultLen) {
+        result = s.slice(left, right + 1);
+        resultLen = right - left + 1;
+      }
+
+      // Contrai a janela pela esquerda
+      const leftChar = s[left];
+      window.set(leftChar, window.get(leftChar)! - 1);
+      if (need.has(leftChar) && window.get(leftChar)! < need.get(leftChar)!) {
+        have--;
+      }
+      left++;
+    }
+  }
+
+  return result;
+}
+// Tempo: O(|s| + |t|), Espaço: O(|s| + |t|)
+```
+
+### 2. Two Pointers (Dois Ponteiros)
+
+```typescript
+// Problema: Three Sum — encontrar tripletas que somam zero
+// Exemplo: [-1, 0, 1, 2, -1, -4] → [[-1, -1, 2], [-1, 0, 1]]
+
+function threeSum(nums: number[]): number[][] {
+  nums.sort((a, b) => a - b); // Ordenar é pré-condição
+  const result: number[][] = [];
+
+  for (let i = 0; i < nums.length - 2; i++) {
+    // Pular duplicatas do primeiro elemento
+    if (i > 0 && nums[i] === nums[i - 1]) continue;
+
+    let left = i + 1;
+    let right = nums.length - 1;
+
+    while (left < right) {
+      const sum = nums[i] + nums[left] + nums[right];
+
+      if (sum === 0) {
+        result.push([nums[i], nums[left], nums[right]]);
+        // Pular duplicatas
+        while (left < right && nums[left] === nums[left + 1]) left++;
+        while (left < right && nums[right] === nums[right - 1]) right--;
+        left++;
+        right--;
+      } else if (sum < 0) {
+        left++;   // Precisa de soma maior
+      } else {
+        right--;  // Precisa de soma menor
+      }
+    }
+  }
+
+  return result;
+}
+// Tempo: O(n²), Espaço: O(1) excluindo output (sort in-place)
+```
+
+### 3. Fast/Slow Pointers (Floyd's Algorithm)
+
+```typescript
+// Problema: Detectar ciclo em linked list e encontrar início do ciclo
+
+interface ListNode {
+  val: number;
+  next: ListNode | null;
+}
+
+function detectCycle(head: ListNode | null): ListNode | null {
+  if (!head || !head.next) return null;
+
+  // Fase 1: Detectar se há ciclo
+  let slow: ListNode | null = head;
+  let fast: ListNode | null = head;
+
+  while (fast && fast.next) {
+    slow = slow!.next;
+    fast = fast.next.next;
+    if (slow === fast) break; // Ciclo detectado
+  }
+
+  // Se não há ciclo
+  if (!fast || !fast.next) return null;
+
+  // Fase 2: Encontrar o início do ciclo
+  // Propriedade matemática: distância do head ao início do ciclo
+  // é igual à distância do ponto de encontro ao início do ciclo
+  slow = head;
+  while (slow !== fast) {
+    slow = slow!.next;
+    fast = fast!.next;
+  }
+
+  return slow; // Início do ciclo
+}
+// Tempo: O(n), Espaço: O(1)
+```
+
+### 4. Merge Intervals
+
+```typescript
+// Problema: Dado um array de intervalos, merge os que se sobrepõem
+// Exemplo: [[1,3],[2,6],[8,10],[15,18]] → [[1,6],[8,10],[15,18]]
+
+function merge(intervals: number[][]): number[][] {
+  if (intervals.length <= 1) return intervals;
+
+  // Ordenar por início do intervalo
+  intervals.sort((a, b) => a[0] - b[0]);
+
+  const merged: number[][] = [intervals[0]];
+
+  for (let i = 1; i < intervals.length; i++) {
+    const last = merged[merged.length - 1];
+    const current = intervals[i];
+
+    if (current[0] <= last[1]) {
+      // Sobrepõe → merge (expandir o fim)
+      last[1] = Math.max(last[1], current[1]);
+    } else {
+      // Não sobrepõe → adicionar novo
+      merged.push(current);
+    }
+  }
+
+  return merged;
+}
+// Tempo: O(n log n) pelo sort, Espaço: O(n)
+```
+
+### 5. Top K Elements (Heap)
+
+```typescript
+// Problema: K elementos mais frequentes em um array
+// Exemplo: [1,1,1,2,2,3], k=2 → [1,2]
+
+function topKFrequent(nums: number[], k: number): number[] {
+  // Contar frequências
+  const freq = new Map<number, number>();
+  for (const num of nums) {
+    freq.set(num, (freq.get(num) ?? 0) + 1);
+  }
+
+  // Bucket sort por frequência (mais eficiente que heap para este caso)
+  // Índice = frequência, valor = lista de números com essa frequência
+  const buckets: number[][] = Array.from({ length: nums.length + 1 }, () => []);
+
+  for (const [num, count] of freq) {
+    buckets[count].push(num);
+  }
+
+  // Coletar top K da direita para a esquerda (maior frequência primeiro)
+  const result: number[] = [];
+  for (let i = buckets.length - 1; i >= 0 && result.length < k; i--) {
+    for (const num of buckets[i]) {
+      result.push(num);
+      if (result.length === k) break;
+    }
+  }
+
+  return result;
+}
+// Tempo: O(n), Espaço: O(n)
+// Alternativa com MinHeap: O(n log k) tempo, O(n + k) espaço
+```
+
+### 6. Binary Search — Variações
+
+```typescript
+// Variação: Buscar a posição de inserção (lower bound)
+function searchInsert(nums: number[], target: number): number {
+  let left = 0;
+  let right = nums.length; // Note: right = length, não length - 1
+
+  while (left < right) {
+    const mid = left + Math.floor((right - left) / 2); // Evita overflow
+    if (nums[mid] < target) {
+      left = mid + 1;
+    } else {
+      right = mid;
+    }
+  }
+
+  return left;
+}
+
+// Variação: Buscar em array rotacionado
+// Exemplo: [4,5,6,7,0,1,2], target=0 → index 4
+function searchRotated(nums: number[], target: number): number {
+  let left = 0;
+  let right = nums.length - 1;
+
+  while (left <= right) {
+    const mid = left + Math.floor((right - left) / 2);
+
+    if (nums[mid] === target) return mid;
+
+    // Metade esquerda está ordenada
+    if (nums[left] <= nums[mid]) {
+      if (target >= nums[left] && target < nums[mid]) {
+        right = mid - 1;
+      } else {
+        left = mid + 1;
+      }
+    }
+    // Metade direita está ordenada
+    else {
+      if (target > nums[mid] && target <= nums[right]) {
+        left = mid + 1;
+      } else {
+        right = mid - 1;
+      }
+    }
+  }
+
+  return -1;
+}
+// Tempo: O(log n), Espaço: O(1)
+```
+
+### 7. Graph Traversals (BFS/DFS)
+
+```typescript
+// BFS: Menor caminho em grafo não-ponderado (nível por nível)
+function shortestPath(
+  graph: Map<string, string[]>,
+  start: string,
+  end: string
+): string[] | null {
+  const queue: [string, string[]][] = [[start, [start]]];
+  const visited = new Set<string>([start]);
+
+  while (queue.length > 0) {
+    const [node, path] = queue.shift()!;
+
+    if (node === end) return path;
+
+    for (const neighbor of graph.get(node) ?? []) {
+      if (!visited.has(neighbor)) {
+        visited.add(neighbor);
+        queue.push([neighbor, [...path, neighbor]]);
+      }
+    }
+  }
+
+  return null; // Caminho não encontrado
+}
+
+// DFS: Todas as permutações (backtracking)
+function permute(nums: number[]): number[][] {
+  const result: number[][] = [];
+
+  function backtrack(current: number[], remaining: Set<number>) {
+    if (current.length === nums.length) {
+      result.push([...current]);
+      return;
+    }
+
+    for (const num of remaining) {
+      current.push(num);
+      remaining.delete(num);
+      backtrack(current, remaining);
+      remaining.add(num);  // Backtrack
+      current.pop();       // Backtrack
+    }
+  }
+
+  backtrack([], new Set(nums));
+  return result;
+}
+// Tempo: O(n!), Espaço: O(n) para a call stack
+```
+
+### 8. Dynamic Programming
+
+```typescript
+// Padrão: Subsequência crescente mais longa (LIS)
+// Exemplo: [10,9,2,5,3,7,101,18] → 4 ([2,3,7,101])
+
+function lengthOfLIS(nums: number[]): number {
+  // dp[i] = comprimento da LIS terminando em nums[i]
+  const dp = new Array(nums.length).fill(1);
+
+  for (let i = 1; i < nums.length; i++) {
+    for (let j = 0; j < i; j++) {
+      if (nums[j] < nums[i]) {
+        dp[i] = Math.max(dp[i], dp[j] + 1);
+      }
+    }
+  }
+
+  return Math.max(...dp);
+}
+// Tempo: O(n²), Espaço: O(n)
+
+// Otimização com binary search: O(n log n)
+function lengthOfLISOptimized(nums: number[]): number {
+  const tails: number[] = []; // Menores tails possíveis para cada tamanho
+
+  for (const num of nums) {
+    let left = 0;
+    let right = tails.length;
+
+    while (left < right) {
+      const mid = left + Math.floor((right - left) / 2);
+      if (tails[mid] < num) left = mid + 1;
+      else right = mid;
+    }
+
+    tails[left] = num;
+  }
+
+  return tails.length;
+}
+// Tempo: O(n log n), Espaço: O(n)
+```
+
+---
+
+## Complexidade em Entrevistas: Guia Rápido
+
+```
+Tamanho do input    | Complexidade aceitável  | Tempo típico
+--------------------|------------------------|------------------
+n ≤ 10              | O(n!), O(2^n)          | Brute force ok
+n ≤ 20              | O(2^n), O(n * 2^n)     | Bitmask DP
+n ≤ 100             | O(n³)                  | Floyd-Warshall
+n ≤ 1.000           | O(n²)                  | DP quadrático
+n ≤ 100.000         | O(n log n)             | Sort + binary search
+n ≤ 1.000.000       | O(n)                   | HashMap, two pointers
+n ≤ 1.000.000.000   | O(log n), O(1)         | Binary search, math
+
+Dica: Se n = 10^5 e sua solução é O(n²), o entrevistador espera
+que você otimize. ~10^8 operações é o limite prático para 1 segundo.
+```
+
+---
+
+## Comunicação Durante a Entrevista
+
+```
+O QUE FAZER:
+  ✓ Pense em voz alta — o entrevistador quer ver seu raciocínio
+  ✓ Comece com brute force — mostra que você sabe resolver
+  ✓ Analise complexidade do brute force — mostra que sabe avaliar
+  ✓ Proponha otimização — mostra que reconhece patterns
+  ✓ Pergunte antes de assumir — mostra maturidade
+  ✓ Teste sua solução com exemplos — mostra rigor
+  ✓ Discuta edge cases proativamente — mostra experiência
+
+O QUE NÃO FAZER:
+  ✗ Ficar em silêncio por 5 minutos — o entrevistador não sabe se
+    você está pensando ou travado
+  ✗ Começar a codar imediatamente — mostra falta de planejamento
+  ✗ Implementar solução perfeita de cara — mostra que já viu o problema
+    (suspeito, e não demonstra processo de raciocínio)
+  ✗ Dizer "eu sei a resposta" — o entrevistador quer ver o PROCESSO
+  ✗ Ignorar hints do entrevistador — eles estão tentando ajudar
+```
+
+---
+
+## Timeline de Preparação (4-8 Semanas)
+
+### Semanas 1-2: Fundamentos
+
+```
+□ Revisar estruturas de dados: Array, LinkedList, Stack, Queue,
+  HashMap, HashSet, Heap, Tree, Graph, Trie
+□ Revisar algoritmos: Sorting, Binary Search, BFS, DFS
+□ Resolver 2-3 problemas Easy por dia no LeetCode
+□ Focar em entender PATTERNS, não memorizar soluções
+□ Praticar tracing manual (dry run) de cada solução
+```
+
+### Semanas 3-4: Patterns
+
+```
+□ Resolver 2-3 problemas Medium por dia
+□ Focar nos patterns listados acima (1 pattern por dia)
+□ Para cada pattern: resolver 3-5 problemas do mesmo tipo
+□ Começar a cronometrar (objetivo: 25-30 min para Medium)
+□ Praticar comunicação em voz alta (mesmo sozinho)
+```
+
+### Semanas 5-6: Intensificação
+
+```
+□ Misturar patterns — resolver problemas sem saber o tipo
+□ Resolver 1-2 problemas Hard por semana
+□ Fazer mock interviews (Pramp, interviewing.io, com amigo)
+□ Revisar problemas errados — entender POR QUE errou
+□ Manter um log de padrões encontrados em cada problema
+```
+
+### Semanas 7-8: Simulação
+
+```
+□ Simular entrevista completa (45 min, 1-2 problemas)
+□ Praticar com timer rigoroso
+□ Focar em comunicação e clareza, não apenas na solução
+□ Revisar company-specific problems (LeetCode tagged)
+□ Descansar 1-2 dias antes da entrevista real
+```
+
+### Plataformas Recomendadas
+
+```
+Plataforma         | Melhor para                  | Custo
+-------------------|------------------------------|------------------
+LeetCode           | Problemas por empresa/tag    | Free / Premium $35/mês
+NeetCode.io        | Roadmap estruturado (150)    | Free / Pro $99/ano
+AlgoExpert         | Explicações em vídeo         | $99/ano
+interviewing.io    | Mock interviews com eng.     | Free (seleção)
+Pramp              | Mock interviews peer-to-peer | Free
+HackerRank         | Problemas de empresas BR     | Free
+```
+
+---
+
+## Referências
+
+```
+- "Cracking the Coding Interview" — Gayle Laakmann McDowell
+- "Algorithm Design Manual" — Steven Skiena
+- "Grokking the Coding Interview" — Design Gurus (patterns)
+- NeetCode Roadmap: https://neetcode.io/roadmap
+- LeetCode Patterns: https://seanprashad.com/leetcode-patterns/
+- "Introduction to Algorithms" (CLRS) — referência formal
+- Blind 75: https://leetcode.com/discuss/general-discussion/460599
+```

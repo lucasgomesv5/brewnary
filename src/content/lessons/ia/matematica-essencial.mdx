@@ -1,0 +1,589 @@
+---
+title: "Matematica Essencial para IA"
+description: "Vetores, matrizes, derivadas, gradientes, probabilidade, teorema de Bayes e gradient descent -- a matematica que sustenta todo modelo de IA"
+track: "ia"
+order: 3
+section: "Fundamentos Matematicos"
+priority: "high"
+tags: ["matematica", "algebra-linear", "calculo", "probabilidade", "gradient-descent"]
+prerequisites: []
+keyTakeaways:
+  - "Algebra linear e a linguagem fundamental de ML: dados sao vetores, transformacoes sao matrizes e operacoes como dot product medem similaridade -- embeddings e attention usam isso diretamente"
+  - "O gradiente aponta na direcao de maior crescimento de uma funcao; gradient descent caminha na direcao OPOSTA para minimizar a funcao de perda, e o learning rate controla o tamanho do passo"
+  - "O teorema de Bayes e a base de inferencia probabilistica: P(H|E) = P(E|H)*P(H)/P(E), permitindo atualizar crencas com base em evidencias -- conceito central em classificadores e LLMs"
+---
+
+# Matematica Essencial para IA
+
+Nao e necessario ser matematico para trabalhar com IA, mas e necessario ter **intuicao solida** sobre os conceitos fundamentais. Esta licao cobre a matematica que aparece constantemente em papers, implementacoes e discussoes tecnicas.
+
+---
+
+## 1. Algebra Linear
+
+### Vetores
+
+Um **vetor** e uma lista ordenada de numeros. Em ML, vetores representam dados: uma imagem e um vetor de pixels, uma palavra e um vetor de embeddings, um usuario e um vetor de features.
+
+```
+Vetor em R^3 (3 dimensoes):
+  v = [3, 1, 4]
+
+Representacao geometrica (2D):
+  y
+  │     ● (3, 4)
+  │    ╱
+  │   ╱  v = [3, 4]
+  │  ╱   |v| = sqrt(3² + 4²) = 5
+  │ ╱
+  └──────────── x
+```
+
+**Operacoes fundamentais:**
+
+```python
+import numpy as np
+
+a = np.array([1, 2, 3])
+b = np.array([4, 5, 6])
+
+# Soma de vetores (elemento a elemento)
+print(a + b)          # [5, 7, 9]
+
+# Multiplicacao por escalar
+print(3 * a)          # [3, 6, 9]
+
+# Norma (magnitude/comprimento do vetor)
+print(np.linalg.norm(a))  # sqrt(1² + 2² + 3²) = 3.742
+
+# Normalizacao (vetor unitario, norma = 1)
+a_norm = a / np.linalg.norm(a)
+print(a_norm)         # [0.267, 0.535, 0.802]
+print(np.linalg.norm(a_norm))  # 1.0
+```
+
+### Dot Product (Produto Escalar)
+
+O dot product e a operacao mais importante em ML. Ele mede a **similaridade** entre dois vetores.
+
+```
+Dot product:  a · b = a1*b1 + a2*b2 + ... + an*bn
+
+Interpretacao geometrica:
+  a · b = |a| * |b| * cos(θ)
+
+  onde θ e o angulo entre os vetores.
+
+  Se a · b > 0  →  vetores apontam na mesma direcao (similares)
+  Se a · b = 0  →  vetores sao ortogonais (independentes)
+  Se a · b < 0  →  vetores apontam em direcoes opostas
+```
+
+```python
+a = np.array([1, 2, 3])
+b = np.array([4, 5, 6])
+
+# Dot product
+print(np.dot(a, b))   # 1*4 + 2*5 + 3*6 = 32
+
+# Similaridade de cosseno (dot product normalizado)
+cos_sim = np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
+print(cos_sim)         # 0.974 (muito similares)
+```
+
+**Por que isso importa em IA:**
+- **Embeddings**: a similaridade entre "rei" e "rainha" e calculada via dot product de seus vetores
+- **Attention em Transformers**: o score de atencao entre dois tokens e um dot product de suas representacoes (Query * Key)
+- **Classificacao linear**: `y = w · x + b` e um dot product entre pesos e entrada
+
+### Matrizes
+
+Uma **matriz** e uma tabela retangular de numeros. Em ML, matrizes representam datasets (linhas = amostras, colunas = features), pesos de redes neurais e transformacoes lineares.
+
+```
+Matriz 2x3 (2 linhas, 3 colunas):
+
+     ┌         ┐
+A =  │ 1  2  3 │
+     │ 4  5  6 │
+     └         ┘
+
+Dimensoes: A ∈ R^(2x3)
+```
+
+**Multiplicacao de matrizes:**
+
+A multiplicacao de matrizes e a operacao central de redes neurais. Uma camada de rede neural e essencialmente `Y = X * W + b` (multiplicacao de matrizes + bias).
+
+```
+Regra: (m x n) * (n x p) = (m x p)
+       As dimensoes internas devem coincidir!
+
+┌       ┐   ┌     ┐   ┌                   ┐
+│ 1  2  │   │ 5 6 │   │ 1*5+2*7  1*6+2*8  │   ┌       ┐
+│ 3  4  │ * │ 7 8 │ = │ 3*5+4*7  3*6+4*8  │ = │ 19 22 │
+└       ┘   └     ┘   └                   ┘   │ 43 50 │
+(2x2)        (2x2)                             └       ┘
+```
+
+```python
+X = np.array([[1, 2], [3, 4]])  # input: 2 amostras, 2 features
+W = np.array([[5, 6], [7, 8]])  # pesos: 2 features → 2 saidas
+
+Y = X @ W  # multiplicacao de matrizes (operador @)
+print(Y)
+# [[19, 22],
+#  [43, 50]]
+
+# Uma camada de rede neural:
+b = np.array([1, -1])  # bias
+output = X @ W + b
+print(output)
+# [[20, 21],
+#  [44, 49]]
+```
+
+### Transposicao
+
+Transpor uma matriz troca linhas por colunas. Notacao: `A^T`.
+
+```python
+A = np.array([[1, 2, 3],
+              [4, 5, 6]])  # shape (2, 3)
+
+print(A.T)
+# [[1, 4],
+#  [2, 5],
+#  [3, 6]]               # shape (3, 2)
+```
+
+A transposicao aparece constantemente em ML: na formula de regressao linear (`(X^T X)^(-1) X^T y`), no calculo de gradientes e na implementacao de attention.
+
+---
+
+## 2. Calculo (Derivadas e Gradientes)
+
+### Derivada
+
+A derivada mede a **taxa de variacao** de uma funcao. Em ML, derivadas dizem como o **erro** muda quando ajustamos um **peso** da rede neural.
+
+```
+Definicao formal:
+  f'(x) = lim(h→0) [f(x+h) - f(x)] / h
+
+Intuicao:
+  A derivada e a inclinacao da reta tangente ao grafico de f em x.
+
+  f(x)
+  │        ╱ ← inclinacao = f'(x)
+  │      ●╱
+  │     ╱
+  │    ╱
+  └────────── x
+```
+
+**Regras essenciais de derivacao:**
+
+```
+Funcao          Derivada            Exemplo
+─────────────────────────────────────────────────
+x^n             n * x^(n-1)         d/dx(x³) = 3x²
+e^x             e^x                 d/dx(e^x) = e^x
+ln(x)           1/x                 d/dx(ln(x)) = 1/x
+a*f(x)          a * f'(x)          d/dx(3x²) = 6x
+
+Regra da cadeia (ESSENCIAL para backpropagation):
+  d/dx f(g(x)) = f'(g(x)) * g'(x)
+
+Exemplo: d/dx (x² + 1)³ = 3(x² + 1)² * 2x
+```
+
+A **regra da cadeia** e o fundamento matematico do backpropagation. Quando uma rede neural tem muitas camadas, o gradiente do erro em relacao a um peso na primeira camada e calculado aplicando a regra da cadeia repetidamente por todas as camadas.
+
+### Derivada Parcial
+
+Quando uma funcao depende de **multiplas variaveis**, a derivada parcial mede a taxa de variacao em relacao a **uma** variavel, mantendo as outras fixas.
+
+```
+f(x, y) = x² + 3xy + y²
+
+∂f/∂x = 2x + 3y   (trata y como constante)
+∂f/∂y = 3x + 2y   (trata x como constante)
+```
+
+### Gradiente
+
+O **gradiente** e o vetor de todas as derivadas parciais. Ele aponta na **direcao de maior crescimento** da funcao.
+
+```
+f(x, y) = x² + 3xy + y²
+
+Gradiente: ∇f = [∂f/∂x, ∂f/∂y] = [2x + 3y, 3x + 2y]
+
+No ponto (1, 2):
+  ∇f(1, 2) = [2*1 + 3*2, 3*1 + 2*2] = [8, 7]
+
+O vetor [8, 7] aponta na direcao em que f CRESCE mais rapidamente.
+Para MINIMIZAR f, caminhamos na direcao OPOSTA: [-8, -7].
+```
+
+**Por que isso importa:** em ML, queremos minimizar a funcao de perda (loss). O gradiente nos diz exatamente em qual direcao ajustar os pesos para reduzir o erro.
+
+---
+
+## 3. Gradient Descent
+
+Gradient descent e o algoritmo de otimizacao mais importante em ML. Ele encontra o minimo de uma funcao iterativamente, dando "passos" na direcao oposta ao gradiente.
+
+### Algoritmo
+
+```
+Inicializar pesos θ aleatoriamente
+Repetir ate convergir:
+  1. Calcular loss L(θ) com os dados atuais
+  2. Calcular gradiente ∇L(θ)
+  3. Atualizar pesos: θ = θ - α * ∇L(θ)
+
+  onde α (alpha) e o learning rate
+```
+
+### Intuicao Visual
+
+```
+Loss
+  │╲
+  │ ╲
+  │  ╲         ╱
+  │   ╲  ●   ╱
+  │    ╲ ↓  ╱     ← Gradient descent caminha "morro abaixo"
+  │     ╲↓ ╱
+  │      ●╱
+  │      ↓
+  │      ●  ← minimo (loss mais baixa)
+  └──────────────── θ (peso)
+
+  Cada ● e uma iteracao.
+  O gradiente indica a inclinacao.
+  O passo e proporcional ao learning rate α.
+```
+
+### Implementacao em Python
+
+```python
+import numpy as np
+
+# Funcao de perda simples: L(w) = (w - 3)²
+# Minimo em w = 3
+def loss(w):
+    return (w - 3) ** 2
+
+def grad(w):
+    return 2 * (w - 3)
+
+# Gradient descent
+w = 10.0           # inicializacao aleatoria
+lr = 0.1            # learning rate
+historico = []
+
+for i in range(50):
+    g = grad(w)
+    w = w - lr * g  # atualizacao
+    historico.append((w, loss(w)))
+    if i % 10 == 0:
+        print(f"Iteracao {i:2d}: w = {w:.4f}, loss = {loss(w):.6f}")
+
+# Saida:
+# Iteracao  0: w = 8.6000, loss = 31.360000
+# Iteracao 10: w = 3.0687, loss = 0.004722
+# Iteracao 20: w = 3.0005, loss = 0.000000
+# Iteracao 30: w = 3.0000, loss = 0.000000
+# Iteracao 40: w = 3.0000, loss = 0.000000
+```
+
+### Learning Rate: o parametro mais critico
+
+```
+Learning rate MUITO ALTO:              Learning rate MUITO BAIXO:
+(diverge)                              (converge, mas lento)
+
+Loss                                   Loss
+  │  ●                                   │╲
+  │    ╲  ●                              │ ●
+  │      ╲  ╲  ●                         │  ●
+  │ DIVERGE! ╲  ╲                        │   ●
+  │            ●  ╲                      │    ●
+  └────────────────── θ                  │     ● ● ● ● ...muito lento
+                                         └────────────────── θ
+
+Learning rate BOM:
+(converge rapido)
+
+Loss
+  │╲
+  │ ●
+  │   ●
+  │      ●
+  │          ●  ← convergiu!
+  └────────────────── θ
+```
+
+### Variantes de Gradient Descent
+
+```
+┌───────────────────────────────────────────────────────────────┐
+│  VARIANTES DE GRADIENT DESCENT                                 │
+├───────────────────┬───────────────────────────────────────────┤
+│ Batch GD          │ Usa TODOS os dados para calcular o        │
+│                   │ gradiente a cada passo.                    │
+│                   │ Preciso, mas lento para datasets grandes.  │
+├───────────────────┼───────────────────────────────────────────┤
+│ Stochastic GD     │ Usa UMA amostra aleatoria por passo.      │
+│ (SGD)             │ Rapido, mas ruidoso. O ruido pode ajudar   │
+│                   │ a escapar de minimos locais.               │
+├───────────────────┼───────────────────────────────────────────┤
+│ Mini-batch GD     │ Usa um BATCH de amostras (tipicamente      │
+│                   │ 32-512). Equilibrio entre precisao e       │
+│                   │ velocidade. PADRAO na pratica.             │
+├───────────────────┼───────────────────────────────────────────┤
+│ Adam              │ SGD com learning rate adaptativo por       │
+│                   │ parametro + momentum. O otimizador PADRAO  │
+│                   │ para deep learning.                        │
+├───────────────────┼───────────────────────────────────────────┤
+│ AdamW             │ Adam com weight decay desacoplado.         │
+│                   │ Padrao para treinar Transformers/LLMs.     │
+└───────────────────┴───────────────────────────────────────────┘
+```
+
+### Adam: o otimizador padrao
+
+Adam (Adaptive Moment Estimation) combina duas ideias:
+
+1. **Momentum**: acumula gradientes passados para suavizar a trajetoria (como uma bola descendo a montanha que ganha velocidade)
+2. **Learning rate adaptativo**: cada parametro tem seu proprio learning rate, ajustado com base na magnitude dos gradientes passados
+
+```python
+# Pseudocodigo do Adam
+m = 0  # primeiro momento (media dos gradientes)
+v = 0  # segundo momento (media dos gradientes ao quadrado)
+t = 0
+
+para cada iteracao:
+    t += 1
+    g = gradiente(θ)
+    m = β1 * m + (1 - β1) * g          # momentum
+    v = β2 * v + (1 - β2) * g²         # velocidade adaptativa
+    m_hat = m / (1 - β1^t)             # correcao de bias
+    v_hat = v / (1 - β2^t)             # correcao de bias
+    θ = θ - α * m_hat / (sqrt(v_hat) + ε)
+
+# Hiperparametros padrao:
+# α = 0.001, β1 = 0.9, β2 = 0.999, ε = 1e-8
+```
+
+---
+
+## 4. Probabilidade
+
+### Conceitos Fundamentais
+
+```
+Probabilidade de um evento A:
+  P(A) ∈ [0, 1]
+  P(A) = 0  →  impossivel
+  P(A) = 1  →  certo
+
+Regras basicas:
+  P(nao A) = 1 - P(A)                    (complemento)
+  P(A ou B) = P(A) + P(B) - P(A e B)    (uniao)
+  P(A e B) = P(A) * P(B|A)              (intersecao)
+
+Independencia:
+  Se A e B sao independentes:
+  P(A e B) = P(A) * P(B)
+  P(B|A) = P(B)
+```
+
+### Probabilidade Condicional
+
+`P(A|B)` e a probabilidade de A **dado que** B ocorreu.
+
+```
+P(A|B) = P(A e B) / P(B)
+
+Exemplo:
+  Dado: 60% dos emails sao spam (S)
+        80% dos spams contem "gratis" (G)
+        10% dos nao-spams contem "gratis"
+
+  P(S) = 0.6
+  P(G|S) = 0.8        (spam com "gratis")
+  P(G|nao S) = 0.1    (nao-spam com "gratis")
+
+  Qual a probabilidade de um email com "gratis" ser spam?
+  → Isso e P(S|G) -- precisamos do Teorema de Bayes.
+```
+
+### Teorema de Bayes
+
+O Teorema de Bayes e a formula para **atualizar crencas com base em evidencias**. E fundamental em ML: classificadores bayesianos, inferencia em modelos probabilisticos e a propria logica de como LLMs geram texto.
+
+```
+             P(E|H) * P(H)
+P(H|E) = ─────────────────
+                P(E)
+
+Onde:
+  P(H|E) = probabilidade posterior (o que queremos)
+  P(E|H) = likelihood (probabilidade da evidencia dado H)
+  P(H)   = probabilidade prior (crenca antes da evidencia)
+  P(E)   = probabilidade marginal da evidencia
+```
+
+**Resolvendo o exemplo anterior:**
+
+```
+P(S|G) = P(G|S) * P(S) / P(G)
+
+P(G) = P(G|S)*P(S) + P(G|nao S)*P(nao S)
+     = 0.8 * 0.6 + 0.1 * 0.4
+     = 0.48 + 0.04
+     = 0.52
+
+P(S|G) = 0.8 * 0.6 / 0.52
+       = 0.48 / 0.52
+       = 0.923
+
+Conclusao: um email com "gratis" tem 92.3% de chance de ser spam.
+```
+
+```python
+# Implementacao
+def bayes(p_e_dado_h, p_h, p_e):
+    """Calcula P(H|E) usando Bayes."""
+    return (p_e_dado_h * p_h) / p_e
+
+# P(spam | contem "gratis")
+p_spam = 0.6
+p_gratis_dado_spam = 0.8
+p_gratis_dado_nao_spam = 0.1
+p_gratis = p_gratis_dado_spam * p_spam + p_gratis_dado_nao_spam * (1 - p_spam)
+
+resultado = bayes(p_gratis_dado_spam, p_spam, p_gratis)
+print(f"P(spam | 'gratis') = {resultado:.3f}")  # 0.923
+```
+
+### Distribuicoes de Probabilidade
+
+As distribuicoes mais relevantes para ML:
+
+```
+Normal (Gaussiana):
+  Curva em formato de sino. Definida por media (μ) e
+  desvio padrao (σ). Inicializacao de pesos em redes neurais
+  frequentemente usa distribuicao normal.
+
+Softmax (distribuicao categorica):
+  Converte um vetor de numeros reais em probabilidades
+  que somam 1. Usada na camada de saida de classificadores
+  e na geracao de tokens em LLMs.
+
+  softmax(z_i) = e^(z_i) / Σ(e^(z_j))
+```
+
+```python
+# Softmax: converte logits em probabilidades
+def softmax(z):
+    exp_z = np.exp(z - np.max(z))  # subtrair max para estabilidade numerica
+    return exp_z / exp_z.sum()
+
+logits = np.array([2.0, 1.0, 0.1])
+probs = softmax(logits)
+print(probs)       # [0.659, 0.242, 0.099]
+print(probs.sum()) # 1.0
+
+# Em LLMs, os logits sao os scores para cada token do vocabulario.
+# Softmax converte em probabilidades de cada token ser o proximo.
+```
+
+---
+
+## 5. Juntando Tudo: Regressao Linear com Gradient Descent
+
+Vamos implementar um modelo de ML completo do zero, usando todos os conceitos vistos.
+
+```python
+import numpy as np
+
+# Dados: prever preco de casa (y) a partir de area (X)
+np.random.seed(42)
+X = np.random.uniform(30, 200, size=(100, 1))  # area em m²
+y = 3000 * X + 50000 + np.random.normal(0, 20000, size=(100, 1))  # preco
+
+# Normalizar (essencial para gradient descent funcionar bem)
+X_mean, X_std = X.mean(), X.std()
+y_mean, y_std = y.mean(), y.std()
+X_norm = (X - X_mean) / X_std
+y_norm = (y - y_mean) / y_std
+
+# Adicionar coluna de 1s para o bias (intercept)
+X_norm = np.hstack([np.ones((100, 1)), X_norm])  # shape (100, 2)
+
+# Inicializar pesos
+w = np.random.randn(2, 1) * 0.01  # [bias, peso_area]
+
+# Hiperparametros
+lr = 0.01
+epochs = 1000
+
+# Treinamento com gradient descent
+for epoch in range(epochs):
+    # Forward pass: predicao
+    y_pred = X_norm @ w                      # (100, 1)
+
+    # Calcular loss (MSE)
+    error = y_pred - y_norm                  # (100, 1)
+    loss = (error ** 2).mean()
+
+    # Calcular gradiente: dL/dw = (2/n) * X^T * error
+    gradient = (2 / len(X_norm)) * X_norm.T @ error  # (2, 1)
+
+    # Atualizar pesos
+    w = w - lr * gradient
+
+    if epoch % 200 == 0:
+        print(f"Epoch {epoch:4d}: loss = {loss:.6f}")
+
+# Resultado:
+# Epoch    0: loss = 0.982341
+# Epoch  200: loss = 0.049823
+# Epoch  400: loss = 0.049205
+# Epoch  600: loss = 0.049204
+# Epoch  800: loss = 0.049204
+
+print(f"\nPesos aprendidos: bias = {w[0][0]:.4f}, peso = {w[1][0]:.4f}")
+# O peso aprendido deve corresponder a relacao linear nos dados.
+```
+
+---
+
+## 6. Resumo das Conexoes com IA
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│  CONCEITO MATEMATICO  →  APLICACAO EM IA                     │
+├─────────────────────────────────────────────────────────────┤
+│  Vetores              →  Representacao de dados (embeddings) │
+│  Dot product          →  Similaridade, attention scores      │
+│  Matrizes             →  Pesos da rede, transformacoes       │
+│  Multiplicacao matricial → Forward pass (camadas da rede)    │
+│  Derivada             →  Sensibilidade do erro a cada peso   │
+│  Regra da cadeia      →  Backpropagation                     │
+│  Gradiente            →  Direcao de atualizacao dos pesos    │
+│  Gradient descent     →  Algoritmo de treinamento            │
+│  Probabilidade        →  Saida de classificadores, softmax   │
+│  Teorema de Bayes     →  Classificadores, inferencia         │
+│  Softmax              →  Predicao de proximo token em LLMs   │
+└─────────────────────────────────────────────────────────────┘
+```
+
+Esses conceitos nao sao abstratos -- eles aparecem diretamente no codigo de qualquer framework de ML (PyTorch, TensorFlow, JAX). A diferenca entre usar uma API de ML como caixa-preta e entender o que esta acontecendo e exatamente este vocabulario matematico.

@@ -1,0 +1,28 @@
+---
+interface Props {
+  headings: Array<{ depth: number; slug: string; text: string }>;
+}
+
+const { headings } = Astro.props;
+const filtered = headings.filter((h) => h.depth >= 2 && h.depth <= 3);
+---
+
+{
+  filtered.length > 0 && (
+    <nav class="text-sm" aria-label="Table of contents">
+      <h4 class="mb-3 text-xs font-semibold tracking-wider text-[var(--color-text-muted)] uppercase">Nesta página</h4>
+      <ul class="space-y-1.5">
+        {filtered.map((heading) => (
+          <li style={heading.depth === 3 ? 'padding-left: 0.75rem;' : ''}>
+            <a
+              href={`#${heading.slug}`}
+              class="block truncate leading-snug text-[var(--color-text-muted)] transition-colors hover:text-[var(--color-text)]"
+            >
+              {heading.text}
+            </a>
+          </li>
+        ))}
+      </ul>
+    </nav>
+  )
+}

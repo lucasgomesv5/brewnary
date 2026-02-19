@@ -1,0 +1,962 @@
+---
+title: "Linguagem C — Entendendo a Máquina"
+description: "Fundamentos avançados de C: compilação, tipos, ponteiros, aritmética de memória, stack vs heap, structs, preprocessador e ferramentas de análise"
+track: "cs"
+order: 5
+section: "Fundamentos da Computação"
+priority: "high"
+tags: ["c", "ponteiros", "memória", "stack", "heap", "compilação", "structs", "preprocessador", "valgrind"]
+prerequisites: []
+keyTakeaways:
+  - "C é a linguagem-base da infraestrutura moderna: Linux kernel, CPython, V8, PostgreSQL, Redis e libuv são escritos em C/C++"
+  - "Ponteiros são a abstração fundamental — referências em JS/Python, smart pointers em Rust, tudo descende de ponteiros C"
+  - "Entender stack vs heap, padding de structs e aritmética de ponteiros transforma a forma como você raciocina sobre performance em qualquer linguagem"
+---
+
+# Linguagem C — Entendendo a Máquina
+
+> **Por que C em 2026?** Não é para substituir TypeScript no seu dia a dia. É para entender **a camada que sustenta tudo**. O kernel Linux (~30 milhões de linhas de C), o interpretador CPython, o engine V8 do Node.js, o PostgreSQL, o Redis, o SQLite, o nginx — tudo é C ou C++ no núcleo. Se você não entende C, você opera sobre abstrações que não compreende. Entender **por que** as coisas funcionam, não apenas **como** usá-las, é o que dá profundidade técnica real.
+
+---
+
+## Por Que Aprender C: A Linguagem-Base de Tudo
+
+C não é apenas "uma linguagem antiga". É **a interface de facto entre software e hardware**. Praticamente todo sistema operacional, runtime e banco de dados que você usa diariamente foi escrito em C ou C++:
+
+| Software | Linguagem Core | Por quê |
+|---|---|---|
+| Linux kernel | C | Acesso direto a hardware, zero overhead de runtime |
+| CPython | C | O interpretador Python é um programa C que parseia e executa bytecode |
+| Node.js (V8 + libuv) | C++ / C | V8 compila JS para machine code; libuv fornece async I/O via epoll/kqueue |
+| PostgreSQL | C | Performance crítica em B-tree traversal, WAL, buffer pool |
+| Redis | C | Single-threaded event loop, estruturas de dados in-memory otimizadas |
+| SQLite | C | ~150k linhas de C, uma das codebases mais testadas do mundo |
+| Git | C | Manipulação eficiente de DAGs, SHA-1 hashing, packfiles |
+
+Quando o Node.js lança um erro `ENOMEM` ou `SIGBUS`, esses são conceitos de C/POSIX. Quando o Python tem um `SegmentationFault` num C extension, é um bug de ponteiro. Quando você configura `--max-old-space-size` no V8, está controlando o heap — conceito que vem diretamente de C.
+
+---
+
+## Compilação: Do Código-Fonte ao Binário
+
+Em linguagens interpretadas (Python, JS), o código é lido e executado em tempo real por um runtime. Em C, o processo é **explícito e multi-estágio**:
+
+```
+  source.c
+     │
+     ▼
+┌─────────────┐
+│ Preprocessor │  →  Expande #include, #define, #ifdef
+│   (cpp)      │     Saída: translation unit (.i)
+└──────┬──────┘
+       ▼
+┌─────────────┐
+│  Compiler   │  →  Parseia C, gera assembly (x86, ARM, RISC-V)
+│   (cc1)     │     Saída: arquivo assembly (.s)
+└──────┬──────┘
+       ▼
+┌─────────────┐
+│  Assembler  │  →  Converte assembly em machine code
+│   (as)      │     Saída: object file (.o) — formato ELF no Linux
+└──────┬──────┘
+       ▼
+┌─────────────┐
+│   Linker    │  →  Combina object files + bibliotecas (libc, libm)
+│   (ld)      │     Resolve símbolos externos (printf → glibc)
+└──────┬──────┘     Saída: executável ELF (ou Mach-O no macOS)
+       ▼
+   a.out / programa
+```
+
+### Vendo cada estágio na prática
+
+```bash
+# Preprocessar apenas — expande macros e includes
+gcc -E programa.c -o programa.i
+# O arquivo .i terá milhares de linhas (todo o stdio.h expandido)
+
+# Compilar para assembly — ver o que o compilador gera
+gcc -S -O2 programa.c -o programa.s
+# Abra programa.s e veja instruções x86: mov, push, call, ret
+
+# Compilar para object file
+gcc -c programa.c -o programa.o
+# Inspecionar símbolos do object file:
+nm programa.o          # Lista símbolos (T = text/code, U = undefined/externo)
+objdump -d programa.o  # Disassembly — ver machine code + assembly
+
+# Linkar e gerar executável
+gcc programa.o -o programa
+# Inspecionar o executável ELF:
+readelf -h programa    # ELF header: arquitetura, entry point
+readelf -S programa    # Sections: .text (código), .data, .bss, .rodata
+```
+
+### O formato ELF (Executable and Linkable Format)
+
+Todo binário no Linux segue o formato ELF. As seções mais importantes:
+
+- **`.text`** — O código de máquina executável
+- **`.data`** — Variáveis globais/estáticas inicializadas
+- **`.bss`** — Variáveis globais/estáticas não inicializadas (zero-initialized no load)
+- **`.rodata`** — Constantes e string literals (`"hello"` vive aqui)
+- **`.symtab`** — Tabela de símbolos para debugging
+
+```bash
+# Ver o tamanho de cada seção
+size programa
+#    text    data     bss     dec     hex filename
+#    1234     256      16    1506     5e2 programa
+```
+
+---
+
+## Tipos de Dados: Tamanhos, Promoção e Undefined Behavior
+
+### Tamanhos não são fixos — dependem da arquitetura
+
+O padrão C **não define** tamanhos exatos. Define apenas garantias mínimas:
+
+```c
+#include <stdio.h>
+#include <stdint.h>  // Tipos de tamanho fixo (C99)
+#include <limits.h>  // INT_MAX, INT_MIN, etc.
+
+int main(void) {
+    // Tamanhos TÍPICOS em x86-64 (LP64 model):
+    printf("char:      %zu bytes\n", sizeof(char));       // 1 (sempre)
+    printf("short:     %zu bytes\n", sizeof(short));      // 2
+    printf("int:       %zu bytes\n", sizeof(int));        // 4
+    printf("long:      %zu bytes\n", sizeof(long));       // 8 em LP64, 4 em Windows LLP64!
+    printf("long long: %zu bytes\n", sizeof(long long));  // 8
+    printf("float:     %zu bytes\n", sizeof(float));      // 4 (IEEE 754 single)
+    printf("double:    %zu bytes\n", sizeof(double));     // 8 (IEEE 754 double)
+    printf("void*:     %zu bytes\n", sizeof(void *));     // 8 em 64-bit, 4 em 32-bit
+
+    // NUNCA assuma tamanhos! Use tipos de tamanho fixo quando precisar de garantia:
+    int32_t  a = 42;       // Exatamente 32 bits, SEMPRE
+    uint64_t b = 1ULL << 40; // Exatamente 64 bits, unsigned
+    size_t   c = sizeof(a);  // Tipo correto para tamanhos/índices
+
+    // Limites numéricos:
+    printf("INT_MAX:  %d\n", INT_MAX);   // 2147483647 (2^31 - 1)
+    printf("INT_MIN:  %d\n", INT_MIN);   // -2147483648
+
+    return 0;
+}
+```
+
+### Type promotion e conversões implícitas perigosas
+
+```c
+#include <stdio.h>
+
+int main(void) {
+    // Integer promotion: tipos menores que int são promovidos a int em expressões
+    char a = 100;
+    char b = 100;
+    // a * b = 10000, que NÃO cabe em char (max 127 signed)
+    // Mas a multiplicação acontece em int (promovido), então funciona:
+    int result = a * b;  // OK: 10000
+
+    // Conversão signed → unsigned: ARMADILHA CLÁSSICA
+    unsigned int x = 0;
+    int y = -1;
+    if (y < x) {
+        printf("y é menor\n");  // Você espera isso...
+    } else {
+        printf("y é MAIOR?!\n"); // ...mas ISSO é executado!
+        // y (-1) é convertido para unsigned: 4294967295 (UINT_MAX)
+    }
+
+    // Undefined Behavior (UB) — o compilador pode fazer QUALQUER coisa:
+    int overflow = INT_MAX + 1;  // UB! Signed overflow é indefinido em C
+    // O compilador pode otimizar assumindo que isso nunca acontece.
+    // GCC com -O2 pode remover branches inteiros baseado nessa suposição.
+
+    // Shift além do tamanho do tipo: UB
+    int shifted = 1 << 32;  // UB em int de 32 bits
+
+    return 0;
+}
+```
+
+> **Regra de ouro:** Compile SEMPRE com `-Wall -Wextra -Werror -Wsign-conversion`. O compilador é seu melhor revisor de código.
+
+---
+
+## Ponteiros: A Abstração Fundamental
+
+Um ponteiro é um valor inteiro que representa um endereço de memória. Em x86-64, ponteiros têm 8 bytes (64 bits → espaço de endereçamento de 2^48 na prática, por limitações de virtual address space).
+
+### Anatomia de um ponteiro
+
+```c
+#include <stdio.h>
+
+int main(void) {
+    int valor = 42;
+    int *ptr = &valor;  // ptr armazena o endereço de 'valor'
+
+    // Visualização na memória (x86-64, little-endian):
+    //
+    // Endereço       Conteúdo         Variável
+    // 0x7ffd0010     2A 00 00 00      valor (42 em little-endian)
+    // 0x7ffd0018     10 00 fd 7f ...  ptr (endereço de valor)
+    //                ↑
+    //                8 bytes (64-bit pointer)
+
+    printf("valor:    %d\n", valor);          // 42
+    printf("&valor:   %p\n", (void *)&valor); // 0x7ffd0010
+    printf("ptr:      %p\n", (void *)ptr);    // 0x7ffd0010
+    printf("*ptr:     %d\n", *ptr);           // 42 (dereference)
+    printf("&ptr:     %p\n", (void *)&ptr);   // 0x7ffd0018
+
+    return 0;
+}
+```
+
+### Aritmética de ponteiros
+
+Aritmética de ponteiros opera em unidades do tipo apontado, não em bytes:
+
+```c
+#include <stdio.h>
+
+int main(void) {
+    int arr[5] = {10, 20, 30, 40, 50};
+    int *p = arr;  // arr decai para ponteiro para o primeiro elemento
+
+    // p + 1 NÃO avança 1 byte — avança sizeof(int) = 4 bytes
+    printf("p:     %p → %d\n", (void *)p, *p);         // 10
+    printf("p+1:   %p → %d\n", (void *)(p+1), *(p+1)); // 20
+    printf("p+2:   %p → %d\n", (void *)(p+2), *(p+2)); // 30
+
+    // Diferença entre ponteiros: número de ELEMENTOS, não bytes
+    int *start = &arr[0];
+    int *end   = &arr[4];
+    ptrdiff_t diff = end - start;  // 4 (não 16)
+    printf("Diferença: %td elementos\n", diff);
+
+    // Visualização na memória:
+    //
+    // Endereço      Valor    Expressão
+    // 0x1000        10       arr[0]  ← p
+    // 0x1004        20       arr[1]  ← p+1
+    // 0x1008        30       arr[2]  ← p+2
+    // 0x100C        40       arr[3]  ← p+3
+    // 0x1010        50       arr[4]  ← p+4
+
+    return 0;
+}
+```
+
+### Ponteiro para ponteiro e void*
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+
+// Ponteiro para ponteiro: necessário quando uma função precisa
+// modificar o ponteiro em si (não apenas o valor apontado)
+void alocar(int **pp, size_t n) {
+    *pp = malloc(n * sizeof(int));  // Modifica o ponteiro do chamador
+}
+
+// void* — ponteiro genérico, sem tipo. malloc retorna void*.
+// Não pode ser dereferenciado diretamente — precisa de cast.
+void imprimir_bytes(const void *dados, size_t tamanho) {
+    const unsigned char *bytes = (const unsigned char *)dados;
+    for (size_t i = 0; i < tamanho; i++) {
+        printf("%02x ", bytes[i]);
+    }
+    printf("\n");
+}
+
+int main(void) {
+    int *arr = NULL;
+    alocar(&arr, 5);  // Passa o ENDEREÇO do ponteiro
+    if (arr == NULL) return 1;
+
+    arr[0] = 0xDEADBEEF;
+    imprimir_bytes(&arr[0], sizeof(int));
+    // Saída em little-endian: ef be ad de
+
+    free(arr);
+    return 0;
+}
+```
+
+### Function pointers — callbacks em C
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+
+// Function pointer: a base de callbacks, vtables e polimorfismo em C
+// qsort() da stdlib é o exemplo clássico:
+// void qsort(void *base, size_t nmemb, size_t size,
+//            int (*compar)(const void *, const void *));
+
+int comparar_crescente(const void *a, const void *b) {
+    return (*(const int *)a) - (*(const int *)b);
+}
+
+int comparar_decrescente(const void *a, const void *b) {
+    return (*(const int *)b) - (*(const int *)a);
+}
+
+// Typedef para claridade — sem typedef, a sintaxe é ilegível
+typedef int (*comparador_fn)(const void *, const void *);
+
+void ordenar_e_imprimir(int *arr, size_t n, comparador_fn cmp) {
+    qsort(arr, n, sizeof(int), cmp);
+    for (size_t i = 0; i < n; i++) printf("%d ", arr[i]);
+    printf("\n");
+}
+
+int main(void) {
+    int nums[] = {5, 2, 8, 1, 9, 3};
+    size_t n = sizeof(nums) / sizeof(nums[0]);
+
+    ordenar_e_imprimir(nums, n, comparar_crescente);   // 1 2 3 5 8 9
+    ordenar_e_imprimir(nums, n, comparar_decrescente);  // 9 8 5 3 2 1
+
+    return 0;
+}
+```
+
+---
+
+## Arrays e Ponteiros: A Dualidade
+
+A relação entre arrays e ponteiros em C é uma das fontes mais comuns de confusão e bugs:
+
+```c
+#include <stdio.h>
+
+int main(void) {
+    int arr[5] = {10, 20, 30, 40, 50};
+
+    // Equivalência fundamental:
+    // arr[i] ≡ *(arr + i) ≡ *(i + arr) ≡ i[arr]
+    // Sim, i[arr] é válido em C! É apenas comutatividade da adição.
+
+    printf("%d\n", arr[2]);       // 30
+    printf("%d\n", *(arr + 2));   // 30
+    printf("%d\n", *(2 + arr));   // 30
+    printf("%d\n", 2[arr]);       // 30 (bizarro, mas legal)
+
+    // PORÉM: arrays NÃO são ponteiros!
+    printf("sizeof(arr): %zu\n", sizeof(arr));    // 20 (5 × 4 bytes)
+    // Array "decai" (decay) para ponteiro quando passado a funções:
+    // void foo(int *p) ← recebe ponteiro, perde informação de tamanho
+
+    // Arrays multidimensionais: layout é row-major (linhas contíguas)
+    int mat[2][3] = {
+        {1, 2, 3},
+        {4, 5, 6}
+    };
+
+    // Memória (contígua):
+    // [1][2][3][4][5][6]
+    //  ↑ mat[0]  ↑ mat[1]
+
+    // mat[i][j] ≡ *(*(mat + i) + j)
+    // mat[i] é um ponteiro para a primeira coluna da linha i
+    printf("mat[1][2] = %d\n", *(*(mat + 1) + 2)); // 6
+
+    return 0;
+}
+```
+
+---
+
+## Alocação de Memória: Stack vs Heap em Profundidade
+
+### Modelo de memória de um processo
+
+```
+Espaço de endereçamento virtual (x86-64):
+┌──────────────────────────┐  0xFFFFFFFFFFFFFFFF
+│       Kernel space        │  (inacessível ao userspace)
+├──────────────────────────┤  0x00007FFFFFFFFFFF
+│         Stack             │  ← Cresce para BAIXO (endereços menores)
+│    (variáveis locais,     │     Tamanho típico: 8MB (ulimit -s)
+│     return addresses)     │     Stack overflow = SIGSEGV
+│            ↓              │
+│                           │
+│            ↑              │
+│         Heap              │  ← Cresce para CIMA via brk()/mmap()
+│    (malloc, calloc)       │     Fragmentação é o inimigo
+├──────────────────────────┤
+│     .bss  (uninit data)   │
+│     .data (init data)     │
+│     .text (código)        │
+├──────────────────────────┤
+│                           │
+└──────────────────────────┘  0x0000000000000000
+```
+
+### malloc / calloc / realloc / free
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+int main(void) {
+    // malloc: aloca N bytes, conteúdo NÃO inicializado (lixo!)
+    int *a = malloc(5 * sizeof(int));
+    if (!a) { perror("malloc"); return 1; }
+    // a[0] a a[4] contêm lixo — NUNCA leia sem antes escrever
+
+    // calloc: aloca N × size bytes, inicializa tudo com ZERO
+    int *b = calloc(5, sizeof(int));
+    if (!b) { perror("calloc"); free(a); return 1; }
+    // b[0] a b[4] são todos 0
+
+    // realloc: redimensiona bloco existente
+    // CUIDADO: pode mover o bloco para outro endereço!
+    int *temp = realloc(a, 10 * sizeof(int));
+    if (!temp) {
+        // realloc falhou, mas 'a' AINDA é válido!
+        // Erro clássico: a = realloc(a, ...) — perde o ponteiro original se falhar
+        perror("realloc");
+        free(a);
+        free(b);
+        return 1;
+    }
+    a = temp;
+
+    // free: devolve memória ao allocator (NÃO necessariamente ao SO)
+    free(a);
+    free(b);
+
+    // Após free, o ponteiro é "dangling" — aponta para memória inválida
+    // a[0] = 42;  // USE-AFTER-FREE: undefined behavior, possível exploit!
+    a = NULL;      // Boa prática: anular ponteiros após free
+
+    return 0;
+}
+```
+
+### Memory leaks e dangling pointers — os dois demônios
+
+```c
+#include <stdlib.h>
+
+// MEMORY LEAK: memória alocada mas nunca liberada
+void leak_exemplo(void) {
+    int *p = malloc(1024);
+    // Função retorna sem free(p)
+    // O bloco de 1024 bytes é inalcançável — leaked
+    // Em programas de longa duração (servidores), leaks acumulam e causam OOM
+}
+
+// DANGLING POINTER: ponteiro que aponta para memória já liberada
+int *dangling_exemplo(void) {
+    int local = 42;
+    return &local;  // ERRADO! 'local' vive na stack e morre quando a função retorna
+    // O ponteiro retornado aponta para lixo (ou pior, para dados de outra função)
+}
+
+// DOUBLE FREE: liberar o mesmo bloco duas vezes
+void double_free_exemplo(void) {
+    int *p = malloc(sizeof(int));
+    free(p);
+    // free(p);  // DOUBLE FREE: corrompe o heap allocator, possível exploit
+}
+```
+
+---
+
+## Structs: Layout na Memória, Padding e Alignment
+
+### Por que o compilador insere padding
+
+CPUs modernas acessam memória de forma mais eficiente quando dados estão alinhados ao seu tamanho natural (int de 4 bytes alinhado a endereço múltiplo de 4). O compilador insere bytes de padding para garantir isso:
+
+```c
+#include <stdio.h>
+#include <stddef.h>  // offsetof()
+
+// Struct com padding "escondido"
+struct mal_ordenada {
+    char   a;    // 1 byte
+                 // 3 bytes de padding (alinhar próximo int)
+    int    b;    // 4 bytes
+    char   c;    // 1 byte
+                 // 3 bytes de padding (alinhar struct a múltiplo de 4)
+};
+// sizeof = 12 bytes (não 6!)
+
+// Mesmos campos, reordenados — ZERO padding desperdiçado
+struct bem_ordenada {
+    int    b;    // 4 bytes
+    char   a;    // 1 byte
+    char   c;    // 1 byte
+                 // 2 bytes de padding (alinhar struct a múltiplo de 4)
+};
+// sizeof = 8 bytes
+
+int main(void) {
+    printf("mal_ordenada: %zu bytes\n", sizeof(struct mal_ordenada));   // 12
+    printf("bem_ordenada: %zu bytes\n", sizeof(struct bem_ordenada));   // 8
+
+    // offsetof() mostra a posição de cada campo:
+    printf("mal_ordenada.a offset: %zu\n", offsetof(struct mal_ordenada, a)); // 0
+    printf("mal_ordenada.b offset: %zu\n", offsetof(struct mal_ordenada, b)); // 4
+    printf("mal_ordenada.c offset: %zu\n", offsetof(struct mal_ordenada, c)); // 8
+
+    // Layout na memória de mal_ordenada:
+    // Byte:  [0] [1] [2] [3] [4] [5] [6] [7] [8] [9] [10] [11]
+    //         a   pad pad pad  b   b   b   b   c  pad  pad  pad
+
+    return 0;
+}
+```
+
+### Packed structs — eliminando padding (com custo de performance)
+
+```c
+#include <stdio.h>
+
+// __attribute__((packed)) remove todo padding — NÃO use para dados em memória
+// Use APENAS para serialização (protocolos de rede, formatos de arquivo)
+struct __attribute__((packed)) pacote_rede {
+    uint8_t  tipo;       // 1 byte
+    uint32_t tamanho;    // 4 bytes — agora em offset 1, DESALINHADO
+    uint16_t checksum;   // 2 bytes
+};
+// sizeof = 7 bytes (sem padding)
+
+// Acesso desalinhado em x86 é apenas lento (~2x).
+// Em ARM antigo (ARMv5), causa SIGBUS e o processo morre.
+```
+
+> **Regra:** Ordene campos de structs do maior para o menor. Isso minimiza padding automaticamente.
+
+---
+
+## Strings: Null-Terminated e Seus Perigos
+
+Strings em C são arrays de `char` terminados por `'\0'` (byte zero). Não existe tipo "string" — é apenas um ponteiro `char *` para o primeiro caractere.
+
+```c
+#include <stdio.h>
+#include <string.h>
+
+int main(void) {
+    // Estas duas declarações são diferentes!
+    char arr[] = "hello";   // Array de 6 chars na stack: {'h','e','l','l','o','\0'}
+    char *ptr  = "hello";   // Ponteiro para string literal em .rodata (READ-ONLY!)
+
+    arr[0] = 'H';   // OK — arr é um array na stack, modificável
+    // ptr[0] = 'H'; // SEGFAULT — string literal está em memória somente-leitura
+
+    printf("strlen(arr): %zu\n", strlen(arr));   // 5 (não conta '\0')
+    printf("sizeof(arr): %zu\n", sizeof(arr));   // 6 (conta '\0')
+
+    return 0;
+}
+```
+
+### Buffer overflow — a vulnerabilidade mais explorada da história
+
+```c
+#include <stdio.h>
+#include <string.h>
+
+void vulneravel(const char *input) {
+    char buffer[16];
+
+    // strcpy: NUNCA use. Não verifica tamanho. Se input > 15 chars → overflow
+    strcpy(buffer, input);  // Se input = "AAAAAAAAAAAAAAAAAAAAAAAAA" → stack smash!
+
+    // strncpy: melhor, mas NÃO garante null-termination!
+    strncpy(buffer, input, sizeof(buffer));
+    buffer[sizeof(buffer) - 1] = '\0';  // Precisa forçar terminação
+
+    // snprintf: a forma CORRETA e portável
+    snprintf(buffer, sizeof(buffer), "%s", input);
+    // Sempre null-termina. Trunca se necessário. Retorna quantos chars SERIAM escritos.
+}
+
+// Format string vulnerability — quando o usuário controla o formato:
+void format_vuln(const char *user_input) {
+    // printf(user_input);         // VULNERÁVEL! Se input = "%x %x %x" → vaza stack
+    printf("%s", user_input);      // SEGURO — input é tratado como dado, não formato
+}
+```
+
+---
+
+## Preprocessador: Macros, Compilação Condicional e Header Guards
+
+O preprocessador opera ANTES do compilador — é pura substituição textual:
+
+```c
+// === header guards — evita inclusão duplicada ===
+#ifndef MINHA_LIB_H   // Se não definido...
+#define MINHA_LIB_H   // Define agora
+
+// Alternativa moderna (não-padrão, mas suportada por GCC/Clang/MSVC):
+// #pragma once
+
+// === #define: constantes e macros ===
+#define MAX_BUFFER  4096           // Constante — substituição textual pura
+#define ARRAY_SIZE(arr) (sizeof(arr) / sizeof((arr)[0]))  // Macro útil e segura
+
+// Macro PERIGOSA — efeitos colaterais:
+#define SQUARE(x) ((x) * (x))
+// SQUARE(i++) expande para ((i++) * (i++)) — UB! Incrementa duas vezes.
+// Solução: use static inline functions em vez de macros para expressões.
+
+static inline int square_safe(int x) {
+    return x * x;  // Avaliado uma única vez
+}
+
+// === Compilação condicional — essencial para portabilidade ===
+#ifdef __linux__
+    #include <sys/epoll.h>    // Linux-specific async I/O
+#elif defined(__APPLE__)
+    #include <sys/event.h>    // macOS kqueue
+#elif defined(_WIN32)
+    #include <winsock2.h>     // Windows
+#endif
+
+// Debug logging que desaparece em release:
+#ifdef DEBUG
+    #define LOG(fmt, ...) fprintf(stderr, "[DEBUG] " fmt "\n", ##__VA_ARGS__)
+#else
+    #define LOG(fmt, ...) ((void)0)  // Compila para nada
+#endif
+
+// === Stringification e concatenação ===
+#define STRINGIFY(x) #x           // STRINGIFY(42) → "42"
+#define CONCAT(a, b)  a##b       // CONCAT(foo, bar) → foobar
+
+// Usado em frameworks de teste, serialização, etc.
+
+#endif // MINHA_LIB_H
+```
+
+---
+
+## Gerenciamento de Memória Manual: Técnicas Avançadas
+
+### Cleanup automático estilo RAII (GCC/Clang)
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+
+// GCC/Clang suportam __attribute__((cleanup)) — destrutor automático ao sair do escopo
+void free_int(int **pp) {
+    if (*pp) {
+        free(*pp);
+        *pp = NULL;
+        printf("Memória liberada automaticamente\n");
+    }
+}
+
+#define AUTO_FREE __attribute__((cleanup(free_int)))
+
+void exemplo_raii(void) {
+    AUTO_FREE int *dados = malloc(100 * sizeof(int));
+    if (!dados) return;
+
+    dados[0] = 42;
+    // Ao sair do escopo (return, goto, fim do bloco),
+    // free_int(&dados) é chamado automaticamente.
+    // Similar ao RAII de C++/Rust, mas manual.
+}
+```
+
+### Arena allocator — alocação em bulk, liberação em massa
+
+```c
+#include <stdlib.h>
+#include <stdint.h>
+#include <string.h>
+
+// Arena: aloca linearmente de um bloco grande. Libera TUDO de uma vez.
+// Ideal para: parsers, compiladores, request handlers (aloca por request, libera no fim)
+typedef struct {
+    uint8_t *buffer;
+    size_t   tamanho;
+    size_t   offset;
+} Arena;
+
+Arena arena_criar(size_t tamanho) {
+    Arena a;
+    a.buffer  = malloc(tamanho);
+    a.tamanho = tamanho;
+    a.offset  = 0;
+    return a;
+}
+
+void *arena_alloc(Arena *a, size_t bytes) {
+    // Alinhar a 8 bytes (requisito típico para qualquer tipo)
+    size_t alinhado = (bytes + 7) & ~7;
+    if (a->offset + alinhado > a->tamanho) return NULL;
+    void *ptr = a->buffer + a->offset;
+    a->offset += alinhado;
+    return ptr;
+}
+
+void arena_reset(Arena *a) {
+    a->offset = 0;  // "Libera" tudo — O(1), sem fragmenação
+}
+
+void arena_destruir(Arena *a) {
+    free(a->buffer);
+    a->buffer = NULL;
+}
+
+// Uso:
+// Arena a = arena_criar(1024 * 1024);  // 1MB
+// int *x = arena_alloc(&a, sizeof(int) * 100);
+// char *s = arena_alloc(&a, 256);
+// arena_reset(&a);     // Libera tudo instantaneamente
+// arena_destruir(&a);  // Libera o bloco subjacente
+```
+
+---
+
+## Ferramentas: Valgrind, AddressSanitizer e GDB
+
+### Valgrind — detector de memory leaks e acessos inválidos
+
+```bash
+# Compilar com debug symbols (-g) e sem otimização (-O0)
+gcc -g -O0 programa.c -o programa
+
+# Rodar com Valgrind:
+valgrind --leak-check=full --show-leak-kinds=all --track-origins=yes ./programa
+
+# Saída típica de um leak:
+# ==12345== 40 bytes in 1 blocks are definitely lost in loss record 1 of 1
+# ==12345==    at 0x4C2DB8F: malloc (vg_replace_malloc.c:299)
+# ==12345==    by 0x401156: main (programa.c:8)
+# ==12345==
+# ==12345== LEAK SUMMARY:
+# ==12345==    definitely lost: 40 bytes in 1 blocks
+```
+
+### AddressSanitizer (ASan) — mais rápido que Valgrind, integrado ao compilador
+
+```bash
+# Compilar com ASan (GCC ou Clang):
+gcc -fsanitize=address -g -O1 programa.c -o programa
+
+# Detecta: buffer overflow, use-after-free, double-free, stack overflow, memory leaks
+# Overhead: ~2x slowdown (vs ~20x do Valgrind)
+
+# Exemplo de saída para heap-buffer-overflow:
+# ==ERROR: AddressSanitizer: heap-buffer-overflow on address 0x602000000014
+# WRITE of size 4 at 0x602000000014 thread T0
+#     #0 0x401234 in main programa.c:10
+```
+
+### GDB — debugging interativo
+
+```bash
+# Compilar com debug info:
+gcc -g -O0 programa.c -o programa
+
+# Sessão típica:
+gdb ./programa
+(gdb) break main              # Breakpoint na função main
+(gdb) run                     # Executar
+(gdb) next                    # Próxima linha (step over)
+(gdb) step                    # Entrar na função (step into)
+(gdb) print variavel          # Imprimir valor
+(gdb) print *ptr              # Dereferenciar ponteiro
+(gdb) print arr[0]@5          # Imprimir 5 elementos do array
+(gdb) x/16xb ptr              # Examinar 16 bytes em hex a partir de ptr
+(gdb) info locals             # Todas variáveis locais
+(gdb) backtrace               # Stack trace completo
+(gdb) watch variavel          # Parar quando variável mudar (hardware watchpoint)
+(gdb) continue                # Continuar execução
+```
+
+---
+
+## Chamadas de Sistema: A Interface com o Kernel
+
+Toda operação de I/O em C (e em qualquer linguagem) eventualmente resulta em uma **syscall** — uma chamada ao kernel:
+
+```c
+#include <stdio.h>
+#include <fcntl.h>
+#include <unistd.h>
+#include <errno.h>
+#include <string.h>
+
+int main(void) {
+    // printf("hello") internamente faz:
+    // 1. Buffering na libc (stdio buffer)
+    // 2. Quando flush: syscall write(1, "hello", 5)
+    //    1 = file descriptor stdout
+
+    // Usando syscalls diretamente (POSIX):
+    int fd = open("teste.txt", O_WRONLY | O_CREAT | O_TRUNC, 0644);
+    if (fd == -1) {
+        // errno é uma variável global thread-local que indica o erro
+        fprintf(stderr, "Erro ao abrir arquivo: %s (errno=%d)\n",
+                strerror(errno), errno);
+        return 1;
+    }
+
+    const char *msg = "dados escritos via syscall\n";
+    ssize_t escritos = write(fd, msg, strlen(msg));
+    if (escritos == -1) {
+        perror("write");  // perror() imprime a mensagem de erro de errno
+        close(fd);
+        return 1;
+    }
+
+    close(fd);
+
+    // Syscalls comuns que toda linguagem usa por baixo:
+    // open/close/read/write  — I/O de arquivos
+    // mmap/munmap            — mapear memória (como malloc obtém memória do SO)
+    // socket/bind/listen/accept — networking (o que o net.createServer() do Node faz)
+    // epoll_create/epoll_ctl/epoll_wait — async I/O no Linux (base do libuv)
+    // fork/exec/wait         — criar processos (child_process.fork() no Node)
+
+    return 0;
+}
+```
+
+```bash
+# Ver TODAS as syscalls que um programa faz:
+strace ./programa              # Linux
+dtruss ./programa              # macOS (requer SIP desativado ou sudo)
+
+# Saída típica:
+# open("teste.txt", O_WRONLY|O_CREAT|O_TRUNC, 0644) = 3
+# write(3, "dados escritos via syscall\n", 27) = 27
+# close(3)                                = 0
+```
+
+---
+
+## Como o Node.js Usa C/C++ Internamente
+
+Node.js é basicamente **duas bibliotecas C/C++ expostas via JavaScript**:
+
+```
+┌─────────────────────────────────────────┐
+│              Seu código JS               │
+│        const fs = require('fs');         │
+│        fs.readFile('data.txt', cb);      │
+└───────────────┬─────────────────────────┘
+                │  Binding layer (N-API / node-addon-api)
+                ▼
+┌───────────────────────────┐  ┌──────────────────────────┐
+│         V8 (C++)          │  │       libuv (C)           │
+│                           │  │                           │
+│ • Parseia JavaScript      │  │ • Event loop              │
+│ • Compila para machine    │  │ • Thread pool (4 threads  │
+│   code (JIT: TurboFan)    │  │   padrão para I/O)       │
+│ • Garbage collector       │  │ • Async I/O:              │
+│   (Orinoco: generational, │  │   - epoll (Linux)         │
+│    concurrent marking)    │  │   - kqueue (macOS)        │
+│ • Heap: --max-old-space-  │  │   - IOCP (Windows)        │
+│   size controla tamanho   │  │ • DNS, filesystem, crypto │
+│                           │  │   em worker threads       │
+└───────────────────────────┘  └──────────────────────────┘
+```
+
+### libuv — o event loop é C puro
+
+Quando você chama `fs.readFile()` no Node.js, isto acontece:
+
+1. O binding JS chama uma função C++ registrada via N-API
+2. Essa função submete um **work request** para o **thread pool da libuv**
+3. Uma worker thread executa a syscall `read()` (bloqueante, mas numa thread separada)
+4. Ao completar, a libuv enfileira o callback no event loop
+5. Na próxima iteração do loop, V8 executa seu callback JS
+
+```c
+// Simplificação do loop principal da libuv (uv_run):
+int uv_run(uv_loop_t *loop, uv_run_mode mode) {
+    while (uv__loop_alive(loop)) {
+        uv__update_time(loop);        // Atualizar timestamp
+        uv__run_timers(loop);         // setTimeout/setInterval
+        uv__run_pending(loop);        // Callbacks de I/O completado
+        uv__run_idle(loop);           // setImmediate
+        uv__io_poll(loop, timeout);   // epoll_wait/kevent — BLOQUEIA aqui
+        uv__run_check(loop);          // Check handles
+        uv__run_closing_handles(loop);// Cleanup
+    }
+}
+```
+
+### N-API — escrevendo addons nativos para Node.js
+
+```c
+// addon.c — exemplo mínimo de N-API addon
+#include <node_api.h>
+
+// Função C que será chamada do JavaScript
+napi_value SomarRapido(napi_env env, napi_callback_info info) {
+    size_t argc = 2;
+    napi_value argv[2];
+    napi_get_cb_info(env, info, &argc, argv, NULL, NULL);
+
+    double a, b;
+    napi_get_value_double(env, argv[0], &a);
+    napi_get_value_double(env, argv[1], &b);
+
+    napi_value resultado;
+    napi_create_double(env, a + b, &resultado);
+    return resultado;
+}
+
+// Registro do módulo
+napi_value Init(napi_env env, napi_value exports) {
+    napi_value fn;
+    napi_create_function(env, NULL, 0, SomarRapido, NULL, &fn);
+    napi_set_named_property(env, exports, "somarRapido", fn);
+    return exports;
+}
+
+NAPI_MODULE(NODE_GYP_MODULE_NAME, Init)
+```
+
+```javascript
+// uso.js
+const addon = require('./build/Release/addon');
+console.log(addon.somarRapido(40, 2)); // 42
+// A soma acontece em C — sem overhead do V8 para a operação
+```
+
+---
+
+## Exercícios Avançados
+
+1. **Arena allocator completo:** Implemente um arena allocator com suporte a sub-arenas (savepoints) — `arena_save()` retorna o offset atual, `arena_restore(savepoint)` faz rollback.
+
+2. **Mini memory leak detector:** Use macros para redefinir `malloc`/`free` e rastrear todas as alocações num hash map. No final do programa, imprima blocos não liberados com arquivo e linha de origem (`__FILE__`, `__LINE__`).
+
+3. **Buffer circular lock-free:** Implemente um ring buffer de tamanho fixo para comunicação entre producer/consumer usando apenas `_Atomic` (C11). Sem mutexes.
+
+4. **Parser de ELF header:** Escreva um programa que leia um binário ELF e imprima: arquitetura, entry point, número de seções e seus nomes. Use apenas `open`/`read`/`close` (sem fopen).
+
+5. **N-API addon:** Crie um addon Node.js em C que implemente uma função `hashDJB2(string)` — o algoritmo de hash DJB2 de Dan Bernstein. Compare a performance com uma implementação pura em JavaScript usando `console.time`.
+
+---
+
+## Referências
+
+- **"C Programming: A Modern Approach" — K.N. King** — O melhor livro de C para quem quer profundidade
+- **"Expert C Programming: Deep C Secrets" — Peter van der Linden** — Armadilhas, truques e internals
+- **"Computer Systems: A Programmer's Perspective" (CS:APP) — Bryant & O'Hallaron** — Como C mapeia para hardware
+- **Beej's Guide to C** — [https://beej.us/guide/bgc/](https://beej.us/guide/bgc/) — Gratuito, excelente
+- **Linux kernel coding style** — [https://www.kernel.org/doc/html/latest/process/coding-style.html](https://www.kernel.org/doc/html/latest/process/coding-style.html)
+- **libuv documentation** — [https://docs.libuv.org/](https://docs.libuv.org/) — Para entender o event loop do Node.js
+- **N-API documentation** — [https://nodejs.org/api/n-api.html](https://nodejs.org/api/n-api.html)

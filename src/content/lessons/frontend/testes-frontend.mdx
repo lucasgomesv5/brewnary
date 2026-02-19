@@ -1,0 +1,333 @@
+---
+title: "Testes no Frontend"
+description: "Vitest, Testing Library, testes de componente, mocking, testes de integração, E2E com Playwright e estratégias para frontends testáveis"
+track: "frontend"
+order: 17
+section: "Qualidade e Performance"
+priority: "medium"
+tags: ["testes", "vitest", "testing-library", "playwright", "e2e", "mocking", "react"]
+prerequisites: ["typescript", "closures"]
+keyTakeaways:
+  - "Testing Library testa componentes como o usuário os usa — queries por role, label e text em vez de seletores CSS ou IDs internos"
+  - "Vitest é o test runner padrão do ecossistema Vite: compatível com Jest API, ESM nativo, watch mode instantâneo e coverage embutido"
+  - "Testes de componente verificam comportamento (o que o usuário vê e faz), não implementação (state interno, lifecycle methods)"
+  - "Mock de APIs com MSW (Mock Service Worker) intercepta requests na camada de rede — seus componentes não sabem que estão sendo testados"
+  - "E2E com Playwright testa fluxos completos em browsers reais (Chromium, Firefox, WebKit) com auto-waiting e trace viewer para debugging"
+  - "A proporção ideal é: muitos testes de componente, alguns de integração, poucos E2E — otimize para feedback rápido e confiança alta"
+---
+
+# Testes no Frontend
+
+Testes no frontend evoluíram drasticamente. A era de testes frágeis baseados em seletores CSS e snapshot testing excessivo deu lugar a uma abordagem centrada no usuário: testar o que o usuário vê e faz, não os detalhes de implementação. Testing Library mudou a filosofia e Vitest trouxe velocidade. Esta lição cobre a stack moderna de testes para aplicações React.
+
+---
+
+## 1. Filosofia: Teste Comportamento, Não Implementação
+
+```javascript
+// ❌ Teste de implementação — frágil
+test('incrementa o state counter', () => {
+  const { result } = renderHook(() => useState(0));
+  act(() => result.current[1](1));
+  expect(result.current[0]).toBe(1);
+  // Quebra se você mudar de useState para useReducer
+});
+
+// ✅ Teste de comportamento — resiliente
+test('incrementa o contador quando o botão é clicado', async () => {
+  render(<Counter />);
+  expect(screen.getByText('Contagem: 0')).toBeInTheDocument();
+
+  await userEvent.click(screen.getByRole('button', { name: /incrementar/i }));
+  expect(screen.getByText('Contagem: 1')).toBeInTheDocument();
+  // Funciona independente da implementação interna
+});
+```
+
+> **Princípio do Testing Library:** "The more your tests resemble the way your software is used, the more confidence they can give you." — Kent C. Dodds
+
+---
+
+## 2. Setup: Vitest + Testing Library
+
+### 2.1 Configuração
+
+```typescript
+// vitest.config.ts
+import { defineConfig } from 'vitest/config';
+import react from '@vitejs/plugin-react';
+
+export default defineConfig({
+  plugins: [react()],
+  test: {
+    environment: 'jsdom',          // Simula browser
+    globals: true,                  // describe, test, expect globais
+    setupFiles: './src/test/setup.ts',
+    css: true,                      // Processa CSS modules
+    coverage: {
+      provider: 'v8',
+      reporter: ['text', 'html'],
+      exclude: ['**/*.test.*', '**/test/**'],
+    },
+  },
+});
+```
+
+```typescript
+// src/test/setup.ts
+import '@testing-library/jest-dom/vitest'; // Matchers como toBeInTheDocument()
+import { cleanup } from '@testing-library/react';
+import { afterEach } from 'vitest';
+
+afterEach(() => {
+  cleanup(); // Limpa o DOM após cada teste
+});
+```
+
+---
+
+## 3. Queries do Testing Library
+
+### 3.1 Prioridade de Queries
+
+Testing Library define uma hierarquia de queries — use a mais acessível possível:
+
+| Prioridade | Query | Quando usar |
+|-----------|-------|-------------|
+| 1 | `getByRole` | Sempre que possível (acessível) |
+| 2 | `getByLabelText` | Inputs de formulário |
+| 3 | `getByPlaceholderText` | Quando não há label |
+| 4 | `getByText` | Conteúdo textual |
+| 5 | `getByDisplayValue` | Valor atual de input |
+| 6 | `getByAltText` | Imagens |
+| 7 | `getByTestId` | Último recurso |
+
+```javascript
+// ✅ Acessível — funciona com screen readers
+screen.getByRole('button', { name: /salvar/i });
+screen.getByRole('heading', { level: 2 });
+screen.getByLabelText(/email/i);
+
+// ⚠️ Aceitável quando role não é suficiente
+screen.getByText(/bem-vindo/i);
+
+// ❌ Último recurso — não tem significado semântico
+screen.getByTestId('submit-button');
+```
+
+### 3.2 Variantes: get, query, find
+
+```javascript
+// getBy — lança erro se não encontrar (default para a maioria dos testes)
+screen.getByRole('button'); // Throws se não existir
+
+// queryBy — retorna null se não encontrar (útil para testar ausência)
+expect(screen.queryByText('Erro')).not.toBeInTheDocument();
+
+// findBy — retorna Promise, espera o elemento aparecer (async)
+const message = await screen.findByText('Dados carregados');
+// Útil para dados que chegam de API
+```
+
+---
+
+## 4. Interações com userEvent
+
+```javascript
+import userEvent from '@testing-library/user-event';
+
+test('formulário de login', async () => {
+  const user = userEvent.setup();
+  const onSubmit = vi.fn();
+
+  render(<LoginForm onSubmit={onSubmit} />);
+
+  // Digitar nos campos
+  await user.type(screen.getByLabelText(/email/i), 'maria@test.com');
+  await user.type(screen.getByLabelText(/senha/i), 'senha123');
+
+  // Clicar no botão
+  await user.click(screen.getByRole('button', { name: /entrar/i }));
+
+  // Verificar chamada
+  expect(onSubmit).toHaveBeenCalledWith({
+    email: 'maria@test.com',
+    password: 'senha123',
+  });
+});
+
+test('seleção e keyboard', async () => {
+  const user = userEvent.setup();
+  render(<Autocomplete options={['React', 'Vue', 'Angular']} />);
+
+  await user.type(screen.getByRole('combobox'), 'Re');
+  await user.keyboard('{ArrowDown}{Enter}');
+
+  expect(screen.getByRole('combobox')).toHaveValue('React');
+});
+```
+
+---
+
+## 5. Mocking de APIs com MSW
+
+MSW (Mock Service Worker) intercepta requests na camada de rede — seus componentes fazem fetch normalmente sem saber que estão sendo mockados:
+
+```javascript
+// src/test/handlers.ts
+import { http, HttpResponse } from 'msw';
+
+export const handlers = [
+  http.get('/api/users/:id', ({ params }) => {
+    return HttpResponse.json({
+      id: params.id,
+      name: 'Maria',
+      email: 'maria@test.com',
+    });
+  }),
+
+  http.post('/api/login', async ({ request }) => {
+    const body = await request.json();
+
+    if (body.email === 'maria@test.com') {
+      return HttpResponse.json({ token: 'fake-token' });
+    }
+
+    return HttpResponse.json(
+      { error: 'Credenciais inválidas' },
+      { status: 401 }
+    );
+  }),
+];
+```
+
+```javascript
+// src/test/server.ts
+import { setupServer } from 'msw/node';
+import { handlers } from './handlers';
+
+export const server = setupServer(...handlers);
+
+// src/test/setup.ts
+import { server } from './server';
+
+beforeAll(() => server.listen());
+afterEach(() => server.resetHandlers());
+afterAll(() => server.close());
+```
+
+```javascript
+// Teste do componente — faz fetch real, MSW intercepta
+test('exibe dados do usuário', async () => {
+  render(<UserProfile userId="123" />);
+
+  // findBy espera o elemento aparecer (após fetch)
+  expect(await screen.findByText('Maria')).toBeInTheDocument();
+  expect(screen.getByText('maria@test.com')).toBeInTheDocument();
+});
+
+// Override de handler para cenário de erro
+test('exibe erro quando API falha', async () => {
+  server.use(
+    http.get('/api/users/:id', () => {
+      return HttpResponse.json(null, { status: 500 });
+    })
+  );
+
+  render(<UserProfile userId="123" />);
+  expect(await screen.findByText(/erro ao carregar/i)).toBeInTheDocument();
+});
+```
+
+---
+
+## 6. Testes E2E com Playwright
+
+Playwright testa em browsers reais com auto-waiting, screenshots e trace viewer:
+
+```typescript
+// e2e/login.spec.ts
+import { test, expect } from '@playwright/test';
+
+test.describe('Fluxo de Login', () => {
+  test('login com credenciais válidas', async ({ page }) => {
+    await page.goto('/login');
+
+    await page.getByLabel('Email').fill('maria@test.com');
+    await page.getByLabel('Senha').fill('senha123');
+    await page.getByRole('button', { name: 'Entrar' }).click();
+
+    // Espera navegação automática
+    await expect(page).toHaveURL('/dashboard');
+    await expect(page.getByRole('heading', { name: 'Bem-vinda, Maria' })).toBeVisible();
+  });
+
+  test('exibe erro com credenciais inválidas', async ({ page }) => {
+    await page.goto('/login');
+
+    await page.getByLabel('Email').fill('wrong@test.com');
+    await page.getByLabel('Senha').fill('wrong');
+    await page.getByRole('button', { name: 'Entrar' }).click();
+
+    await expect(page.getByText('Credenciais inválidas')).toBeVisible();
+    await expect(page).toHaveURL('/login'); // Não navegou
+  });
+});
+```
+
+### 6.1 Playwright Config
+
+```typescript
+// playwright.config.ts
+import { defineConfig } from '@playwright/test';
+
+export default defineConfig({
+  testDir: './e2e',
+  timeout: 30000,
+  retries: process.env.CI ? 2 : 0,
+  use: {
+    baseURL: 'http://localhost:3000',
+    trace: 'on-first-retry',     // Trace para debugging
+    screenshot: 'only-on-failure',
+  },
+  projects: [
+    { name: 'chromium', use: { browserName: 'chromium' } },
+    { name: 'firefox', use: { browserName: 'firefox' } },
+    { name: 'webkit', use: { browserName: 'webkit' } },
+  ],
+  webServer: {
+    command: 'npm run dev',
+    port: 3000,
+    reuseExistingServer: !process.env.CI,
+  },
+});
+```
+
+---
+
+## 7. Patterns e Anti-Patterns
+
+### O que testar
+
+- Comportamento visível para o usuário (texto, interações, navegação)
+- Fluxos críticos de negócio (checkout, autenticação, formulários)
+- Edge cases (loading, erro, lista vazia, permissões)
+- Acessibilidade (roles corretos, labels, keyboard navigation)
+
+### O que NÃO testar
+
+- State interno de componentes (useState, useReducer)
+- Detalhes de implementação (nomes de funções internas, lifecycle)
+- Snapshot tests excessivos (frágeis, pouca confiança)
+- Estilos CSS específicos (use visual regression tools se necessário)
+
+---
+
+## 8. Referências e Aprofundamento
+
+- **Testing Library Docs** — guia oficial e queries
+- **Vitest Documentation** — configuração, API e integração com Vite
+- **Playwright Documentation** — E2E testing com auto-waiting e trace viewer
+- **MSW (Mock Service Worker)** — mocking de API na camada de rede
+- **"Testing JavaScript"** (Kent C. Dodds) — curso completo sobre testing no ecossistema JS
+- **CS50 Web (Harvard)** — seção sobre testing e CI

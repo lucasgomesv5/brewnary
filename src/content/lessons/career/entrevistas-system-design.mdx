@@ -1,0 +1,477 @@
+---
+title: "Entrevistas Técnicas: System Design"
+description: "Framework completo para system design interviews — requirements, estimativas, high-level design, deep dive, trade-offs e expectativas por nível"
+track: "career"
+order: 5
+section: "Entrevistas"
+priority: "high"
+tags: ["entrevistas", "system-design", "arquitetura", "escalabilidade"]
+prerequisites: []
+keyTakeaways:
+  - "Siga o framework: Requirements (5min), Estimation (5min), High-Level Design (10min), Deep Dive (15min), Trade-offs (5min)"
+  - "Sempre comece definindo requisitos funcionais e não-funcionais antes de desenhar qualquer diagrama"
+  - "Mostre trade-offs explícitos: o que você sacrificou, por quê, e o que faria diferente com mais recursos"
+---
+
+## O Que System Design Interviews Avaliam
+
+System design é a entrevista que mais diferencia **profundidade técnica**. Em coding, candidatos de diferentes níveis podem ter performance similar. Em system design, a profundidade de raciocínio, a capacidade de fazer trade-offs e a visão sistêmica revelam claramente a experiência do candidato.
+
+```
+O que o entrevistador avalia:
+┌────────────────────────────────────────────────────────┐
+│ 1. Estruturação: segue um framework ou divaga?         │
+│ 2. Escopo: define limites antes de desenhar?           │
+│ 3. Estimativas: faz cálculos para justificar decisões? │
+│ 4. Profundidade: vai além do diagrama de caixas?       │
+│ 5. Trade-offs: explicita o que sacrificou e por quê?   │
+│ 6. Comunicação: explica decisões com clareza?          │
+│ 7. Experiência: traz exemplos de sistemas reais?       │
+└────────────────────────────────────────────────────────┘
+```
+
+---
+
+## O Framework: 5 Fases em 40-45 Minutos
+
+### Fase 1: Requirements (5 minutos)
+
+**Nunca comece desenhando.** Defina o escopo primeiro.
+
+```
+REQUISITOS FUNCIONAIS (o que o sistema faz):
+  → Quais são as operações principais? (CRUD? Read-heavy? Write-heavy?)
+  → Quem são os usuários? (B2C? B2B? Internos?)
+  → Quais features são core vs nice-to-have?
+  → Há requisitos de tempo real? (chat, notificações, streaming)
+
+REQUISITOS NÃO-FUNCIONAIS (como o sistema se comporta):
+  → Quantos usuários? (DAU — Daily Active Users)
+  → Qual latência aceitável? (P50, P99)
+  → Qual disponibilidade necessária? (99.9%? 99.99%?)
+  → Qual consistência? (strong? eventual?)
+  → Há requisitos regulatórios? (LGPD, GDPR, PCI-DSS)
+
+EXEMPLOS DE PERGUNTAS QUE IMPRESSIONAM:
+  "O sistema precisa funcionar globalmente ou em uma região?"
+  "Qual é o ratio de leitura vs escrita esperado?"
+  "Precisamos de consistência forte ou eventual é aceitável?"
+  "Há picos sazonais? (Black Friday, eventos)"
+  "Qual é o budget de infraestrutura?"
+```
+
+### Fase 2: Back-of-the-Envelope Estimation (5 minutos)
+
+Estimativas justificam decisões de arquitetura. Se você não calcula, está chutando.
+
+```
+NÚMEROS QUE VOCÊ DEVE MEMORIZAR:
+
+Latências:
+  L1 cache reference:                 0.5 ns
+  RAM reference:                      100 ns
+  SSD random read:                    150 μs
+  HDD random read:                    10 ms
+  Rede dentro do datacenter:          0.5 ms
+  Rede entre regiões:                 50-150 ms
+
+Throughput:
+  SSD sequential read:                1 GB/s
+  Network (1 Gbps):                   125 MB/s
+  Disco HDD sequential:               100 MB/s
+
+Escala:
+  1 servidor web:                     ~1K-10K RPS (depende do workload)
+  MySQL/PostgreSQL:                   ~5K-10K QPS (depende da query)
+  Redis:                              ~100K-500K ops/s
+  Kafka partition:                    ~10K-100K msgs/s
+  1 GB = ~1 bilhão de caracteres ASCII
+  1 dia = 86.400 segundos ≈ ~10^5 segundos
+
+EXEMPLO DE CÁLCULO — URL Shortener:
+
+  Premissas:
+  - 100M URLs criadas por mês
+  - Ratio leitura/escrita: 100:1
+  - Reter por 5 anos
+
+  QPS (Queries Per Second):
+  - Escrita: 100M / (30 dias × 86400s) ≈ ~40 writes/s
+  - Leitura: 40 × 100 = ~4.000 reads/s
+  - Pico (3x): ~12.000 reads/s
+
+  Storage:
+  - Cada URL: ~500 bytes (URL original + hash + metadata)
+  - 5 anos: 100M × 12 × 5 = 6 bilhões de URLs
+  - Total: 6B × 500 bytes = 3 TB
+
+  Bandwidth:
+  - Escrita: 40 × 500 bytes = 20 KB/s (desprezível)
+  - Leitura: 4.000 × 500 bytes = 2 MB/s
+
+  Cache (regra 80/20):
+  - 20% das URLs geram 80% do tráfego
+  - Cache diário: 4.000 × 86.400 × 500 bytes × 0.2 ≈ ~35 GB
+  - Cabe em um Redis single-node
+```
+
+### Fase 3: High-Level Design (10 minutos)
+
+Desenhe os componentes principais e as conexões entre eles.
+
+```
+Componentes típicos de um sistema web:
+
+  ┌──────────┐     ┌──────────┐     ┌──────────────┐
+  │  Client  │────▶│   CDN    │     │ Load Balancer │
+  │(Web/App) │     │(estático)│     │  (L7 / ALB)   │
+  └──────────┘     └──────────┘     └──────┬───────┘
+                                           │
+                    ┌──────────────────────┼───────────────────┐
+                    │                      │                   │
+              ┌─────▼─────┐         ┌─────▼─────┐      ┌─────▼─────┐
+              │ API Server│         │ API Server│      │ API Server│
+              │  (pod 1)  │         │  (pod 2)  │      │  (pod N)  │
+              └─────┬─────┘         └─────┬─────┘      └─────┬─────┘
+                    │                      │                   │
+         ┌──────────┼──────────────────────┼───────────────────┤
+         │          │                      │                   │
+   ┌─────▼─────┐ ┌─▼────────┐    ┌───────▼──────┐    ┌──────▼─────┐
+   │   Cache   │ │ Database  │    │ Message Queue│    │ Object     │
+   │  (Redis)  │ │(Postgres) │    │  (RabbitMQ)  │    │ Storage    │
+   └───────────┘ └───────────┘    └──────┬───────┘    │  (S3)      │
+                                         │            └────────────┘
+                                  ┌──────▼───────┐
+                                  │   Workers    │
+                                  │ (consumers)  │
+                                  └──────────────┘
+
+DICAS PARA O DIAGRAMA:
+  → Mostre a direção do fluxo de dados (setas)
+  → Indique protocolo (HTTP, gRPC, WebSocket, AMQP)
+  → Marque se é síncrono ou assíncrono
+  → Nomeie os componentes com tecnologias específicas
+  → Separe read path e write path se forem diferentes
+```
+
+### Fase 4: Deep Dive (15 minutos)
+
+Escolha 2-3 componentes para aprofundar. O entrevistador geralmente indica.
+
+```
+TÓPICOS COMUNS DE DEEP DIVE:
+
+1. Database Design
+   → Schema (tabelas, índices, constraints)
+   → Partitioning/Sharding strategy
+   → Replication (sync vs async)
+   → SQL vs NoSQL (justifique com o workload)
+
+2. API Design
+   → Endpoints REST ou gRPC
+   → Pagination (cursor-based vs offset)
+   → Rate limiting strategy
+   → Idempotência
+
+3. Caching Strategy
+   → O que cachear (hot data, computed results)
+   → Onde cachear (CDN, Redis, application-level)
+   → Invalidação (TTL, write-through, write-behind)
+   → Cache stampede prevention (locking, probabilistic early expiry)
+
+4. Escalabilidade
+   → Horizontal vs vertical scaling
+   → Stateless servers (session no Redis)
+   → Database read replicas
+   → Connection pooling
+   → Auto-scaling triggers
+
+5. Resiliência
+   → Circuit breaker para dependências externas
+   → Retry com exponential backoff
+   → Bulkhead pattern (isolamento de falhas)
+   → Graceful degradation
+   → Health checks e readiness probes
+```
+
+### Fase 5: Trade-offs e Bottlenecks (5 minutos)
+
+```
+SEMPRE termine com trade-offs explícitos:
+
+"Neste design, priorizei [disponibilidade] sobre [consistência]
+porque [a maioria das operações tolera eventual consistency, e
+downtime custa $X/minuto]."
+
+"O bottleneck principal é [o banco de dados em writes].
+Com mais tempo, eu adicionaria [write-behind cache + async
+processing] para reduzir a carga."
+
+"Se o orçamento fosse ilimitado, eu faria [multi-region active-active
+com CockroachDB], mas para o custo atual, [single-region com
+read replicas] é suficiente."
+```
+
+---
+
+## Conceitos de Sistemas Distribuídos
+
+### CAP Theorem na Prática
+
+```
+CAP: em uma partição de rede, você deve escolher entre
+Consistência (C) e Disponibilidade (A).
+
+              Consistência
+              (todos veem o mesmo dado)
+                   /\
+                  /  \
+                 /    \
+                / CP   \
+               / Redis  \
+              / MongoDB  \
+             / (config   \
+            /  primário)  \
+           /               \
+          /       CA        \
+         / PostgreSQL single \
+        /   (sem partição)   \
+       /                      \
+      /_________________________\
+   Disponibilidade      Tolerância a
+   (sempre responde)    Partição
+                        (funciona com rede falhando)
+
+Na prática para entrevistas:
+
+CP (Consistência + Partição): Quando dados incorretos são inaceitáveis
+  → Sistemas financeiros, inventário, configuração
+  → Exemplo: ZooKeeper, etcd, Redis Cluster (em modo strong consistency)
+
+AP (Disponibilidade + Partição): Quando indisponibilidade é inaceitável
+  → Social feeds, DNS, cache distribuído
+  → Exemplo: Cassandra, DynamoDB, DNS
+
+CA (Consistência + Disponibilidade): Quando não há partições de rede
+  → Sistema single-node (PostgreSQL standalone)
+  → Na prática, partições sempre são possíveis → CA é teórico
+```
+
+### Modelos de Consistência
+
+```
+Strong Consistency:
+  → Toda leitura retorna o dado mais recente
+  → Custo: latência alta (replicação síncrona)
+  → Quando usar: transações financeiras, inventário
+
+Eventual Consistency:
+  → Leituras podem retornar dados stale temporariamente
+  → Custo: complexidade de resolução de conflitos
+  → Quando usar: feeds, likes, analytics, DNS
+
+Causal Consistency:
+  → Operações causalmente relacionadas são vistas na ordem correta
+  → Custo: tracking de dependências causais
+  → Quando usar: mensagens em chat (ordem importa por conversa)
+
+Read-your-writes:
+  → Após escrever, o mesmo usuário sempre vê o dado atualizado
+  → Outros usuários podem ver dado stale
+  → Implementação: sticky sessions ou read from primary após write
+```
+
+### Particionamento (Sharding)
+
+```
+Estratégias de sharding:
+
+1. Range-based:
+   → Shard por range de valores (users A-M → shard 1, N-Z → shard 2)
+   → Prós: queries de range eficientes
+   → Contras: hotspots (letra "S" tem mais nomes que "X")
+
+2. Hash-based:
+   → Shard por hash(key) % num_shards
+   → Prós: distribuição uniforme
+   → Contras: queries de range requerem scatter-gather
+
+3. Consistent Hashing:
+   → Ring hash com virtual nodes
+   → Prós: mínima redistribuição ao adicionar/remover nós
+   → Contras: mais complexo de implementar
+
+4. Directory-based:
+   → Lookup table que mapeia key → shard
+   → Prós: flexível, pode rebalancear arbitrariamente
+   → Contras: lookup table vira ponto de falha/bottleneck
+```
+
+---
+
+## Sistemas Comuns em Entrevistas
+
+### URL Shortener
+
+```
+Requisitos: criar short URLs, redirecionar, analytics
+Escrita: POST /shorten → gerar hash base62 de 7 chars → 62^7 = 3.5T URLs
+Leitura: GET /:hash → 301 redirect → read-heavy (100:1)
+
+Decisões chave:
+  → Geração de hash: MD5/SHA256 truncado ou counter + base62?
+    Counter garante unicidade sem colisão. MD5 pode colidir.
+    Counter precisa de serviço centralizado (Snowflake ID).
+  → Storage: Key-value (DynamoDB) — não precisa de JOINs
+  → Cache: Redis com TTL — URLs populares em memória
+  → CDN: 301 é cacheável pelo browser e CDN
+  → Analytics: Async — evento a cada redirect → Kafka → OLAP
+
+Trade-off: 301 (permanent) vs 302 (temporary)?
+  301: browser cacheia → menos load, mas analytics perde visibilidade
+  302: não cacheia → mais load, analytics preciso
+```
+
+### Chat System (WhatsApp/Slack)
+
+```
+Requisitos: mensagens 1:1, grupos, presença online, delivery status
+Conexões: WebSocket para real-time, HTTP para historico
+
+Decisões chave:
+  → WebSocket Gateway: stateful → sticky sessions ou connection registry
+  → Storage: mensagens em Cassandra (write-heavy, append-only)
+  → Message ordering: por conversa (não global) → causal consistency
+  → Delivery status: sent → delivered → read (state machine)
+  → Presença: heartbeat a cada 30s → Redis com TTL
+  → Push notification: fallback quando WebSocket desconecta
+  → Grupos: fan-out on write (mensagem copiada para cada membro)
+    vs fan-out on read (lê de uma fonte central)
+    → Grupos pequenos (<100): fan-out on write
+    → Canais grandes (>1000): fan-out on read
+
+Trade-off: fan-out on write gasta mais storage mas leitura é O(1).
+           fan-out on read economiza storage mas leitura é O(n_membros).
+```
+
+### News Feed (Twitter/Instagram)
+
+```
+Requisitos: publicar post, timeline personalizada, likes/comments
+Problema core: timeline assembly é O(followings × posts) se feito em read
+
+Decisões chave:
+  → Fan-out on write: ao publicar, push para timeline cache de cada follower
+    Bom para usuários normais (~1K followers)
+  → Fan-out on read: ao ler timeline, pull posts dos followings
+    Necessário para celebridades (~10M followers)
+  → Híbrido: fan-out on write para users normais + fan-out on read para
+    celebridades → merge no momento da leitura
+
+  → Ranking: chronological ou algorithmic?
+    ML model scores cada post: engagement_score × recency × affinity
+  → Storage: posts em MySQL/PostgreSQL, timeline cache em Redis
+  → Media: S3 + CDN para imagens/vídeos
+  → Notifications: async via event + push service
+```
+
+### Rate Limiter
+
+```
+Requisitos: limitar requests por user/IP/API key, window fixo ou sliding
+Algoritmos:
+
+1. Fixed Window Counter:
+   → Contador por janela de tempo (ex: 100 req/minuto)
+   → Simples mas permite burst na fronteira (2x no boundary)
+   → Redis: INCR key, EXPIRE key 60
+
+2. Sliding Window Log:
+   → Armazena timestamp de cada request
+   → Preciso mas usa mais memória
+   → Redis: ZADD (sorted set) + ZRANGEBYSCORE
+
+3. Sliding Window Counter:
+   → Combina fixed window com peso proporcional
+   → Boa precisão com memória baixa
+   → Fórmula: requests = prev_window × overlap% + current_window
+
+4. Token Bucket:
+   → Tokens adicionados a taxa fixa, consumidos por request
+   → Permite burst controlado
+   → Redis: HMSET (tokens, last_refill_time)
+
+5. Leaky Bucket:
+   → Queue com saída a taxa fixa
+   → Suaviza o tráfego, sem burst
+   → Implementação: queue com consumer a taxa constante
+
+Onde colocar: API Gateway (antes de chegar na aplicação)
+Storage: Redis (centralizado, atômico) ou in-memory (por instância)
+Headers: X-RateLimit-Limit, X-RateLimit-Remaining, X-RateLimit-Reset
+```
+
+---
+
+## Database Selection Guide
+
+```
+Workload                          | Banco recomendado
+----------------------------------|-----------------------------------
+OLTP relacional genérico          | PostgreSQL
+Read-heavy com schema flexível    | MongoDB, DynamoDB
+Write-heavy append-only           | Cassandra, ScyllaDB
+Key-value cache                   | Redis, Memcached
+Full-text search                  | Elasticsearch, PostgreSQL (FTS)
+Time-series                       | TimescaleDB, InfluxDB
+Graph relationships               | Neo4j, Amazon Neptune
+Analytics/OLAP                    | ClickHouse, BigQuery, Redshift
+Wide-column (petabytes)           | HBase, Cassandra
+Multi-model                       | FaunaDB, CosmosDB
+```
+
+---
+
+## Expectativas por Nível
+
+```
+NÍVEL MID/PLENO (L4-L5):
+  → Segue o framework básico
+  → Define requisitos funcionais
+  → Desenha diagrama high-level correto
+  → Escolhe banco de dados com justificativa simples
+  → Faz deep dive em 1 componente
+
+NÍVEL SÊNIOR (L5-L6):
+  → Tudo acima +
+  → Back-of-the-envelope calculations
+  → Deep dive em 2-3 componentes com detalhes técnicos
+  → Discute trade-offs explicitamente
+  → Traz experiências reais como referência
+  → Considera failure modes e resiliência
+
+NÍVEL STAFF+ (L6-L7):
+  → Tudo acima +
+  → Questiona premissas do entrevistador
+  → Propõe design evolutivo (MVP → escala)
+  → Discute impacto organizacional (team boundaries, ownership)
+  → Considera custos operacionais e complexidade de manutenção
+  → Aborda observabilidade (metrics, logging, tracing)
+  → Discute estratégia de migração e rollback
+  → Traz perspectiva de produto junto com a técnica
+```
+
+---
+
+## Referências
+
+```
+- "System Design Interview" Vol 1 e 2 — Alex Xu
+- "Designing Data-Intensive Applications" — Martin Kleppmann
+- "Building Microservices" — Sam Newman
+- ByteByteGo: https://bytebytego.com
+- Grokking System Design: https://www.designgurus.io
+- "The System Design Primer": https://github.com/donnemartin/system-design-primer
+- "Database Internals" — Alex Petrov
+- Google SRE Book: https://sre.google/sre-book/
+```

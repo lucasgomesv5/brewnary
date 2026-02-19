@@ -1,0 +1,571 @@
+---
+title: "Cloud Basics (AWS)"
+description: "Modelos de computação em nuvem, serviços essenciais da AWS, networking, compute, storage, serverless, IAM e otimização de custos"
+track: "devops"
+order: 5
+section: "Cloud e Operações"
+priority: "medium"
+tags: ["aws", "cloud", "ec2", "s3", "rds", "arquitetura"]
+prerequisites: []
+keyTakeaways:
+  - "IaaS, PaaS e SaaS representam níveis crescentes de abstração — a escolha define quanto controle versus responsabilidade você tem"
+  - "VPC, subnets, security groups e NACLs formam a base de segurança de rede na AWS — entender esse modelo é obrigatório"
+  - "IAM é o serviço mais crítico da AWS — políticas de menor privilégio, roles e boundary permissions previnem desastres de segurança"
+---
+
+## Modelos de Computação em Nuvem
+
+```
+ON-PREMISES (você gerencia tudo):
+┌─────────────────────────────────────┐
+│ Aplicação    │ Dados    │ Runtime   │  ← VOCÊ
+│ Middleware   │ OS       │ Rede      │  ← VOCÊ
+│ Virtualização│ Servidores│ Storage  │  ← VOCÊ
+│ Data Center                         │  ← VOCÊ
+└─────────────────────────────────────┘
+
+IaaS — Infrastructure as a Service (AWS EC2, GCP Compute):
+┌─────────────────────────────────────┐
+│ Aplicação    │ Dados    │ Runtime   │  ← VOCÊ
+│ Middleware   │ OS       │           │  ← VOCÊ
+├─────────────────────────────────────┤
+│ Virtualização│ Servidores│ Storage  │  ← PROVEDOR
+│ Rede         │ Data Center          │  ← PROVEDOR
+└─────────────────────────────────────┘
+
+PaaS — Platform as a Service (AWS Elastic Beanstalk, Heroku, Vercel):
+┌─────────────────────────────────────┐
+│ Aplicação    │ Dados                │  ← VOCÊ
+├─────────────────────────────────────┤
+│ Runtime      │ Middleware │ OS      │  ← PROVEDOR
+│ Virtualização│ Servidores│ Storage  │  ← PROVEDOR
+│ Rede         │ Data Center          │  ← PROVEDOR
+└─────────────────────────────────────┘
+
+SaaS — Software as a Service (Gmail, Slack, Datadog):
+┌─────────────────────────────────────┐
+│              TUDO                    │  ← PROVEDOR
+│ Você apenas usa o software          │
+└─────────────────────────────────────┘
+
+FaaS — Function as a Service (AWS Lambda, Cloudflare Workers):
+  Subconjunto de PaaS. Você escreve apenas a função.
+  Provedor gerencia: scaling, runtime, infra, billing por execução.
+```
+
+## AWS Core Services: Visão Geral
+
+```
+COMPUTE:
+  EC2            — Virtual Machines (controle total sobre o OS)
+  ECS/Fargate    — Container orchestration (Fargate = serverless containers)
+  EKS            — Kubernetes gerenciado
+  Lambda         — Functions as a Service (paga por invocação)
+  App Runner     — PaaS para containers (deploy direto de imagem ou repo)
+
+STORAGE:
+  S3             — Object storage (arquivos, backups, assets, data lake)
+  EBS            — Block storage (disco para EC2)
+  EFS            — Network File System (compartilhado entre EC2s)
+  S3 Glacier     — Archival storage (backup de longo prazo, centavos/GB)
+
+DATABASE:
+  RDS            — Relacional gerenciado (PostgreSQL, MySQL, Oracle, SQL Server)
+  Aurora         — MySQL/PostgreSQL compatível, 5x mais rápido que RDS padrão
+  DynamoDB       — NoSQL serverless (key-value + document)
+  ElastiCache    — Redis/Memcached gerenciado
+  DocumentDB     — MongoDB compatível (gerenciado)
+  Redshift       — Data warehouse (analytics, OLAP)
+
+NETWORKING:
+  VPC            — Rede privada virtual isolada
+  ALB/NLB        — Load Balancers (Application Layer 7 / Network Layer 4)
+  Route 53       — DNS gerenciado + health checks + routing policies
+  CloudFront     — CDN global (cache de conteúdo estático e dinâmico)
+  API Gateway    — API management + throttling + auth
+  Transit Gateway— Conectar múltiplas VPCs e redes on-premises
+
+SEGURANÇA:
+  IAM            — Identity and Access Management
+  KMS            — Key Management Service (criptografia)
+  Secrets Manager— Gerenciamento de secrets com rotação automática
+  WAF            — Web Application Firewall
+  GuardDuty      — Threat detection com machine learning
+  Security Hub   — Visão centralizada de segurança
+
+OBSERVABILIDADE:
+  CloudWatch     — Métricas, logs, alarmes, dashboards
+  X-Ray          — Distributed tracing
+  CloudTrail     — Auditoria de chamadas de API (quem fez o quê)
+
+INFRAESTRUTURA COMO CÓDIGO:
+  CloudFormation — IaC nativo da AWS (YAML/JSON)
+  CDK            — IaC com linguagens de programação (TypeScript, Python)
+```
+
+## Networking: VPC em Profundidade
+
+```
+ARQUITETURA DE VPC PARA PRODUÇÃO:
+
+                        Internet
+                           │
+                    ┌──────┴──────┐
+                    │ Internet    │
+                    │ Gateway     │
+                    └──────┬──────┘
+                           │
+    VPC (10.0.0.0/16)      │
+    ┌──────────────────────┼──────────────────────┐
+    │                      │                      │
+    │  PUBLIC SUBNET       │  PUBLIC SUBNET       │
+    │  (10.0.1.0/24)       │  (10.0.2.0/24)       │
+    │  AZ: us-east-1a      │  AZ: us-east-1b      │
+    │  ┌─────────────┐     │  ┌─────────────┐     │
+    │  │ NAT Gateway │     │  │ ALB         │     │
+    │  └──────┬──────┘     │  └──────┬──────┘     │
+    │         │            │         │            │
+    │  ───────┼────────────┼─────────┼────────────│
+    │         │            │         │            │
+    │  PRIVATE SUBNET      │  PRIVATE SUBNET      │
+    │  (10.0.10.0/24)      │  (10.0.20.0/24)      │
+    │  AZ: us-east-1a      │  AZ: us-east-1b      │
+    │  ┌─────────────┐     │  ┌─────────────┐     │
+    │  │ EC2 / ECS   │     │  │ EC2 / ECS   │     │
+    │  └──────┬──────┘     │  └──────┬──────┘     │
+    │         │            │         │            │
+    │  ───────┼────────────┼─────────┼────────────│
+    │         │            │         │            │
+    │  ISOLATED SUBNET     │  ISOLATED SUBNET     │
+    │  (10.0.100.0/24)     │  (10.0.200.0/24)     │
+    │  AZ: us-east-1a      │  AZ: us-east-1b      │
+    │  ┌─────────────┐     │  ┌─────────────┐     │
+    │  │ RDS Primary │     │  │ RDS Standby │     │
+    │  └─────────────┘     │  └─────────────┘     │
+    └─────────────────────────────────────────────┘
+
+CONCEITOS:
+- PUBLIC SUBNET: tem rota para Internet Gateway (recursos acessíveis da internet)
+- PRIVATE SUBNET: sem rota direta, usa NAT Gateway para acesso de saída
+- ISOLATED SUBNET: sem acesso à internet (bancos de dados, serviços internos)
+- Multi-AZ: distribuir em pelo menos 2 Availability Zones para alta disponibilidade
+```
+
+```bash
+# SECURITY GROUPS vs NACLs:
+
+# SECURITY GROUP (stateful — nível de instância):
+# Se permitir entrada, a resposta sai automaticamente
+# Regras: apenas ALLOW (sem DENY explícito)
+# Padrão: nega tudo de entrada, permite tudo de saída
+
+# Exemplo — Security Group para aplicação web:
+# Inbound:
+#   TCP 443 (HTTPS) from 0.0.0.0/0          ← Público
+#   TCP 80  (HTTP)  from 0.0.0.0/0           ← Público (redirect para HTTPS)
+#   TCP 22  (SSH)   from sg-bastion           ← Apenas do bastion host
+# Outbound:
+#   All traffic to 0.0.0.0/0                  ← Permite saída total
+
+# Exemplo — Security Group para banco de dados:
+# Inbound:
+#   TCP 5432 (PostgreSQL) from sg-app-server  ← Apenas dos app servers
+# Outbound:
+#   All traffic to 0.0.0.0/0
+
+# NACL — Network Access Control List (stateless — nível de subnet):
+# Precisa definir regras de entrada E saída explicitamente
+# Regras numeradas — processadas em ordem (menor número primeiro)
+# Tem regras ALLOW e DENY
+# Útil para: bloquear IPs específicos, compliance
+
+# Exemplo NACL:
+# Rule  Type       Protocol  Port    Source        Action
+# 100   HTTP       TCP       80      0.0.0.0/0    ALLOW
+# 110   HTTPS      TCP       443     0.0.0.0/0    ALLOW
+# 120   SSH        TCP       22      10.0.0.0/16  ALLOW
+# 200   Custom     TCP       1024-65535 0.0.0.0/0 ALLOW  ← Ephemeral ports
+# *     All        All       All     0.0.0.0/0    DENY   ← Default deny
+
+# ROUTE 53 — DNS gerenciado:
+# Routing policies:
+#   Simple      — um registro, um destino
+#   Weighted    — distribuir tráfego por peso (90% v1, 10% v2) — canary
+#   Latency     — direcionar para a região mais próxima
+#   Failover    — primary/secondary com health checks
+#   Geolocation — baseado na localização do usuário
+#   Multivalue  — retorna múltiplos IPs saudáveis (poor man's LB)
+```
+
+## Compute: EC2 em Profundidade
+
+```bash
+# TIPOS DE INSTÂNCIA EC2:
+# Formato: família + geração + tamanho
+# Exemplo: m7g.xlarge
+
+# FAMÍLIAS:
+# t3/t4g  — Burstable (CPU credits). Barato para workloads variáveis
+# m7i/m7g — General Purpose. Equilíbrio CPU/RAM. Maioria dos workloads
+# c7i/c7g — Compute Optimized. CPU intensiva (batch, encoding, ML inference)
+# r7i/r7g — Memory Optimized. RAM intensiva (caches, bancos in-memory)
+# i4i     — Storage Optimized. I/O intensiva (bancos, data warehouses)
+# g5/p5   — GPU. Machine learning, rendering
+
+# Sufixo 'g' = Graviton (ARM) — 20-40% melhor custo-performance que x86
+# Exemplo: m7g.large (Graviton3) vs m7i.large (Intel)
+
+# MODELOS DE PRICING:
+# On-Demand: paga por hora/segundo. Sem compromisso. Mais caro.
+# Reserved (1 ou 3 anos): até 72% de desconto. Para workloads estáveis.
+# Savings Plans: compromisso de gasto por hora. Mais flexível que Reserved.
+# Spot Instances: até 90% de desconto. AWS pode reclamar com 2min de aviso.
+#   Ideal para: batch processing, CI/CD runners, treinamento ML
+#   NÃO usar para: servidores de aplicação, bancos de dados
+
+# AUTO SCALING GROUP (ASG):
+# Ajusta automaticamente o número de instâncias baseado em métricas
+
+# aws autoscaling create-auto-scaling-group \
+#   --auto-scaling-group-name api-asg \
+#   --launch-template LaunchTemplateId=lt-abc123 \
+#   --min-size 2 \
+#   --max-size 10 \
+#   --desired-capacity 3 \
+#   --target-group-arns arn:aws:elasticloadbalancing:... \
+#   --vpc-zone-identifier "subnet-1a,subnet-1b"
+
+# Políticas de scaling:
+# Target Tracking: manter CPU em 60%
+# Step Scaling: se CPU > 80% por 5min → +2 instâncias
+# Scheduled: escalar para 10 instâncias às 9h, reduzir às 22h
+# Predictive: ML analisa padrões históricos e pré-escala
+
+# LAUNCH TEMPLATE (substitui Launch Configuration):
+# Define: AMI, instance type, security groups, user data, IAM role
+# Suporta versionamento — mude sem recriar ASG
+```
+
+## Storage: S3 em Profundidade
+
+```bash
+# S3 — Simple Storage Service
+# Object storage com 99.999999999% (11 noves) de durabilidade
+# Namespace global — nome do bucket deve ser único em toda a AWS
+
+# CLASSES DE ARMAZENAMENTO:
+# S3 Standard            — acesso frequente, baixa latência
+# S3 Intelligent-Tiering — move automaticamente entre tiers por padrão de acesso
+# S3 Standard-IA         — acesso infrequente (mín. 30 dias, taxa por acesso)
+# S3 One Zone-IA         — como IA mas em uma única AZ (mais barato, menos durável)
+# S3 Glacier Instant     — arquival com acesso em milissegundos
+# S3 Glacier Flexible    — arquival com acesso em minutos a horas
+# S3 Glacier Deep Archive— mais barato ($0.00099/GB/mês), acesso em 12-48h
+
+# LIFECYCLE POLICIES — mover objetos entre classes automaticamente:
+# {
+#   "Rules": [{
+#     "ID": "MoveToIA",
+#     "Status": "Enabled",
+#     "Transitions": [
+#       { "Days": 30, "StorageClass": "STANDARD_IA" },
+#       { "Days": 90, "StorageClass": "GLACIER_IR" },
+#       { "Days": 365, "StorageClass": "DEEP_ARCHIVE" }
+#     ],
+#     "Expiration": { "Days": 2555 }  # Deletar após 7 anos
+#   }]
+# }
+
+# VERSIONAMENTO — manter todas as versões de cada objeto:
+aws s3api put-bucket-versioning \
+  --bucket meu-bucket \
+  --versioning-configuration Status=Enabled
+# Protege contra deleção acidental e permite recuperar versões anteriores
+
+# PRESIGNED URLs — acesso temporário sem credenciais:
+aws s3 presign s3://meu-bucket/arquivo.pdf --expires-in 3600
+# Gera URL com token temporário válido por 1 hora
+
+# EBS vs EFS vs S3:
+# EBS — Block storage. Disco de uma EC2. Uma AZ. Snapshots para backup.
+#   Tipos: gp3 (SSD geral), io2 (SSD alta IOPS), st1 (HDD throughput)
+# EFS — Network filesystem. Compartilhado entre múltiplas EC2s. Multi-AZ.
+#   Ideal para: CMS, shared config, machine learning datasets
+# S3 — Object storage. Acesso via HTTP. Ilimitado. Mais barato.
+#   Ideal para: assets, backups, data lake, static hosting
+```
+
+## Serverless: Lambda e Ecossistema
+
+```python
+# AWS LAMBDA — Function as a Service
+
+# handler.py
+import json
+import boto3
+from datetime import datetime
+
+dynamodb = boto3.resource('dynamodb')
+table = dynamodb.Table('orders')
+
+def create_order(event, context):
+    """
+    Handler Lambda recebe 'event' (payload) e 'context' (metadados de execução).
+    context.aws_request_id — ID único da invocação
+    context.get_remaining_time_in_millis() — tempo restante antes do timeout
+    """
+    body = json.loads(event['body'])
+
+    order = {
+        'orderId': context.aws_request_id,
+        'userId': body['userId'],
+        'items': body['items'],
+        'total': body['total'],
+        'status': 'pending',
+        'createdAt': datetime.utcnow().isoformat(),
+    }
+
+    table.put_item(Item=order)
+
+    return {
+        'statusCode': 201,
+        'headers': {'Content-Type': 'application/json'},
+        'body': json.dumps(order),
+    }
+```
+
+```yaml
+# serverless.yml (Serverless Framework) ou SAM template:
+
+# LIMITES E CARACTERÍSTICAS DO LAMBDA:
+# - Timeout máximo: 15 minutos
+# - Memória: 128MB a 10240MB (CPU escala proporcionalmente)
+# - Pacote: 50MB zipped, 250MB unzipped (ou container até 10GB)
+# - Concorrência: 1000 padrão (pode solicitar aumento)
+# - Cold start: ~100ms (Python/Node) a ~1-2s (Java/C#)
+#   Provisioned Concurrency elimina cold starts ($$$)
+
+# PADRÕES SERVERLESS NA AWS:
+
+# API REST:
+#   API Gateway → Lambda → DynamoDB
+#   API Gateway: throttling, auth (Cognito/JWT), cache, WAF
+
+# Processamento assíncrono:
+#   SQS Queue → Lambda (batch de mensagens)
+#   SNS Topic → Lambda (fan-out para múltiplas funções)
+#   EventBridge → Lambda (event bus com regras e filtros)
+
+# Workflows complexos:
+#   Step Functions → Lambda (máquina de estados visual)
+#   Ideal para: sagas, processamento ETL, aprovações
+
+# Streaming:
+#   Kinesis / DynamoDB Streams → Lambda
+#   Processamento de eventos em tempo real
+
+# STEP FUNCTIONS — orquestração de workflows:
+# {
+#   "StartAt": "ValidateOrder",
+#   "States": {
+#     "ValidateOrder": {
+#       "Type": "Task",
+#       "Resource": "arn:aws:lambda:...:validate",
+#       "Next": "ProcessPayment",
+#       "Catch": [{"ErrorEquals": ["ValidationError"], "Next": "OrderFailed"}]
+#     },
+#     "ProcessPayment": {
+#       "Type": "Task",
+#       "Resource": "arn:aws:lambda:...:payment",
+#       "Next": "SendConfirmation",
+#       "Retry": [{"ErrorEquals": ["PaymentTimeout"], "MaxAttempts": 3}]
+#     },
+#     "SendConfirmation": {
+#       "Type": "Task",
+#       "Resource": "arn:aws:lambda:...:notify",
+#       "End": true
+#     },
+#     "OrderFailed": {
+#       "Type": "Fail",
+#       "Cause": "Validação falhou"
+#     }
+#   }
+# }
+```
+
+## IAM: Identity and Access Management
+
+```json
+// IAM é o serviço MAIS IMPORTANTE da AWS em termos de segurança.
+// Toda chamada de API na AWS passa por IAM para autorização.
+
+// POLICY (quem pode fazer o quê em quais recursos):
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Sid": "AllowS3ReadOnly",
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:ListBucket"
+      ],
+      "Resource": [
+        "arn:aws:s3:::meu-bucket",
+        "arn:aws:s3:::meu-bucket/*"
+      ],
+      "Condition": {
+        "IpAddress": {
+          "aws:SourceIp": "10.0.0.0/8"
+        }
+      }
+    },
+    {
+      "Sid": "DenyDeleteBucket",
+      "Effect": "Deny",
+      "Action": "s3:DeleteBucket",
+      "Resource": "*"
+    }
+  ]
+}
+
+// CONCEITOS FUNDAMENTAIS:
+// User      — identidade para pessoas (acesso ao console/CLI)
+// Group     — conjunto de users com as mesmas permissões
+// Role      — identidade assumível (por serviços, contas, users)
+// Policy    — documento JSON que define permissões
+
+// BOAS PRÁTICAS:
+// 1. NUNCA usar root account para operações do dia a dia
+// 2. MFA obrigatório para todos os users com acesso ao console
+// 3. Princípio do menor privilégio — dar apenas permissões necessárias
+// 4. Usar ROLES em vez de access keys para EC2, Lambda, ECS
+// 5. Rotacionar access keys periodicamente (máximo 90 dias)
+// 6. Usar IAM Access Analyzer para identificar recursos compartilhados externamente
+// 7. Permission boundaries para limitar o máximo que uma role pode ter
+
+// ASSUME ROLE — como um serviço assume uma role:
+// EC2 Instance Profile → Role com policy de S3 → EC2 acessa S3 sem credentials
+// Lambda Execution Role → Role com policy de DynamoDB → Lambda lê/escreve tabela
+// Cross-account: conta A assume role da conta B para acessar recursos
+```
+
+## Infraestrutura como Código: CloudFormation e CDK
+
+```yaml
+# CloudFormation — IaC nativa da AWS (declarativo):
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Stack de produção para API
+
+Parameters:
+  Environment:
+    Type: String
+    AllowedValues: [staging, production]
+  InstanceType:
+    Type: String
+    Default: t3.medium
+
+Resources:
+  VPC:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: 10.0.0.0/16
+      EnableDnsHostnames: true
+      Tags:
+        - Key: Name
+          Value: !Sub "${Environment}-vpc"
+
+  AppSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Security group para aplicação
+      VpcId: !Ref VPC
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: 443
+          ToPort: 443
+          CidrIp: 0.0.0.0/0
+
+Outputs:
+  VpcId:
+    Value: !Ref VPC
+    Export:
+      Name: !Sub "${Environment}-VpcId"
+```
+
+```typescript
+// CDK — IaC com linguagens de programação (mais produtivo):
+import * as cdk from 'aws-cdk-lib';
+import * as ec2 from 'aws-cdk-lib/aws-ec2';
+import * as ecs from 'aws-cdk-lib/aws-ecs';
+import * as rds from 'aws-cdk-lib/aws-rds';
+
+export class ApiStack extends cdk.Stack {
+  constructor(scope: cdk.App, id: string, props?: cdk.StackProps) {
+    super(scope, id, props);
+
+    const vpc = new ec2.Vpc(this, 'Vpc', {
+      maxAzs: 2,
+      natGateways: 1,
+    });
+
+    const cluster = new ecs.Cluster(this, 'Cluster', { vpc });
+
+    const db = new rds.DatabaseInstance(this, 'Database', {
+      engine: rds.DatabaseInstanceEngine.postgres({
+        version: rds.PostgresEngineVersion.VER_16,
+      }),
+      instanceType: ec2.InstanceType.of(
+        ec2.InstanceClass.T3, ec2.InstanceSize.MEDIUM
+      ),
+      vpc,
+      multiAz: true,
+      deletionProtection: true,
+    });
+  }
+}
+// CDK compila para CloudFormation — mesma engine por baixo
+// Vantagens: loops, condicionais, tipos, testes unitários
+```
+
+## Otimização de Custos
+
+```
+ESTRATÉGIAS DE ECONOMIA:
+
+1. RIGHT-SIZING — usar o tamanho correto de instância
+   AWS Cost Explorer → Right Sizing Recommendations
+   Compute Optimizer → analisa métricas e sugere instâncias menores
+   Regra: se CPU média < 20%, provavelmente a instância é grande demais
+
+2. RESERVED INSTANCES / SAVINGS PLANS
+   Workloads estáveis (banco, API principal) → Reserved (até 72% desconto)
+   Savings Plans: compromisso de $/hora, aplica automaticamente
+
+3. SPOT INSTANCES para workloads tolerantes a interrupção
+   CI/CD runners, batch processing, treinamento ML
+   Usar com ASG Mixed Instances Policy (mix de on-demand + spot)
+
+4. S3 LIFECYCLE POLICIES
+   Mover dados antigos para classes mais baratas automaticamente
+   Standard → IA (30 dias) → Glacier (90 dias) → Deep Archive (365 dias)
+
+5. NAT GATEWAY COSTS (armadilha comum!)
+   NAT Gateway: $0.045/hora + $0.045/GB processado
+   Alternativas: NAT Instance (EC2 t3.nano), VPC Endpoints para S3/DynamoDB
+
+6. VPC ENDPOINTS — evitar tráfego pela internet (e custos de NAT)
+   Gateway Endpoint (gratuito): S3, DynamoDB
+   Interface Endpoint ($0.01/hora): maioria dos serviços AWS
+
+7. TAGS PARA COST ALLOCATION
+   Toda recurso deve ter tags: Environment, Team, Project, CostCenter
+   AWS Cost Explorer agrupa custos por tags
+
+8. FERRAMENTAS:
+   AWS Cost Explorer      — análise de gastos e tendências
+   AWS Budgets            — alertas quando se aproximar do limite
+   Trusted Advisor        — recomendações de otimização
+   CloudWatch Billing     — alarme quando custo exceder threshold
+   Infracost (open-source)— estima custo de mudanças de IaC no PR
+```

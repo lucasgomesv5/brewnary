@@ -1,0 +1,826 @@
+---
+title: "Notação Assintótica (Big O)"
+description: "Análise formal de complexidade algorítmica: Big O, Omega, Theta, Master Theorem, análise amortizada e os limites da teoria na prática"
+track: "cs"
+order: 6
+section: "Fundamentos da Computação"
+priority: "high"
+tags: ["big-o", "complexidade", "algoritmos", "performance", "análise", "master-theorem", "amortizada"]
+prerequisites: ["logaritmos-e-algebra"]
+keyTakeaways:
+  - "Big O é uma definição matemática formal: f(n) = O(g(n)) ⟺ ∃c>0, n₀>0 tal que f(n) ≤ c·g(n) ∀n≥n₀"
+  - "Existem três notações assintóticas: O (upper bound), Ω (lower bound) e Θ (tight bound)"
+  - "Análise amortizada revela o custo real de operações que parecem caras mas são baratas na média"
+  - "Big O ignora constantes e cache locality — benchmarking real é indispensável para decisões de produção"
+---
+
+# Notação Assintótica (Big O)
+
+> **Ponto chave:** Big O não é um número mágico que você cola numa função. É uma ferramenta de **raciocínio formal** sobre escalabilidade. Saber quando a análise assintótica importa, quando ela mente, e como provar formalmente a complexidade de um algoritmo é essencial.
+
+---
+
+## 1. Definição Formal de Big O
+
+A notação Big O descreve um **limite superior assintótico** (upper bound) para o crescimento de uma função. A definição formal é:
+
+```
+f(n) = O(g(n))  ⟺  ∃c > 0, ∃n₀ > 0  tal que  f(n) ≤ c · g(n)  ∀n ≥ n₀
+```
+
+Em palavras: `f(n)` é `O(g(n))` se existem constantes positivas `c` e `n₀` tais que, para todo `n` suficientemente grande (n ≥ n₀), o valor de `f(n)` nunca excede `c · g(n)`.
+
+**Exemplo de prova formal — Provar que `3n² + 5n + 2 = O(n²)`:**
+
+```
+Precisamos encontrar c > 0 e n₀ > 0 tais que:
+  3n² + 5n + 2 ≤ c · n²    ∀n ≥ n₀
+
+Para n ≥ 1:
+  5n ≤ 5n²       (pois n ≤ n² quando n ≥ 1)
+  2 ≤ 2n²        (pois 1 ≤ n² quando n ≥ 1)
+
+Logo:
+  3n² + 5n + 2 ≤ 3n² + 5n² + 2n² = 10n²
+
+Escolhendo c = 10 e n₀ = 1:
+  3n² + 5n + 2 ≤ 10 · n²    ∀n ≥ 1  ∎
+```
+
+**Propriedades algébricas importantes:**
+
+```
+1. Transitividade:   f(n) = O(g(n)) ∧ g(n) = O(h(n)) → f(n) = O(h(n))
+2. Soma:             O(f(n)) + O(g(n)) = O(max(f(n), g(n)))
+3. Produto:          O(f(n)) · O(g(n)) = O(f(n) · g(n))
+4. Constantes:       O(c · f(n)) = O(f(n))  para qualquer constante c > 0
+5. Polinômios:       aₖnᵏ + aₖ₋₁nᵏ⁻¹ + ... + a₁n + a₀ = O(nᵏ)
+```
+
+---
+
+## 2. Big Omega (Ω) e Big Theta (Θ)
+
+Big O sozinho é incompleto. Existem três notações assintóticas que juntas descrevem o comportamento de uma função:
+
+**Big Omega — Limite inferior (lower bound):**
+
+```
+f(n) = Ω(g(n))  ⟺  ∃c > 0, ∃n₀ > 0  tal que  f(n) ≥ c · g(n)  ∀n ≥ n₀
+```
+
+**Big Theta — Limite justo (tight bound):**
+
+```
+f(n) = Θ(g(n))  ⟺  f(n) = O(g(n))  ∧  f(n) = Ω(g(n))
+
+Equivalente a:
+∃c₁ > 0, ∃c₂ > 0, ∃n₀ > 0  tal que  c₁·g(n) ≤ f(n) ≤ c₂·g(n)  ∀n ≥ n₀
+```
+
+**Na prática, o que muda:**
+
+| Notação | Significado | Analogia |
+|---------|-------------|----------|
+| O(g(n)) | f cresce **no máximo** tão rápido quanto g | f ≤ g (eventualmente, a menos de constantes) |
+| Ω(g(n)) | f cresce **pelo menos** tão rápido quanto g | f ≥ g (eventualmente, a menos de constantes) |
+| Θ(g(n)) | f cresce **exatamente** tão rápido quanto g | f ≈ g (eventualmente, a menos de constantes) |
+
+**Exemplo concreto:**
+
+```
+Merge Sort:
+  - Melhor caso:  Θ(n log n)
+  - Pior caso:    Θ(n log n)
+  - Logo:         Θ(n log n) em todos os casos
+
+Quick Sort:
+  - Melhor caso:  Θ(n log n)
+  - Pior caso:    Θ(n²)       ← pivô ruim toda vez
+  - Logo:         O(n²) mas Ω(n log n)
+  - Caso médio:   Θ(n log n)  ← por isso usamos na prática
+```
+
+**Erro comum em entrevistas:** dizer "o Big O do quicksort é O(n log n)". Tecnicamente, `O(n²)` é o correto para o pior caso. O caso médio é `Θ(n log n)`, mas isso é outra afirmação. Essa distinção importa.
+
+---
+
+## 3. Classes de Complexidade
+
+Hierarquia formal, da mais eficiente à menos eficiente:
+
+```
+O(1) ⊂ O(log n) ⊂ O(√n) ⊂ O(n) ⊂ O(n log n) ⊂ O(n²) ⊂ O(n³) ⊂ O(2ⁿ) ⊂ O(n!)
+```
+
+**Tabela de crescimento real (operações para dado n):**
+
+```
+n           O(1)    O(log n)   O(n)         O(n log n)      O(n²)              O(2ⁿ)
+──────────────────────────────────────────────────────────────────────────────────────────
+10          1       3          10           33              100                1.024
+100         1       7          100          664             10.000             1.26 × 10³⁰
+1.000       1       10         1.000        9.966           1.000.000          ∞
+1.000.000   1       20         1.000.000    19.931.569      10¹²               ∞
+10⁹         1       30         10⁹          2.99 × 10¹⁰    10¹⁸               ∞
+```
+
+**O que cada classe significa na prática:**
+
+```typescript
+// O(1) — Constante. Independe de n.
+// Acesso a array por índice, operações em hash table (caso médio)
+function getElement(arr: number[], i: number): number {
+  return arr[i]; // Aritmética de ponteiro: base + i * sizeof(element)
+}
+
+// O(log n) — Logarítmica. Divide o problema a cada passo.
+// Binary search, operações em árvore balanceada, busca em B-Tree
+function binarySearch(arr: number[], target: number): number {
+  let lo = 0, hi = arr.length - 1;
+  while (lo <= hi) {
+    const mid = lo + ((hi - lo) >> 1); // Evita overflow de inteiros
+    if (arr[mid] === target) return mid;
+    if (arr[mid] < target) lo = mid + 1;
+    else hi = mid - 1;
+  }
+  return -1;
+}
+
+// O(n) — Linear. Toca cada elemento uma vez.
+// Busca linear, cálculo de soma, travessia de lista
+function sum(arr: number[]): number {
+  let total = 0;
+  for (let i = 0; i < arr.length; i++) {
+    total += arr[i];
+  }
+  return total;
+}
+
+// O(n log n) — Linearítmica. Limite inferior para ordenação baseada em comparação.
+// Merge sort, heap sort, Tim sort (usado por V8)
+function mergeSort(arr: number[]): number[] {
+  if (arr.length <= 1) return arr;
+  const mid = arr.length >> 1;
+  const left = mergeSort(arr.slice(0, mid));
+  const right = mergeSort(arr.slice(mid));
+  return merge(left, right);
+}
+
+function merge(a: number[], b: number[]): number[] {
+  const result: number[] = [];
+  let i = 0, j = 0;
+  while (i < a.length && j < b.length) {
+    result.push(a[i] <= b[j] ? a[i++] : b[j++]);
+  }
+  while (i < a.length) result.push(a[i++]);
+  while (j < b.length) result.push(b[j++]);
+  return result;
+}
+
+// O(n²) — Quadrática. Geralmente loops aninhados sobre a mesma coleção.
+// Bubble sort, insertion sort, comparação de todos os pares
+function allPairs(arr: number[]): [number, number][] {
+  const pairs: [number, number][] = [];
+  for (let i = 0; i < arr.length; i++) {
+    for (let j = i + 1; j < arr.length; j++) {
+      pairs.push([arr[i], arr[j]]);
+    }
+  }
+  return pairs;
+  // Exatamente n(n-1)/2 = Θ(n²) pares
+}
+
+// O(2ⁿ) — Exponencial. Cada elemento tem duas escolhas.
+// Subconjuntos, Fibonacci ingênuo, backtracking sem poda
+function fibonacci(n: number): number {
+  if (n <= 1) return n;
+  return fibonacci(n - 1) + fibonacci(n - 2);
+  // T(n) = T(n-1) + T(n-2) + O(1) → T(n) = Θ(φⁿ) onde φ ≈ 1.618
+}
+
+// O(n!) — Fatorial. Todas as permutações.
+// Traveling salesman brute force, permutações
+function permutations<T>(arr: T[]): T[][] {
+  if (arr.length <= 1) return [arr];
+  const result: T[][] = [];
+  for (let i = 0; i < arr.length; i++) {
+    const rest = [...arr.slice(0, i), ...arr.slice(i + 1)];
+    for (const perm of permutations(rest)) {
+      result.push([arr[i], ...perm]);
+    }
+  }
+  return result;
+  // T(n) = n · T(n-1) → T(n) = Θ(n!)
+}
+```
+
+---
+
+## 4. Análise de Loops e Recorrências
+
+### 4.1 Loops Simples e Aninhados
+
+```typescript
+// Caso 1: Loop simples → O(n)
+for (let i = 0; i < n; i++) { /* O(1) */ }
+
+// Caso 2: Loops aninhados independentes → O(n · m)
+for (let i = 0; i < n; i++) {
+  for (let j = 0; j < m; j++) { /* O(1) */ }
+}
+
+// Caso 3: Loop com incremento multiplicativo → O(log n)
+for (let i = 1; i < n; i *= 2) { /* O(1) */ }
+// i assume: 1, 2, 4, 8, ..., 2ᵏ onde 2ᵏ < n → k = ⌊log₂(n)⌋
+
+// Caso 4: Loop aninhado com dependência → O(n²)
+for (let i = 0; i < n; i++) {
+  for (let j = 0; j < i; j++) { /* O(1) */ }
+}
+// Total: 0 + 1 + 2 + ... + (n-1) = n(n-1)/2 = Θ(n²)
+
+// Caso 5: Loop aninhado log × n → O(n log n)
+for (let i = 1; i < n; i *= 2) {       // O(log n) iterações
+  for (let j = 0; j < n; j++) {         // O(n) cada
+    /* O(1) */
+  }
+}
+
+// Caso 6: Série harmônica → O(n log n)
+for (let i = 1; i <= n; i++) {
+  for (let j = 0; j < n; j += i) {     // n/i iterações
+    /* O(1) */
+  }
+}
+// Total: n/1 + n/2 + n/3 + ... + n/n = n · Hₙ = n · Θ(ln n) = Θ(n log n)
+// Hₙ = Σ(1/i) de i=1 até n ≈ ln(n) + γ  (γ ≈ 0.5772, constante de Euler-Mascheroni)
+// Este padrão aparece no Crivo de Eratóstenes!
+```
+
+### 4.2 Análise de Funções Recursivas
+
+Para funções recursivas, escrevemos uma **relação de recorrência** e a resolvemos:
+
+```typescript
+// Exemplo 1: Busca binária
+// T(n) = T(n/2) + O(1) → T(n) = O(log n)
+function binarySearchRecursive(
+  arr: number[], target: number, lo: number, hi: number
+): number {
+  if (lo > hi) return -1;
+  const mid = lo + ((hi - lo) >> 1);
+  if (arr[mid] === target) return mid;
+  if (arr[mid] < target)
+    return binarySearchRecursive(arr, target, mid + 1, hi);
+  return binarySearchRecursive(arr, target, lo, mid - 1);
+}
+
+// Exemplo 2: Merge sort
+// T(n) = 2T(n/2) + O(n) → T(n) = O(n log n)
+// Divide em 2 subproblemas de tamanho n/2, merge custa O(n)
+
+// Exemplo 3: Exponenciação rápida
+// T(n) = T(n/2) + O(1) → T(n) = O(log n)
+function power(base: number, exp: number): number {
+  if (exp === 0) return 1;
+  if (exp % 2 === 0) {
+    const half = power(base, exp / 2);
+    return half * half;           // Evita computação redundante
+  }
+  return base * power(base, exp - 1);
+}
+
+// Exemplo 4: Gerar todos os subconjuntos
+// T(n) = 2T(n-1) + O(1) → T(n) = O(2ⁿ)
+function subsets(arr: number[], i: number = 0, current: number[] = []): number[][] {
+  if (i === arr.length) return [current.slice()];
+  const without = subsets(arr, i + 1, current);
+  current.push(arr[i]);
+  const withEl = subsets(arr, i + 1, current);
+  current.pop();
+  return [...without, ...withEl];
+}
+```
+
+---
+
+## 5. Master Theorem
+
+O **Teorema Mestre** resolve recorrências da forma:
+
+```
+T(n) = a · T(n/b) + f(n)
+
+onde a ≥ 1, b > 1, e f(n) é assintoticamente positiva.
+```
+
+Seja `c_crit = log_b(a)` o **expoente crítico**. Comparamos `f(n)` com `n^c_crit`:
+
+```
+Caso 1: Se f(n) = O(n^(c_crit - ε)) para algum ε > 0
+         → T(n) = Θ(n^c_crit)
+         O custo é dominado pelas folhas da árvore de recursão.
+
+Caso 2: Se f(n) = Θ(n^c_crit · log^k(n)) para k ≥ 0
+         → T(n) = Θ(n^c_crit · log^(k+1)(n))
+         O custo é distribuído uniformemente entre os níveis.
+
+Caso 3: Se f(n) = Ω(n^(c_crit + ε)) para algum ε > 0
+         E se a · f(n/b) ≤ c · f(n) para algum c < 1 (condição de regularidade)
+         → T(n) = Θ(f(n))
+         O custo é dominado pela raiz.
+```
+
+**Aplicações práticas:**
+
+```
+Binary Search:    T(n) = 1·T(n/2) + O(1)
+  a=1, b=2, c_crit=log₂(1)=0, f(n)=O(1)=Θ(n⁰)
+  Caso 2 (k=0): T(n) = Θ(log n)  ✓
+
+Merge Sort:       T(n) = 2·T(n/2) + O(n)
+  a=2, b=2, c_crit=log₂(2)=1, f(n)=Θ(n¹)
+  Caso 2 (k=0): T(n) = Θ(n log n)  ✓
+
+Strassen:         T(n) = 7·T(n/2) + O(n²)
+  a=7, b=2, c_crit=log₂(7)≈2.807, f(n)=O(n²)=O(n^(2.807-0.807))
+  Caso 1 (ε=0.807): T(n) = Θ(n^2.807) ≈ Θ(n^log₂(7))  ✓
+
+Karatsuba:        T(n) = 3·T(n/2) + O(n)
+  a=3, b=2, c_crit=log₂(3)≈1.585, f(n)=O(n)=O(n^(1.585-0.585))
+  Caso 1 (ε=0.585): T(n) = Θ(n^1.585)  ✓
+
+Mediana:          T(n) = T(n/5) + T(7n/10) + O(n)
+  ← NÃO se aplica ao Master Theorem (subproblemas de tamanhos diferentes).
+  Usa-se o método de substituição ou Akra-Bazzi.
+```
+
+**Quando o Master Theorem não se aplica:**
+
+```
+1. T(n) = 2T(n/2) + n log n   → f(n) = n log n não é polinomialmente maior que n¹
+   (Caso 2 estendido: T(n) = Θ(n log²n))
+2. T(n) = T(n-1) + O(1)       → não é da forma T(n/b), é linear
+3. T(n) = T(√n) + O(1)        → mudança de variável: m = log n → S(m) = S(m/2) + O(1)
+```
+
+---
+
+## 6. Análise Amortizada
+
+A análise amortizada calcula o **custo médio por operação ao longo de uma sequência** de operações, sem usar probabilidades. Existem três métodos formais.
+
+### 6.1 Método Agregado (Aggregate Method)
+
+Calcula o custo total de `n` operações e divide por `n`.
+
+**Exemplo: Array dinâmico (push com resize)**
+
+```typescript
+class DynamicArray<T> {
+  private data: T[];
+  private size: number = 0;
+  private capacity: number;
+
+  constructor(initialCapacity: number = 1) {
+    this.data = new Array(initialCapacity);
+    this.capacity = initialCapacity;
+  }
+
+  push(value: T): void {
+    if (this.size === this.capacity) {
+      this.resize(this.capacity * 2); // Dobra a capacidade
+    }
+    this.data[this.size++] = value;
+  }
+
+  private resize(newCapacity: number): void {
+    const newData = new Array(newCapacity);
+    for (let i = 0; i < this.size; i++) {
+      newData[i] = this.data[i]; // Copia todos os elementos: O(n)
+    }
+    this.data = newData;
+    this.capacity = newCapacity;
+  }
+}
+```
+
+**Análise do custo de `n` operações `push`:**
+
+```
+Resizes ocorrem quando size = 1, 2, 4, 8, ..., 2ᵏ onde 2ᵏ ≤ n
+
+Custo total = n (inserções normais) + Σ 2ⁱ (cópias nos resizes)
+            = n + (1 + 2 + 4 + ... + 2^⌊log₂(n)⌋)
+            = n + (2^(⌊log₂(n)⌋+1) - 1)
+            ≤ n + 2n - 1
+            = 3n - 1
+
+Custo amortizado por push = (3n - 1) / n < 3 = O(1)  ∎
+```
+
+### 6.2 Método do Banqueiro (Accounting Method)
+
+Atribui um "crédito" a cada operação. Operações baratas pagam créditos extras que financiam operações caras futuras.
+
+```
+Para o array dinâmico, atribuímos custo amortizado = 3 para cada push:
+  - 1 moeda: paga a inserção do próprio elemento
+  - 1 moeda: paga a cópia futura desse elemento no próximo resize
+  - 1 moeda: paga a cópia de um elemento antigo que ainda não tem crédito
+
+Invariante: cada elemento no array tem pelo menos 1 moeda guardada.
+Quando um resize acontece, todas as cópias são pagas pelas moedas acumuladas.
+
+Crédito nunca fica negativo → custo amortizado é O(1)  ∎
+```
+
+### 6.3 Método do Potencial (Potential Method)
+
+Define uma **função potencial** Φ que mapeia o estado da estrutura para um número real não negativo.
+
+```
+Custo amortizado = custo real + ΔΦ = cᵢ + Φ(Dᵢ) - Φ(Dᵢ₋₁)
+
+Para o array dinâmico:
+  Φ(D) = 2 · size(D) - capacity(D)
+
+  Push sem resize (size < capacity):
+    custo real = 1
+    ΔΦ = 2(s+1) - cap - (2s - cap) = 2
+    custo amortizado = 1 + 2 = 3
+
+  Push com resize (size = capacity = old_cap):
+    custo real = 1 + old_cap  (inserção + cópia de todos)
+    nova capacity = 2 · old_cap
+    ΔΦ = 2(old_cap+1) - 2·old_cap - (2·old_cap - old_cap)
+        = 2·old_cap + 2 - 2·old_cap - old_cap
+        = 2 - old_cap
+    custo amortizado = (1 + old_cap) + (2 - old_cap) = 3
+
+Em ambos os casos, custo amortizado = 3 = O(1)  ∎
+```
+
+---
+
+## 7. Complexidade de Espaço vs Tempo
+
+### 7.1 Definição Formal
+
+A **complexidade de espaço** S(n) de um algoritmo é a quantidade de memória adicional (além do input) usada como função do tamanho da entrada.
+
+```
+Complexidade total de espaço = espaço do input + espaço auxiliar
+Geralmente analisamos apenas o espaço auxiliar.
+```
+
+### 7.2 Space-Time Tradeoff
+
+Formalmente, muitos problemas admitem uma família de algoritmos parametrizada onde:
+
+```
+T(n) · S(n) ≥ Ω(f(n))
+
+Reduzir tempo frequentemente requer mais espaço, e vice-versa.
+```
+
+**Exemplo clássico: Detecção de duplicatas**
+
+```typescript
+// Abordagem 1: O(n²) tempo, O(1) espaço auxiliar
+function hasDuplicateBrute(arr: number[]): boolean {
+  for (let i = 0; i < arr.length; i++) {
+    for (let j = i + 1; j < arr.length; j++) {
+      if (arr[i] === arr[j]) return true;
+    }
+  }
+  return false;
+}
+
+// Abordagem 2: O(n log n) tempo, O(1) espaço (se sort in-place)
+function hasDuplicateSort(arr: number[]): boolean {
+  arr.sort((a, b) => a - b); // Tim sort: O(n log n), in-place com O(log n) stack
+  for (let i = 1; i < arr.length; i++) {
+    if (arr[i] === arr[i - 1]) return true;
+  }
+  return false;
+}
+
+// Abordagem 3: O(n) tempo, O(n) espaço — troca memória por velocidade
+function hasDuplicateHash(arr: number[]): boolean {
+  const seen = new Set<number>();
+  for (const val of arr) {
+    if (seen.has(val)) return true;
+    seen.add(val);
+  }
+  return false;
+}
+```
+
+**Exemplo avançado: Caching / Memoização**
+
+```typescript
+// Fibonacci sem memoização: O(2ⁿ) tempo, O(n) espaço (call stack)
+function fibNaive(n: number): number {
+  if (n <= 1) return n;
+  return fibNaive(n - 1) + fibNaive(n - 2);
+}
+
+// Com memoização (top-down DP): O(n) tempo, O(n) espaço
+function fibMemo(n: number, memo = new Map<number, number>()): number {
+  if (n <= 1) return n;
+  if (memo.has(n)) return memo.get(n)!;
+  const result = fibMemo(n - 1, memo) + fibMemo(n - 2, memo);
+  memo.set(n, result);
+  return result;
+}
+
+// Bottom-up com espaço otimizado: O(n) tempo, O(1) espaço
+function fibOptimal(n: number): number {
+  if (n <= 1) return n;
+  let prev2 = 0, prev1 = 1;
+  for (let i = 2; i <= n; i++) {
+    const curr = prev1 + prev2;
+    prev2 = prev1;
+    prev1 = curr;
+  }
+  return prev1;
+}
+// Três soluções: O(2ⁿ)/O(n), O(n)/O(n), O(n)/O(1)
+// A última é estritamente superior em tempo E espaço.
+```
+
+### 7.3 Complexidade de Espaço em Recursão
+
+```
+Cada chamada recursiva consome espaço na call stack.
+Profundidade máxima da recursão = espaço de stack.
+
+Merge sort: O(n) espaço auxiliar (arrays temporários + O(log n) stack)
+Quick sort: O(log n) espaço médio (stack), O(n) pior caso
+            Com tail-call optimization: O(log n) garantido
+DFS em grafo: O(V) espaço (stack de recursão)
+BFS em grafo: O(V) espaço (fila)
+```
+
+---
+
+## 8. Decisões Práticas: Escolhas de Estruturas de Dados
+
+### 8.1 HashMap vs TreeMap
+
+```typescript
+// Cenário: armazenar pares chave-valor
+
+// HashMap (Map em JS, unordered_map em C++)
+// ┌──────────────────────────────────────────────────┐
+// │ Operação    │ Caso médio │ Pior caso              │
+// │ get/set     │ O(1)       │ O(n) — colisões        │
+// │ delete      │ O(1)       │ O(n)                   │
+// │ iteração    │ O(n)       │ O(n) — sem ordem        │
+// │ espaço      │ O(n)       │ O(n)                   │
+// └──────────────────────────────────────────────────┘
+
+// TreeMap (não nativo em JS; em Java: TreeMap, C++: std::map)
+// Implementado como Red-Black Tree ou AVL Tree
+// ┌──────────────────────────────────────────────────┐
+// │ Operação    │ Caso médio │ Pior caso              │
+// │ get/set     │ O(log n)   │ O(log n) — garantido   │
+// │ delete      │ O(log n)   │ O(log n)               │
+// │ iteração    │ O(n)       │ O(n) — em ordem!        │
+// │ min/max     │ O(log n)   │ O(log n)               │
+// │ range query │ O(log n+k) │ O(log n+k)             │
+// └──────────────────────────────────────────────────┘
+```
+
+**Quando escolher cada um:**
+
+```
+Use HashMap quando:
+  - Só precisa de lookup/insert/delete rápidos
+  - Não precisa de ordem
+  - Aceita pior caso O(n) (raro com boas hash functions)
+
+Use TreeMap quando:
+  - Precisa de elementos ordenados
+  - Precisa de range queries: "todos os elementos entre A e B"
+  - Precisa de min/max eficiente
+  - Precisa de pior caso garantido O(log n)
+  - Exemplo: order book de uma exchange, event scheduler
+```
+
+### 8.2 ArrayList vs LinkedList
+
+```typescript
+// ArrayList (Array em JS, std::vector em C++)
+// ┌──────────────────────────────────────────────────────────┐
+// │ Operação              │ Complexidade                      │
+// │ Acesso por índice     │ O(1)                              │
+// │ Push no final         │ O(1) amortizado                   │
+// │ Inserção no meio      │ O(n) — shift de todos à direita   │
+// │ Remoção no meio       │ O(n) — shift de todos à esquerda  │
+// │ Busca                 │ O(n)                              │
+// │ Cache performance     │ EXCELENTE — dados contíguos       │
+// └──────────────────────────────────────────────────────────┘
+
+// LinkedList (não nativa em JS como estrutura eficiente)
+// ┌──────────────────────────────────────────────────────────┐
+// │ Operação              │ Complexidade                      │
+// │ Acesso por índice     │ O(n) — travessia sequencial       │
+// │ Push no início/fim    │ O(1) — se tiver referência        │
+// │ Inserção no meio      │ O(1) — se já tem o nó             │
+// │ Remoção no meio       │ O(1) — se já tem o nó             │
+// │ Busca                 │ O(n)                              │
+// │ Cache performance     │ PÉSSIMA — nós espalhados na heap  │
+// └──────────────────────────────────────────────────────────┘
+```
+
+**A realidade que Big O não conta:**
+
+```
+Na teoria: LinkedList vence para inserções frequentes no meio.
+Na prática: ArrayList quase sempre vence, mesmo para inserções.
+
+Por quê? Cache locality.
+  - Array: dados contíguos → prefetch da CPU funciona
+  - LinkedList: nós espalhados → cache miss a cada acesso
+
+Em benchmarks reais, ArrayList é frequentemente 10-100x mais rápido
+para iteração do que LinkedList, mesmo quando Big O diz "igual" — O(n).
+```
+
+---
+
+## 9. Quando Big O Não Conta Toda a História
+
+### 9.1 Constantes Ocultas
+
+```
+Algoritmo A: 1000n         → O(n)
+Algoritmo B: 2n log₂(n)    → O(n log n)
+
+Para n < 2^1000 ≈ 10^301, o algoritmo B é mais rápido!
+Na prática, se n < ~10^6, as constantes dominam.
+```
+
+**Exemplo real: multiplicação de matrizes**
+
+```
+Algoritmo ingênuo:  O(n³)     — constante muito pequena, cache-friendly
+Strassen:           O(n^2.807) — constante enorme, cache-unfriendly
+Coppersmith-Winograd: O(n^2.376) — constante galáctica, inutilizável
+
+Na prática: Strassen só vence para n > ~100-500 (depende do hardware).
+Coppersmith-Winograd nunca foi implementado de forma prática.
+```
+
+### 9.2 Cache Locality e Hierarquia de Memória
+
+```
+Latências típicas (ordem de grandeza):
+  L1 cache:   ~1ns       (4 ciclos)
+  L2 cache:   ~4ns       (12 ciclos)
+  L3 cache:   ~12ns      (36 ciclos)
+  RAM (DRAM): ~100ns     (~300 ciclos)
+  SSD:        ~100μs     (~300.000 ciclos)
+  HDD:        ~10ms      (~30.000.000 ciclos)
+
+Acessar RAM é ~100x mais lento que L1.
+Um algoritmo O(n²) cache-friendly pode vencer um O(n log n) cache-unfriendly.
+```
+
+```typescript
+// Demonstração: percorrer matriz por linhas vs por colunas
+function rowMajor(matrix: number[][], n: number): number {
+  let sum = 0;
+  for (let i = 0; i < n; i++) {
+    for (let j = 0; j < n; j++) {
+      sum += matrix[i][j]; // Acesso sequencial → cache hits
+    }
+  }
+  return sum;
+}
+
+function colMajor(matrix: number[][], n: number): number {
+  let sum = 0;
+  for (let j = 0; j < n; j++) {
+    for (let i = 0; i < n; i++) {
+      sum += matrix[i][j]; // Acesso aos saltos → cache misses
+    }
+  }
+  return sum;
+}
+
+// Ambos são O(n²), mas rowMajor pode ser 5-10x mais rápido
+// em matrizes grandes por causa do prefetch e cache lines.
+```
+
+### 9.3 Benchmarking Real em JavaScript
+
+```typescript
+// NUNCA confie apenas em Big O. Meça.
+function benchmark(fn: () => void, label: string, iterations: number = 100): void {
+  // Warmup: deixa o JIT compilar
+  for (let i = 0; i < 10; i++) fn();
+
+  const times: number[] = [];
+  for (let i = 0; i < iterations; i++) {
+    const start = performance.now();
+    fn();
+    times.push(performance.now() - start);
+  }
+
+  times.sort((a, b) => a - b);
+  const median = times[Math.floor(times.length / 2)];
+  const p99 = times[Math.floor(times.length * 0.99)];
+  const mean = times.reduce((a, b) => a + b, 0) / times.length;
+
+  console.log(`${label}: median=${median.toFixed(3)}ms, mean=${mean.toFixed(3)}ms, p99=${p99.toFixed(3)}ms`);
+}
+
+// Exemplo: Map vs Object para lookup
+const n = 1_000_000;
+const mapData = new Map<string, number>();
+const objData: Record<string, number> = {};
+
+for (let i = 0; i < n; i++) {
+  const key = `key_${i}`;
+  mapData.set(key, i);
+  objData[key] = i;
+}
+
+benchmark(() => {
+  for (let i = 0; i < 1000; i++) mapData.get(`key_${i}`);
+}, "Map.get");
+
+benchmark(() => {
+  for (let i = 0; i < 1000; i++) objData[`key_${i}`];
+}, "Object[]");
+
+// Ambos são "O(1)" mas Map costuma ser mais rápido para datasets
+// grandes no V8 por causa de como hidden classes funcionam em Objects.
+```
+
+---
+
+## 10. Resumo para Referência Rápida
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│ Notação  │ Significado                │ Fórmula                     │
+├─────────────────────────────────────────────────────────────────────┤
+│ O(g(n))  │ Upper bound (no máximo)    │ f(n) ≤ c·g(n) ∀n≥n₀        │
+│ Ω(g(n))  │ Lower bound (no mínimo)    │ f(n) ≥ c·g(n) ∀n≥n₀        │
+│ Θ(g(n))  │ Tight bound (exatamente)   │ c₁·g(n) ≤ f(n) ≤ c₂·g(n)  │
+│ o(g(n))  │ Strict upper (estritamente)│ lim f(n)/g(n) = 0           │
+│ ω(g(n))  │ Strict lower (estritamente)│ lim f(n)/g(n) = ∞           │
+└─────────────────────────────────────────────────────────────────────┘
+
+Master Theorem: T(n) = aT(n/b) + f(n), c_crit = log_b(a)
+  Caso 1: f(n) polinomialmente menor que n^c_crit → Θ(n^c_crit)
+  Caso 2: f(n) ≈ n^c_crit · log^k(n)             → Θ(n^c_crit · log^(k+1)(n))
+  Caso 3: f(n) polinomialmente maior que n^c_crit → Θ(f(n))
+
+Análise amortizada:
+  Agregado:   custo_total / n_operações
+  Banqueiro:  atribui créditos, invariante: crédito ≥ 0
+  Potencial:  ĉᵢ = cᵢ + Φ(Dᵢ) - Φ(Dᵢ₋₁)
+```
+
+---
+
+## Exercícios
+
+1. **Prova formal:** Prove que `5n³ + 2n² + 7 = O(n³)`. Encontre valores concretos de `c` e `n₀`.
+
+2. **Master Theorem:** Resolva `T(n) = 4T(n/2) + n`. Identifique a, b, c_crit e o caso aplicável.
+
+3. **Análise amortizada:** Um stack com operação `multipop(k)` que remove k elementos. Se `push` custa 1 e `multipop(k)` custa k, prove que o custo amortizado de qualquer sequência de n operações é O(n).
+
+4. **Análise de código:**
+```typescript
+function mystery(n: number): number {
+  if (n <= 1) return 1;
+  let count = 0;
+  for (let i = 0; i < n; i++) {
+    for (let j = 0; j < n; j++) {
+      count++;
+    }
+  }
+  return count + mystery(n / 2);
+}
+// Qual é T(n)? Use o Master Theorem. Resposta: T(n) = T(n/2) + O(n²)
+```
+
+5. **Decisão de projeto:** Você precisa implementar um sistema de autocomplete que suporta: inserção de palavras, busca por prefixo, e as top-k palavras mais frequentes para um prefixo. Analise a complexidade de usar: (a) array ordenado + binary search, (b) hash map, (c) trie. Qual estrutura escolhe e por quê?
+
+---
+
+## Referências
+
+- Cormen, Leiserson, Rivest, Stein — *Introduction to Algorithms* (CLRS), Cap. 3-4
+- Tarjan — *Amortized Computational Complexity*
+- Knuth — *The Art of Computer Programming*, Vol. 1, Seção 1.2.11
+- https://www.bigocheatsheet.com/
+- Akra-Bazzi Theorem — para recorrências que o Master Theorem não resolve

@@ -1,0 +1,62 @@
+---
+title: "Designing Data-Intensive Applications (DDIA)"
+author: "Martin Kleppmann"
+description: "A biblia de sistemas distribuidos, bancos de dados e arquitetura"
+category: "Sistemas"
+priority: "essential"
+order: 4
+coverColor: "#EF4444"
+---
+
+## Por que ler
+
+Este e O livro que todo engenheiro deveria ler. Cobre TUDO sobre sistemas distribuidos, bancos de dados, e arquitetura de forma profunda mas acessivel. Se voce so pudesse ler 1 livro desta lista, seria este.
+
+## Conceitos-chave do livro
+
+### Parte 1 -- Fundamentos de Dados
+
+**Reliability, Scalability, Maintainability:**
+Todo sistema deve buscar 3 coisas: funcionar corretamente mesmo com falhas (reliability), lidar com crescimento (scalability), e ser facil de mudar (maintainability). O livro ensina como medir e alcancar cada uma.
+
+**Modelos de dados e linguagens de query:**
+SQL (relacional), documento (MongoDB), grafo (Neo4j) -- cada modelo tem trade-offs. O livro explica profundamente QUANDO cada um brilha, nao qual e "melhor".
+
+**Storage engines:**
+B-Trees (MySQL, PostgreSQL) vs LSM-Trees (Cassandra, RocksDB). B-Trees sao melhores para leitura, LSM-Trees para escrita. Entender isso te faz escolher o banco certo pro problema.
+
+### Parte 2 -- Dados Distribuidos
+
+**Replicacao:**
+Leader-Follower (um escreve, varios leem), Multi-Leader (varios escrevem), Leaderless (todos sao iguais). Cada modelo tem trade-offs de consistencia e disponibilidade.
+
+```
+Leader-Follower:
+  Write → Leader → Replicação → Followers
+  Read ← Leader ou Followers
+
+  Problema: Replication Lag
+  Você escreve no Leader, lê do Follower antes de replicar
+  → Leu dado "antigo"! Isso é "eventual consistency".
+```
+
+**Particionamento (Sharding):**
+Quando um banco nao cabe em 1 maquina, divide os dados entre varias. Estrategias: por range de chave (A-M no shard 1, N-Z no shard 2) ou por hash da chave (distribui uniformemente).
+
+**Transacoes distribuidas:**
+Two-Phase Commit (2PC): coordenador pergunta "podem commitar?" -> todos dizem sim -> coordenador diz "commitem". Se um diz nao -> rollback. Problema: se o coordenador morre entre as fases, todo mundo fica travado.
+
+**Consistencia e Consenso:**
+Como N maquinas concordam sobre um valor? Algoritmos como Raft e Paxos resolvem isso. E assim que etcd (usado pelo Kubernetes) e Zookeeper funcionam.
+
+### Parte 3 -- Dados Derivados
+
+**Batch Processing (MapReduce):**
+Processa GRANDES volumes de dados de uma vez. Input -> Map (transforma) -> Reduce (agrega). Hadoop popularizou, mas hoje Spark e mais usado.
+
+**Stream Processing:**
+Processa dados EM TEMPO REAL conforme chegam. Apache Kafka e o padrao. Diferente de batch: nao espera acumular, processa evento por evento.
+
+### Por que e "A Biblia"
+
+Porque quase toda decisao de arquitetura esta coberta neste livro. "Devo usar SQL ou NoSQL?" -- capitulo 2. "Como escalar meu banco?" -- capitulo 6. "Como garantir que dados nao se percam?" -- capitulo 7. "Preciso de message queue?" -- capitulo 11.

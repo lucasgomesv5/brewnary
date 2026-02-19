@@ -1,0 +1,766 @@
+---
+title: "Recursão e Programação Dinâmica"
+description: "De recorrências e backtracking a memoization e bitmask DP: análise formal e implementação de técnicas recursivas e de programação dinâmica"
+track: "cs"
+order: 14
+section: "Algoritmos"
+priority: "high"
+tags: ["recursão", "programação-dinâmica", "memoization", "backtracking", "divide-and-conquer", "algoritmos"]
+prerequisites: ["big-o-notation", "arrays"]
+keyTakeaways:
+  - "Recursão ingênua pode ser exponencial O(2ⁿ) por recalcular subproblemas sobrepostos"
+  - "Memoization (top-down DP) armazena resultados já computados, reduzindo para O(n)"
+  - "Bottom-up DP (tabulação iterativa) alcança O(n) tempo e frequentemente O(1) espaço"
+  - "O Master Theorem classifica recorrências T(n) = aT(n/b) + f(n) em três casos"
+  - "Bitmask DP permite comprimir estados combinatórios em inteiros para problemas como TSP"
+---
+
+# Recursão e Programação Dinâmica
+
+## 1. Recursão: definição formal
+
+Uma função `f` é **recursiva** se a sua definição referencia a si mesma. Formalmente, dado um domínio `D` e um codomínio `C`, temos `f: D → C` onde a computação de `f(x)` pode envolver a avaliação de `f(y)` para algum `y ∈ D` com `y ≠ x` (na recursão bem-fundada).
+
+Toda recursão bem definida requer dois componentes:
+
+1. **Caso base**: condição de parada que retorna um valor sem chamada recursiva.
+2. **Caso recursivo**: redução do problema a uma ou mais instâncias menores, convergindo para o caso base.
+
+### Stack frames e o modelo de execução
+
+Cada chamada recursiva aloca um **stack frame** na call stack do processo. Um stack frame contém: o endereço de retorno, os parâmetros da função, as variáveis locais e o registro de ativação (base pointer). Em JavaScript, o engine V8 aloca frames no stack nativo do sistema operacional — o tamanho padrão é ~1MB (Linux) ou ~8MB (macOS), o que limita a profundidade de recursão a aproximadamente 10.000–15.000 frames.
+
+```typescript
+// Anatomia de uma recursão: fatorial
+// Cada chamada empilha um frame: factorial(5) → factorial(4) → ... → factorial(0)
+// Stack depth: O(n)
+function factorial(n: number): number {
+  if (n <= 1) return 1;            // caso base
+  return n * factorial(n - 1);     // caso recursivo: n * f(n-1)
+}
+
+// Quando factorial(5) é chamado:
+// Frame 5: n=5, aguarda factorial(4)
+// Frame 4: n=4, aguarda factorial(3)
+// Frame 3: n=3, aguarda factorial(2)
+// Frame 2: n=2, aguarda factorial(1)
+// Frame 1: n=1, retorna 1
+// Desenrola: 2*1=2, 3*2=6, 4*6=24, 5*24=120
+```
+
+## 2. Relações de recorrência
+
+Uma **relação de recorrência** expressa o custo `T(n)` de um algoritmo recursivo em termos de `T` aplicado a entradas menores. Exemplos fundamentais:
+
+| Recorrência | Solução | Exemplo |
+|---|---|---|
+| `T(n) = T(n-1) + O(1)` | `O(n)` | Busca linear recursiva |
+| `T(n) = T(n-1) + O(n)` | `O(n²)` | Selection sort recursivo |
+| `T(n) = 2T(n/2) + O(n)` | `O(n log n)` | Merge sort |
+| `T(n) = 2T(n/2) + O(1)` | `O(n)` | Busca em árvore binária completa |
+| `T(n) = T(n/2) + O(1)` | `O(log n)` | Busca binária |
+| `T(n) = 2T(n-1) + O(1)` | `O(2ⁿ)` | Fibonacci ingênuo |
+
+Para resolver recorrências, há três métodos principais: **substituição** (indução), **árvore de recursão** e o **Master Theorem**.
+
+## 3. Master Theorem
+
+O Master Theorem resolve recorrências da forma:
+
+> **T(n) = aT(n/b) + f(n)**
+
+onde `a ≥ 1` (número de subproblemas), `b > 1` (fator de redução) e `f(n)` é assintoticamente positiva.
+
+Defina `c_crit = log_b(a)`. Os três casos são:
+
+**Caso 1** — `f(n) = O(n^c)` com `c < c_crit`:
+`T(n) = Θ(n^{log_b(a)})`
+O custo é dominado pelas folhas da árvore de recursão.
+
+**Caso 2** — `f(n) = Θ(n^{c_crit} · log^k(n))` para `k ≥ 0`:
+`T(n) = Θ(n^{c_crit} · log^{k+1}(n))`
+O trabalho é uniformemente distribuído entre os níveis.
+
+**Caso 3** — `f(n) = Ω(n^c)` com `c > c_crit` e condição de regularidade `a·f(n/b) ≤ δ·f(n)` para algum `δ < 1`:
+`T(n) = Θ(f(n))`
+O custo é dominado pela raiz.
+
+### Exemplos concretos
+
+```typescript
+// Merge Sort: T(n) = 2T(n/2) + O(n)
+// a=2, b=2, c_crit = log₂(2) = 1
+// f(n) = O(n) = O(n¹), c = c_crit = 1 → Caso 2 (k=0)
+// T(n) = Θ(n · log n)
+
+// Busca binária: T(n) = T(n/2) + O(1)
+// a=1, b=2, c_crit = log₂(1) = 0
+// f(n) = O(1) = O(n⁰), c = c_crit = 0 → Caso 2 (k=0)
+// T(n) = Θ(log n)
+
+// Strassen: T(n) = 7T(n/2) + O(n²)
+// a=7, b=2, c_crit = log₂(7) ≈ 2.807
+// f(n) = O(n²), c = 2 < 2.807 → Caso 1
+// T(n) = Θ(n^{log₂ 7}) ≈ Θ(n^{2.807})
+
+// Karatsuba (multiplicação rápida): T(n) = 3T(n/2) + O(n)
+// a=3, b=2, c_crit = log₂(3) ≈ 1.585
+// f(n) = O(n), c = 1 < 1.585 → Caso 1
+// T(n) = Θ(n^{log₂ 3}) ≈ Θ(n^{1.585})
+```
+
+## 4. Tail recursion e TCO
+
+**Tail recursion** ocorre quando a chamada recursiva é a **última operação** da função — não há computação pendente após o retorno. Isso permite **Tail Call Optimization (TCO)**: o compilador/runtime reutiliza o stack frame atual em vez de alocar um novo, transformando recursão em iteração implícita com `O(1)` de espaço de stack.
+
+```typescript
+// NÃO é tail recursive — a multiplicação n * factorial(n-1) acontece APÓS o retorno
+function factorial(n: number): number {
+  if (n <= 1) return 1;
+  return n * factorial(n - 1); // operação pendente: multiplicar por n
+}
+
+// Tail recursive — o acumulador carrega o resultado parcial
+function factorialTail(n: number, acc: number = 1): number {
+  if (n <= 1) return acc;
+  return factorialTail(n - 1, n * acc); // nenhuma operação após o retorno
+}
+```
+
+**Realidade em JavaScript**: a especificação ES2015 (ES6) define TCO na seção 14.6.1 ("Tail Position Calls"). Porém, **apenas o JavaScriptCore (Safari/WebKit) implementa TCO**. O V8 (Chrome/Node.js) e o SpiderMonkey (Firefox) **não implementam** — argumentos incluem dificuldade de debugging (stack traces desaparecem), incompatibilidade com `Error.stack` e custos de implementação. Na prática, para JavaScript/TypeScript, **converta tail recursion em loops explícitos** quando a profundidade pode exceder o limite do stack.
+
+```typescript
+// Conversão manual de tail recursion para iteração
+function factorialIterative(n: number): number {
+  let acc = 1;
+  while (n > 1) {
+    acc *= n;
+    n--;
+  }
+  return acc;
+}
+
+// Trampolining: técnica para simular TCO em engines sem suporte
+type Thunk<T> = T | (() => Thunk<T>);
+
+function trampoline<T>(fn: Thunk<T>): T {
+  let result = fn;
+  while (typeof result === 'function') {
+    result = (result as () => Thunk<T>)();
+  }
+  return result as T;
+}
+
+function fibTrampoline(n: number, a = 0, b = 1): Thunk<number> {
+  if (n === 0) return a;
+  return () => fibTrampoline(n - 1, b, a + b);
+}
+
+// trampoline(fibTrampoline(100000)) — funciona sem estourar o stack
+```
+
+## 5. Backtracking
+
+**Backtracking** é uma estratégia de busca exaustiva em espaço de estados que constrói soluções incrementalmente e **abandona (prune)** ramos assim que detecta que não podem levar a uma solução válida. O framework geral:
+
+```
+BACKTRACK(estado, decisões):
+    se estado é solução completa:
+        registrar/retornar solução
+    para cada escolha possível em decisões:
+        se escolha é válida (pruning):
+            fazer escolha (mutação do estado)
+            BACKTRACK(novo_estado, decisões_restantes)
+            desfazer escolha (backtrack)
+```
+
+A complexidade no pior caso é exponencial ou fatorial, mas **pruning eficaz** reduz drasticamente o espaço explorado na prática.
+
+### N-Queens: colocar N rainhas em um tabuleiro N×N
+
+```typescript
+function solveNQueens(n: number): number[][] {
+  const solutions: number[][] = [];
+  const queens: number[] = []; // queens[row] = coluna da rainha na linha row
+
+  function isValid(row: number, col: number): boolean {
+    for (let r = 0; r < row; r++) {
+      const c = queens[r];
+      // Mesma coluna ou mesma diagonal
+      if (c === col || Math.abs(c - col) === Math.abs(r - row)) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  function backtrack(row: number): void {
+    if (row === n) {
+      solutions.push([...queens]);
+      return;
+    }
+    for (let col = 0; col < n; col++) {
+      if (isValid(row, col)) {
+        queens.push(col);
+        backtrack(row + 1);
+        queens.pop(); // desfazer escolha
+      }
+    }
+  }
+
+  backtrack(0);
+  return solutions;
+}
+
+// Otimização com bitmasks para O(1) na verificação de conflitos:
+function solveNQueensBitmask(n: number): number {
+  let count = 0;
+
+  function backtrack(row: number, cols: number, diag1: number, diag2: number): void {
+    if (row === n) { count++; return; }
+    // availablePositions: bits onde podemos colocar rainha
+    let available = ((1 << n) - 1) & ~(cols | diag1 | diag2);
+    while (available) {
+      const pos = available & (-available); // lowest set bit
+      available ^= pos;
+      backtrack(row + 1, cols | pos, (diag1 | pos) << 1, (diag2 | pos) >> 1);
+    }
+  }
+
+  backtrack(0, 0, 0, 0);
+  return count;
+}
+```
+
+### Sudoku solver com constraint propagation
+
+```typescript
+function solveSudoku(board: number[][]): boolean {
+  // Encontrar célula vazia (valor 0)
+  for (let r = 0; r < 9; r++) {
+    for (let c = 0; c < 9; c++) {
+      if (board[r][c] !== 0) continue;
+
+      for (let num = 1; num <= 9; num++) {
+        if (isValidPlacement(board, r, c, num)) {
+          board[r][c] = num;
+          if (solveSudoku(board)) return true;
+          board[r][c] = 0; // backtrack
+        }
+      }
+      return false; // nenhum número válido → retroceder
+    }
+  }
+  return true; // todas as células preenchidas
+}
+
+function isValidPlacement(board: number[][], row: number, col: number, num: number): boolean {
+  for (let i = 0; i < 9; i++) {
+    if (board[row][i] === num) return false;         // linha
+    if (board[i][col] === num) return false;         // coluna
+    const boxR = 3 * Math.floor(row / 3) + Math.floor(i / 3);
+    const boxC = 3 * Math.floor(col / 3) + (i % 3);
+    if (board[boxR][boxC] === num) return false;     // bloco 3×3
+  }
+  return true;
+}
+```
+
+## 6. Divide and Conquer
+
+O paradigma **Divide and Conquer (D&C)** segue três etapas:
+1. **Dividir** o problema em subproblemas menores (geralmente do mesmo tipo).
+2. **Conquistar** resolvendo cada subproblema recursivamente (ou diretamente, se trivial).
+3. **Combinar** as soluções dos subproblemas na solução do problema original.
+
+A diferença crucial entre D&C e DP: em D&C os subproblemas são **disjuntos** (não se sobrepõem); em DP, os subproblemas se **sobrepõem** e são reutilizados.
+
+### Merge Sort — O(n log n) garantido
+
+```typescript
+function mergeSort(arr: number[]): number[] {
+  if (arr.length <= 1) return arr;
+
+  const mid = Math.floor(arr.length / 2);
+  const left = mergeSort(arr.slice(0, mid));   // T(n/2)
+  const right = mergeSort(arr.slice(mid));      // T(n/2)
+
+  return merge(left, right);                    // O(n)
+}
+// Recorrência: T(n) = 2T(n/2) + O(n) → O(n log n) pelo Master Theorem (Caso 2)
+
+function merge(a: number[], b: number[]): number[] {
+  const result: number[] = [];
+  let i = 0, j = 0;
+  while (i < a.length && j < b.length) {
+    result.push(a[i] <= b[j] ? a[i++] : b[j++]);
+  }
+  while (i < a.length) result.push(a[i++]);
+  while (j < b.length) result.push(b[j++]);
+  return result;
+}
+```
+
+### Closest Pair of Points — O(n log n)
+
+O algoritmo ingênuo compara todos os pares em `O(n²)`. Com D&C, dividimos os pontos por coordenada x, resolvemos cada metade recursivamente, e combinamos verificando apenas pontos na faixa de largura `2δ` ao redor da linha divisória (onde `δ` é o mínimo das distâncias das duas metades). A etapa de combinação é `O(n)` porque, em uma faixa de largura `2δ`, cada ponto precisa ser comparado com no máximo 7 outros pontos (resultado geométrico).
+
+```typescript
+interface Point { x: number; y: number; }
+
+function dist(p: Point, q: Point): number {
+  return Math.sqrt((p.x - q.x) ** 2 + (p.y - q.y) ** 2);
+}
+
+function closestPair(points: Point[]): number {
+  const sorted = [...points].sort((a, b) => a.x - b.x);
+  return closestRec(sorted);
+}
+
+function closestRec(pts: Point[]): number {
+  if (pts.length <= 3) {
+    let min = Infinity;
+    for (let i = 0; i < pts.length; i++)
+      for (let j = i + 1; j < pts.length; j++)
+        min = Math.min(min, dist(pts[i], pts[j]));
+    return min;
+  }
+
+  const mid = Math.floor(pts.length / 2);
+  const midX = pts[mid].x;
+  const dL = closestRec(pts.slice(0, mid));
+  const dR = closestRec(pts.slice(mid));
+  let delta = Math.min(dL, dR);
+
+  // Faixa de largura 2δ ao redor da linha divisória
+  const strip = pts.filter(p => Math.abs(p.x - midX) < delta);
+  strip.sort((a, b) => a.y - b.y);
+
+  // Comparar cada ponto com os próximos 7 na faixa (prova geométrica)
+  for (let i = 0; i < strip.length; i++) {
+    for (let j = i + 1; j < strip.length && strip[j].y - strip[i].y < delta; j++) {
+      delta = Math.min(delta, dist(strip[i], strip[j]));
+    }
+  }
+  return delta;
+}
+// T(n) = 2T(n/2) + O(n log n) por causa do sort na strip
+// Com merge pré-ordenado, reduz-se a T(n) = 2T(n/2) + O(n) → O(n log n)
+```
+
+### Multiplicação de Strassen — O(n^{2.807})
+
+A multiplicação de matrizes convencional é `O(n³)`. Strassen reduz as 8 multiplicações recursivas para 7, mudando a recorrência de `T(n) = 8T(n/2) + O(n²)` para `T(n) = 7T(n/2) + O(n²)`. Pelo Master Theorem (Caso 1, pois `log₂(7) ≈ 2.807 > 2`), obtém-se `O(n^{log₂ 7}) ≈ O(n^{2.807})`.
+
+O ganho pode parecer marginal, mas para matrizes grandes (n > 512) a diferença é substancial. Na prática, algoritmos como Coppersmith–Winograd atingem `O(n^{2.376})`, embora as constantes ocultas sejam proibitivas.
+
+## 7. Programação Dinâmica: fundamentos
+
+**Programação Dinâmica (DP)** é aplicável quando um problema exibe duas propriedades:
+
+1. **Subestrutura ótima (optimal substructure)**: a solução ótima do problema contém soluções ótimas dos subproblemas.
+2. **Subproblemas sobrepostos (overlapping subproblems)**: os mesmos subproblemas são resolvidos múltiplas vezes em uma recursão ingênua.
+
+Quando apenas (1) está presente sem (2), temos Divide and Conquer. Quando (2) está presente sem (1), DP pode computar mas não necessariamente otimizar (ex.: contar caminhos).
+
+### Top-down (memoization) vs Bottom-up (tabulação)
+
+| Aspecto | Top-down (memoization) | Bottom-up (tabulação) |
+|---|---|---|
+| Implementação | Recursão + cache (Map/objeto) | Loops iterativos + array/tabela |
+| Subproblemas computados | Apenas os necessários (lazy) | Todos os subproblemas na ordem topológica |
+| Stack depth | O(n) — risco de stack overflow | O(1) de stack |
+| Otimização de espaço | Mais difícil | Frequentemente possível (rolling array) |
+| Facilidade de raciocínio | Mais intuitivo — é a recursão natural | Requer pensar na ordem de preenchimento |
+| Overhead | Custo de hash/lookup por subproblema | Acesso direto por índice (mais rápido) |
+
+Na prática, **comece com memoization** para raciocinar sobre a recorrência e, se necessário, converta para bottom-up para otimizar espaço ou eliminar overhead de recursão.
+
+## 8. Problemas clássicos de DP
+
+### 8.1 Fibonacci: de O(2ⁿ) a O(n) a O(1) espaço
+
+A definição recursiva é `F(n) = F(n-1) + F(n-2)` com `F(0) = 0, F(1) = 1`. A árvore de recursão ingênua tem `2ⁿ` nós porque cada chamada gera duas sub-chamadas sem reutilização.
+
+```typescript
+// Ingênuo: T(n) = T(n-1) + T(n-2) + O(1)
+// Resolvendo: T(n) = O(φⁿ) onde φ = (1+√5)/2 ≈ 1.618 (razão áurea)
+// Espaço: O(n) de stack depth
+function fibNaive(n: number): number {
+  if (n <= 1) return n;
+  return fibNaive(n - 1) + fibNaive(n - 2);
+}
+
+// Top-down com memoization: O(n) tempo, O(n) espaço (cache + stack)
+function fibMemo(n: number, memo: Map<number, number> = new Map()): number {
+  if (memo.has(n)) return memo.get(n)!;
+  if (n <= 1) return n;
+  const result = fibMemo(n - 1, memo) + fibMemo(n - 2, memo);
+  memo.set(n, result);
+  return result;
+}
+
+// Bottom-up com tabulação: O(n) tempo, O(n) espaço
+function fibTable(n: number): number {
+  if (n <= 1) return n;
+  const dp = new Array(n + 1);
+  dp[0] = 0;
+  dp[1] = 1;
+  for (let i = 2; i <= n; i++) {
+    dp[i] = dp[i - 1] + dp[i - 2];
+  }
+  return dp[n];
+}
+
+// Bottom-up com espaço O(1): rolling variables
+function fibOptimal(n: number): number {
+  if (n <= 1) return n;
+  let prev = 0, curr = 1;
+  for (let i = 2; i <= n; i++) {
+    const next = prev + curr;
+    prev = curr;
+    curr = next;
+  }
+  return curr;
+}
+
+// Bônus: O(log n) via exponenciação de matrizes
+// [F(n+1), F(n)] = [[1,1],[1,0]]^n * [1, 0]
+function fibMatrix(n: number): number {
+  if (n <= 1) return n;
+  let mat: number[][] = [[1, 1], [1, 0]];
+  mat = matPow(mat, n - 1);
+  return mat[0][0];
+}
+
+function matMul(a: number[][], b: number[][]): number[][] {
+  return [
+    [a[0][0]*b[0][0] + a[0][1]*b[1][0], a[0][0]*b[0][1] + a[0][1]*b[1][1]],
+    [a[1][0]*b[0][0] + a[1][1]*b[1][0], a[1][0]*b[0][1] + a[1][1]*b[1][1]],
+  ];
+}
+
+function matPow(m: number[][], p: number): number[][] {
+  let result: number[][] = [[1, 0], [0, 1]]; // identidade
+  let base = m;
+  while (p > 0) {
+    if (p & 1) result = matMul(result, base);
+    base = matMul(base, base);
+    p >>= 1;
+  }
+  return result;
+}
+```
+
+### 8.2 Longest Common Subsequence (LCS) — O(m·n)
+
+Dadas duas strings `X[0..m-1]` e `Y[0..n-1]`, a LCS é a maior subsequência presente em ambas (não necessariamente contígua).
+
+**Recorrência:**
+```
+LCS(i, j) = 0                              se i = 0 ou j = 0
+           = LCS(i-1, j-1) + 1             se X[i-1] = Y[j-1]
+           = max(LCS(i-1, j), LCS(i, j-1)) caso contrário
+```
+
+```typescript
+function lcs(x: string, y: string): number {
+  const m = x.length, n = y.length;
+  // dp[i][j] = comprimento da LCS de X[0..i-1] e Y[0..j-1]
+  const dp: number[][] = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      if (x[i - 1] === y[j - 1]) {
+        dp[i][j] = dp[i - 1][j - 1] + 1;
+      } else {
+        dp[i][j] = Math.max(dp[i - 1][j], dp[i][j - 1]);
+      }
+    }
+  }
+  return dp[m][n];
+}
+
+// Reconstrução da subsequência via backtracking na tabela
+function lcsString(x: string, y: string): string {
+  const m = x.length, n = y.length;
+  const dp: number[][] = Array.from({ length: m + 1 }, () => new Array(n + 1).fill(0));
+
+  for (let i = 1; i <= m; i++)
+    for (let j = 1; j <= n; j++)
+      dp[i][j] = x[i-1] === y[j-1]
+        ? dp[i-1][j-1] + 1
+        : Math.max(dp[i-1][j], dp[i][j-1]);
+
+  // Backtrack para reconstruir
+  let i = m, j = n;
+  const result: string[] = [];
+  while (i > 0 && j > 0) {
+    if (x[i-1] === y[j-1]) {
+      result.push(x[i-1]);
+      i--; j--;
+    } else if (dp[i-1][j] > dp[i][j-1]) {
+      i--;
+    } else {
+      j--;
+    }
+  }
+  return result.reverse().join('');
+}
+
+// Otimização de espaço: O(min(m, n)) usando duas linhas (rolling array)
+function lcsOptimized(x: string, y: string): number {
+  if (x.length < y.length) [x, y] = [y, x]; // garantir que y é a menor
+  const n = y.length;
+  let prev = new Array(n + 1).fill(0);
+  let curr = new Array(n + 1).fill(0);
+
+  for (let i = 1; i <= x.length; i++) {
+    for (let j = 1; j <= n; j++) {
+      curr[j] = x[i-1] === y[j-1]
+        ? prev[j-1] + 1
+        : Math.max(prev[j], curr[j-1]);
+    }
+    [prev, curr] = [curr, prev];
+  }
+  return prev[n];
+}
+```
+
+### 8.3 Knapsack 0/1 — O(n·W)
+
+Dados `n` itens com pesos `w[i]` e valores `v[i]`, e capacidade `W`, maximizar o valor total sem exceder `W`. Cada item é incluído ou não (0/1).
+
+**Recorrência:** `dp[i][w] = max(dp[i-1][w], dp[i-1][w - w[i]] + v[i])` se `w[i] ≤ w`, senão `dp[i][w] = dp[i-1][w]`.
+
+```typescript
+function knapsack01(weights: number[], values: number[], W: number): number {
+  const n = weights.length;
+  // Otimização: usar array 1D iterando w de trás para frente
+  // Isso funciona porque dp[i][w] depende apenas de dp[i-1][w] e dp[i-1][w - w[i]]
+  // Iterando de W→0, garantimos que dp[w - w[i]] ainda contém o valor da linha anterior
+  const dp = new Array(W + 1).fill(0);
+
+  for (let i = 0; i < n; i++) {
+    for (let w = W; w >= weights[i]; w--) { // CRUCIAL: de trás para frente
+      dp[w] = Math.max(dp[w], dp[w - weights[i]] + values[i]);
+    }
+  }
+  return dp[W];
+}
+
+// Nota: a complexidade O(n·W) é pseudo-polinomial.
+// W é exponencial no número de bits necessários para representá-lo.
+// O Knapsack 0/1 é NP-completo — não existe solução polinomial conhecida
+// no tamanho da entrada (a menos que P = NP).
+```
+
+### 8.4 Coin Change — O(n·amount)
+
+Dado um conjunto de moedas e um valor alvo, encontrar o número mínimo de moedas para atingir o valor (unbounded knapsack — cada moeda pode ser usada infinitas vezes).
+
+**Recorrência:** `dp[a] = min(dp[a - coin] + 1)` para cada `coin` em `coins`, com `dp[0] = 0`.
+
+```typescript
+function coinChange(coins: number[], amount: number): number {
+  // dp[i] = mínimo de moedas para atingir o valor i
+  const dp = new Array(amount + 1).fill(Infinity);
+  dp[0] = 0;
+
+  for (let a = 1; a <= amount; a++) {
+    for (const coin of coins) {
+      if (coin <= a && dp[a - coin] !== Infinity) {
+        dp[a] = Math.min(dp[a], dp[a - coin] + 1);
+      }
+    }
+  }
+
+  return dp[amount] === Infinity ? -1 : dp[amount];
+}
+
+// Variante: contar o NÚMERO de maneiras de formar o valor (order doesn't matter)
+function coinChangeWays(coins: number[], amount: number): number {
+  const dp = new Array(amount + 1).fill(0);
+  dp[0] = 1; // uma maneira de fazer 0: usar nenhuma moeda
+
+  // Iterar por moeda primeiro (não por amount) para evitar contar permutações
+  for (const coin of coins) {
+    for (let a = coin; a <= amount; a++) {
+      dp[a] += dp[a - coin];
+    }
+  }
+  return dp[amount];
+}
+```
+
+### 8.5 Edit Distance (Levenshtein) — O(m·n)
+
+O edit distance entre duas strings é o número mínimo de operações (inserção, deleção, substituição) para transformar uma na outra. Este algoritmo é a base do `diff`, spell checkers e alinhamento de sequências biológicas (Needleman-Wunsch).
+
+**Recorrência:**
+```
+dp[i][j] = dp[i-1][j-1]                    se X[i-1] = Y[j-1] (sem custo)
+         = 1 + min(
+             dp[i-1][j],                    deleção
+             dp[i][j-1],                    inserção
+             dp[i-1][j-1]                   substituição
+           )                                caso contrário
+```
+
+Casos base: `dp[i][0] = i` (deletar todos os chars de X), `dp[0][j] = j` (inserir todos os chars de Y).
+
+```typescript
+function editDistance(x: string, y: string): number {
+  const m = x.length, n = y.length;
+
+  // Otimização de espaço: O(min(m, n)) com duas linhas
+  if (m < n) return editDistance(y, x);
+
+  let prev = Array.from({ length: n + 1 }, (_, j) => j);
+  let curr = new Array(n + 1);
+
+  for (let i = 1; i <= m; i++) {
+    curr[0] = i;
+    for (let j = 1; j <= n; j++) {
+      if (x[i - 1] === y[j - 1]) {
+        curr[j] = prev[j - 1];
+      } else {
+        curr[j] = 1 + Math.min(prev[j], curr[j - 1], prev[j - 1]);
+      }
+    }
+    [prev, curr] = [curr, prev];
+  }
+  return prev[n];
+}
+```
+
+## 9. State compression DP: bitmask DP
+
+Quando o estado de um subproblema envolve um **subconjunto** de elementos, podemos representar esse subconjunto como um **bitmask** — um inteiro onde o bit `i` indica se o elemento `i` está incluído. Para `n` elementos, há `2ⁿ` subconjuntos possíveis.
+
+### TSP (Travelling Salesman Problem) com bitmask DP — O(2ⁿ · n²)
+
+O TSP pede o ciclo hamiltoniano de custo mínimo. A solução com DP de Held-Karp reduz a complexidade de `O(n!)` (força bruta) para `O(2ⁿ · n²)`.
+
+**Estado:** `dp[mask][i]` = custo mínimo para visitar exatamente os vértices em `mask`, terminando no vértice `i`.
+
+**Recorrência:** `dp[mask][i] = min(dp[mask ^ (1 << i)][j] + dist[j][i])` para todo `j` em `mask` com `j ≠ i`.
+
+```typescript
+function tsp(dist: number[][]): number {
+  const n = dist.length;
+  const FULL = (1 << n) - 1; // todos os bits setados
+  const INF = Infinity;
+
+  // dp[mask][i]: custo mínimo para visitar os vértices no mask, terminando em i
+  const dp: number[][] = Array.from(
+    { length: 1 << n },
+    () => new Array(n).fill(INF)
+  );
+
+  // Base: começar no vértice 0
+  dp[1][0] = 0; // mask = 0b0001, apenas vértice 0 visitado
+
+  for (let mask = 1; mask <= FULL; mask++) {
+    for (let u = 0; u < n; u++) {
+      if (dp[mask][u] === INF) continue;
+      if (!(mask & (1 << u))) continue; // u não está no mask
+
+      for (let v = 0; v < n; v++) {
+        if (mask & (1 << v)) continue; // v já visitado
+        const newMask = mask | (1 << v);
+        dp[newMask][v] = Math.min(
+          dp[newMask][v],
+          dp[mask][u] + dist[u][v]
+        );
+      }
+    }
+  }
+
+  // Fechar o ciclo: retornar ao vértice 0
+  let result = INF;
+  for (let u = 1; u < n; u++) {
+    result = Math.min(result, dp[FULL][u] + dist[u][0]);
+  }
+  return result;
+}
+
+// Para n = 20: 2²⁰ · 20² = 1.048.576 · 400 ≈ 4 × 10⁸ operações
+// Viável em poucos segundos. Para n > 25, fica impraticável.
+```
+
+### Outros problemas com bitmask DP
+
+- **Assignment Problem**: atribuir n tarefas a n trabalhadores, minimizando custo total. `dp[mask]` = custo mínimo atribuindo as primeiras `popcount(mask)` tarefas aos trabalhadores em `mask`. Complexidade: `O(2ⁿ · n)`.
+- **Steiner Tree**: conectar um subconjunto de terminais em um grafo com custo mínimo de arestas.
+- **Matching em grafos pequenos**: encontrar matching máximo com `O(2ⁿ · n)`.
+
+## 10. Como formular o estado DP
+
+Identificar o estado é a parte mais difícil de DP. Um framework para raciocinar:
+
+**1. Defina o que é uma "decisão".** Em cada passo, que escolha o algoritmo faz? No Knapsack: incluir ou não o item `i`. No LCS: avançar em `X`, em `Y`, ou em ambos.
+
+**2. Defina o que muda entre subproblemas.** Os parâmetros que variam são as dimensões do estado DP. No Knapsack: o índice do item atual `i` e a capacidade restante `w`. No Edit Distance: os índices `i` e `j` nas duas strings.
+
+**3. Defina a recorrência.** Expresse `dp[estado]` em termos de estados "menores" (mais próximos do caso base). Garanta que o grafo de dependências é um DAG (sem ciclos).
+
+**4. Defina o caso base.** Quando não há mais decisões a tomar, qual é o valor?
+
+**5. Determine a resposta final.** Qual estado (ou combinação de estados) contém a resposta? Às vezes é `dp[n][W]`, às vezes `max(dp[n][*])`, às vezes `dp[0]`.
+
+**6. Analise a complexidade.** `Tempo = (número de estados) × (custo por transição)`. `Espaço = (número de estados)`, possivelmente reduzível se as dependências são locais.
+
+```typescript
+// Exemplo de formulação: Longest Increasing Subsequence (LIS)
+// Decisão: para cada elemento, incluí-lo ou não na subsequência
+// Estado: dp[i] = comprimento da LIS terminando em arr[i]
+// Recorrência: dp[i] = 1 + max(dp[j]) para todo j < i com arr[j] < arr[i]
+// Resposta: max(dp[0..n-1])
+
+// Solução O(n²):
+function lisQuadratic(arr: number[]): number {
+  const n = arr.length;
+  const dp = new Array(n).fill(1);
+
+  for (let i = 1; i < n; i++) {
+    for (let j = 0; j < i; j++) {
+      if (arr[j] < arr[i]) {
+        dp[i] = Math.max(dp[i], dp[j] + 1);
+      }
+    }
+  }
+  return Math.max(...dp);
+}
+
+// Solução O(n log n) com busca binária (Patience Sorting):
+function lisOptimal(arr: number[]): number {
+  const tails: number[] = []; // tails[i] = menor elemento final de uma IS de comprimento i+1
+
+  for (const x of arr) {
+    let lo = 0, hi = tails.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >> 1;
+      if (tails[mid] < x) lo = mid + 1;
+      else hi = mid;
+    }
+    tails[lo] = x;
+  }
+  return tails.length;
+}
+// tails é sempre ordenado, permitindo busca binária.
+// Cada elemento é processado em O(log n) → total O(n log n).
+```
+
+## Resumo: quando usar cada técnica
+
+| Técnica | Quando usar | Complexidade típica |
+|---|---|---|
+| Recursão simples | Subproblemas independentes, profundidade baixa | Depende da recorrência |
+| Memoization | Subproblemas sobrepostos, fácil de raciocinar | Tempo: #estados × transição |
+| Bottom-up DP | Precisa otimizar espaço ou evitar stack overflow | Idem, mas O(1) stack |
+| Backtracking | Busca em espaço de estados com pruning | Exponencial/fatorial com poda |
+| Divide & Conquer | Subproblemas disjuntos, combinar é eficiente | Geralmente O(n log n) |
+| Bitmask DP | Estado é um subconjunto de n ≤ 25 elementos | O(2ⁿ · poly(n)) |
+
+A maestria em DP vem da prática de **identificar subproblemas**: dado um problema, pergunte-se quais parâmetros definem unicamente um subproblema, escreva a recorrência e verifique se o grafo de dependências é acíclico. Com essa disciplina, a maioria dos problemas de DP se torna uma questão de formulação — e a implementação segue diretamente da recorrência.

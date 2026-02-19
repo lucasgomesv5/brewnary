@@ -1,0 +1,129 @@
+---
+import { ViewTransitions } from 'astro:transitions';
+import { getCollection } from 'astro:content';
+import SearchPalette from '../components/react/SearchPalette';
+import { toSlug } from '../lib/tracks';
+import '../styles/global.css';
+
+interface Props {
+  title: string;
+  description?: string;
+  ogImage?: string;
+}
+
+const {
+  title,
+  description = 'Brewnary — Referência técnica em Engenharia de Software.',
+  ogImage = '/og-default.png',
+} = Astro.props;
+
+const canonicalURL = new URL(Astro.url.pathname, Astro.site);
+
+const allLessons = await getCollection('lessons');
+const searchItems = allLessons
+  .sort((a, b) => a.data.order - b.data.order)
+  .map((l) => ({
+    title: l.data.title,
+    track: l.data.track,
+    url: `/trilha/${l.data.track}/${toSlug(l.id)}`,
+    description: l.data.description,
+  }));
+---
+
+<!doctype html>
+<html lang="pt-BR">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="generator" content={Astro.generator} />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <link rel="canonical" href={canonicalURL} />
+
+    <title>{title} | Brewnary</title>
+    <meta name="description" content={description} />
+
+    <meta property="og:type" content="website" />
+    <meta property="og:url" content={canonicalURL} />
+    <meta property="og:title" content={`${title} | Brewnary`} />
+    <meta property="og:description" content={description} />
+    <meta property="og:image" content={new URL(ogImage, Astro.site)} />
+
+    <meta name="twitter:card" content="summary_large_image" />
+    <meta name="twitter:title" content={`${title} | Brewnary`} />
+    <meta name="twitter:description" content={description} />
+
+    <script
+      type="application/ld+json"
+      set:html={JSON.stringify({
+        '@context': 'https://schema.org',
+        '@type': 'WebSite',
+        name: 'Brewnary',
+        url: 'https://brewnary.com',
+        description: 'Referência técnica em Engenharia de Software.',
+        inLanguage: 'pt-BR',
+        publisher: {
+          '@type': 'Organization',
+          name: 'Brewnary',
+        },
+      })}
+    />
+
+    <ViewTransitions />
+
+    <!-- Theme init + persistence across ViewTransitions -->
+    <script is:inline>
+      /* eslint-disable no-var */
+      (function () {
+        var T = {
+          espresso: {
+            bg: '#2D2520',
+            bgAlt: '#352E28',
+            text: '#FAF6F1',
+            textMuted: '#B8A898',
+            border: '#4A3F36',
+            accent: '#D4956B',
+            accentMuted: '#D4956B20',
+          },
+          dark: {
+            bg: '#0D1117',
+            bgAlt: '#161B22',
+            text: '#E6EDF3',
+            textMuted: '#7D8590',
+            border: '#30363D',
+            accent: '#58A6FF',
+            accentMuted: '#58A6FF20',
+          },
+          dracula: {
+            bg: '#282A36',
+            bgAlt: '#2D2F3D',
+            text: '#F8F8F2',
+            textMuted: '#6272A4',
+            border: '#44475A',
+            accent: '#BD93F9',
+            accentMuted: '#BD93F920',
+          },
+        };
+        function apply() {
+          var id = localStorage.getItem('brewnary-theme');
+          if (!T[id]) id = 'espresso';
+          var t = T[id];
+          var s = document.documentElement.style;
+          document.documentElement.setAttribute('data-theme', id);
+          s.setProperty('--color-bg', t.bg);
+          s.setProperty('--color-bg-alt', t.bgAlt);
+          s.setProperty('--color-text', t.text);
+          s.setProperty('--color-text-muted', t.textMuted);
+          s.setProperty('--color-border', t.border);
+          s.setProperty('--color-accent', t.accent);
+          s.setProperty('--color-accent-muted', t.accentMuted);
+        }
+        apply();
+        document.addEventListener('astro:after-swap', apply);
+      })();
+    </script>
+  </head>
+  <body class="min-h-screen bg-[var(--color-bg)] text-[var(--color-text)]">
+    <SearchPalette client:idle items={searchItems} />
+    <slot />
+  </body>
+</html>

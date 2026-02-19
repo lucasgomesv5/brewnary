@@ -1,0 +1,43 @@
+---
+interface Props {
+  title: string;
+  author: string;
+  description: string;
+  category: string;
+  priority: string;
+  coverColor?: string;
+}
+
+const { title, author, description, category, priority, coverColor = '#8B5CF6' } = Astro.props;
+
+const priorityConfig = {
+  essential: { label: 'Essencial' },
+  recommended: { label: 'Recomendado' },
+  bonus: { label: 'Complementar' },
+} as Record<string, { label: string }>;
+
+const p = priorityConfig[priority] || priorityConfig.recommended;
+---
+
+<div
+  class="overflow-hidden rounded-[var(--radius-card)] border border-[var(--color-border)] bg-[var(--color-bg-alt)] transition-colors hover:border-[var(--color-text-muted)]"
+>
+  <div class="h-1" style={`background-color: ${coverColor}`}></div>
+
+  <div class="p-5">
+    <div class="mb-2 flex items-start justify-between">
+      <span
+        class="rounded-full bg-[var(--color-border)]/50 px-2 py-0.5 text-xs font-medium text-[var(--color-text-muted)]"
+      >
+        {category}
+      </span>
+      <span class="text-xs text-[var(--color-text-muted)]">{p.label}</span>
+    </div>
+
+    <h3 class="mb-1 text-base leading-snug font-bold">
+      {title}
+    </h3>
+    <p class="mb-3 text-sm text-[var(--color-text-muted)]">{author}</p>
+    <p class="text-sm leading-relaxed text-[var(--color-text-muted)]">{description}</p>
+  </div>
+</div>

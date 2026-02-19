@@ -1,0 +1,857 @@
+---
+title: "Stacks e Queues"
+description: "Pilhas (LIFO) e Filas (FIFO): análise formal como ADTs, implementações internas, heaps, priority queues e aplicações reais em sistemas"
+track: "cs"
+order: 9
+section: "Estruturas de Dados"
+priority: "high"
+tags: ["stack", "queue", "LIFO", "FIFO", "estruturas-de-dados", "heap", "priority-queue", "deque"]
+prerequisites: ["arrays", "linked-lists"]
+keyTakeaways:
+  - "Stack (LIFO): último a entrar é o primeiro a sair — base da call stack, parsing de expressões e backtracking"
+  - "Queue (FIFO): primeiro a entrar é o primeiro a sair — base de BFS, event loop do JS e message brokers"
+  - "Priority Queue com binary heap garante insert e extract em O(log n) — essencial para Dijkstra, schedulers e merge de k listas"
+  - "Circular buffer resolve o problema de dequeue O(n) em arrays lineares, atingindo O(1) amortizado"
+  - "Monotonic stack/queue é a técnica avançada para sliding window maximum em O(n)"
+---
+
+# Stacks e Queues — Análise Formal e Aplicações em Sistemas Reais
+
+Stacks e queues não são apenas "arrays com restrições". São **tipos abstratos de dados (ADTs)** com semânticas
+precisas que aparecem em todos os níveis de um sistema — do hardware (stack pointer do processador) ao
+application layer (message queues distribuídas). Entender suas propriedades formais, trade-offs de
+implementação e variantes avançadas (deque, priority queue, monotonic stack) é o que separa
+engenharia de software de memorização de LeetCode.
+
+---
+
+## Stack — Definição Formal como ADT
+
+Uma **stack** (pilha) é um ADT que obedece a disciplina **LIFO (Last In, First Out)** com a seguinte interface mínima:
+
+```
+Stack<T>:
+  push(item: T) → void       // insere no topo — O(1)
+  pop() → T                  // remove e retorna o topo — O(1)
+  peek() → T                 // retorna o topo sem remover — O(1)
+  isEmpty() → boolean        // verifica se está vazia — O(1)
+  size() → number            // número de elementos — O(1)
+```
+
+**Axiomas formais** (especificação algébrica):
+- `pop(push(s, x)) = (s, x)` — pop desfaz o último push
+- `peek(push(s, x)) = x` — peek retorna o último elemento inserido
+- `pop(empty) = ⊥` (undefined) — pop numa stack vazia é erro
+
+Esses axiomas garantem que **qualquer** implementação correta de stack se comporta de forma idêntica,
+independentemente de ser array, linked list ou até uma fita magnética.
+
+---
+
+## Implementação: Array vs Linked List
+
+### Array-backed Stack
+
+```typescript
+class ArrayStack<T> {
+  private items: T[] = [];
+
+  push(item: T): void {
+    this.items.push(item); // amortizado O(1)
+  }
+
+  pop(): T {
+    if (this.isEmpty()) throw new Error("Stack underflow");
+    return this.items.pop()!; // O(1)
+  }
+
+  peek(): T {
+    if (this.isEmpty()) throw new Error("Stack underflow");
+    return this.items[this.items.length - 1];
+  }
+
+  isEmpty(): boolean {
+    return this.items.length === 0;
+  }
+
+  get size(): number {
+    return this.items.length;
+  }
+}
+```
+
+**Análise de complexidade:**
+- `push`: **O(1) amortizado**. Quando o array interno precisa de resize (tipicamente dobra a capacidade),
+  a cópia custa O(n), mas distribuída por n operações anteriores resulta em O(1) amortizado.
+  Formalmente, usando **análise de potencial** (método do físico): Φ(n) = 2n - capacity, e o custo
+  amortizado de cada push é exatamente 3 (1 para o push + 2 para "pagar" o futuro resize).
+- `pop`: **O(1)** estrito (sem shrink automático na maioria das implementações).
+- **Localidade de cache**: Excelente. Elementos contíguos na memória → prefetcher da CPU funciona bem.
+
+### Linked List-backed Stack
+
+```typescript
+class ListNode<T> {
+  constructor(public value: T, public next: ListNode<T> | null = null) {}
+}
+
+class LinkedStack<T> {
+  private head: ListNode<T> | null = null;
+  private _size: number = 0;
+
+  push(item: T): void {
+    // Novo nó aponta para o antigo head — inserção no início O(1)
+    this.head = new ListNode(item, this.head);
+    this._size++;
+  }
+
+  pop(): T {
+    if (!this.head) throw new Error("Stack underflow");
+    const value = this.head.value;
+    this.head = this.head.next; // GC cuida da desalocação
+    this._size--;
+    return value;
+  }
+
+  peek(): T {
+    if (!this.head) throw new Error("Stack underflow");
+    return this.head.value;
+  }
+
+  isEmpty(): boolean {
+    return this.head === null;
+  }
+
+  get size(): number {
+    return this._size;
+  }
+}
+```
+
+**Trade-offs reais:**
+
+| Critério | Array | Linked List |
+|---|---|---|
+| push/pop | O(1) amortizado | O(1) estrito (worst-case) |
+| Memória por elemento | ~8 bytes (apenas o valor) | ~24-32 bytes (valor + ponteiro + overhead do objeto) |
+| Localidade de cache | Excelente (contígua) | Péssima (nós espalhados no heap) |
+| Resize | Cópia ocasional O(n) | Nunca precisa |
+| Uso de memória | Pode desperdiçar (capacidade > tamanho) | Exata (mas overhead por nó) |
+
+**Na prática**: array-backed vence em quase todos os cenários reais. A localidade de cache
+domina o desempenho em hardware moderno. Linked list só compensa quando você precisa de
+**garantia O(1) worst-case** (ex: sistemas real-time) ou quando faz merge/split frequente de stacks.
+
+---
+
+## Call Stack — Como Funciona Internamente
+
+A call stack do processador é literalmente uma stack em memória gerenciada pelo **stack pointer (SP)**.
+Cada chamada de função cria um **stack frame** (também chamado de activation record):
+
+```
+Memória (endereços crescem para baixo):
+┌─────────────────────────────┐ ← Stack base (endereço alto)
+│   main() frame              │
+│   - variáveis locais        │
+│   - return address          │
+├─────────────────────────────┤
+│   funcaoA() frame           │
+│   - parâmetros recebidos    │
+│   - variáveis locais        │
+│   - saved frame pointer     │
+│   - return address          │
+├─────────────────────────────┤
+│   funcaoB() frame           │
+│   - parâmetros              │
+│   - variáveis locais        │ ← Stack Pointer (SP) atual
+├─────────────────────────────┤
+│                             │
+│   (espaço livre)            │
+│                             │
+├─────────────────────────────┤
+│   ███ STACK LIMIT ███       │ ← Se SP chega aqui → Stack Overflow
+└─────────────────────────────┘
+```
+
+**Cada stack frame contém:**
+1. **Return address**: endereço da instrução seguinte à chamada (para onde voltar após `return`)
+2. **Saved frame pointer (base pointer)**: referência ao frame do chamador (para restaurar o contexto)
+3. **Parâmetros da função**: valores passados como argumento
+4. **Variáveis locais**: alocadas subtraindo do SP
+5. **Registradores salvos**: valores que a função precisa preservar
+
+**Stack Overflow** ocorre quando a profundidade de recursão excede o limite da stack. Em JavaScript
+(V8), o limite típico é ~10.000-15.000 frames. Isso é detectável:
+
+```javascript
+// Medindo o limite da call stack no seu ambiente
+function measureStackDepth(depth = 0) {
+  try {
+    return measureStackDepth(depth + 1);
+  } catch (e) {
+    return depth; // RangeError: Maximum call stack size exceeded
+  }
+}
+console.log(`Profundidade máxima: ${measureStackDepth()}`);
+// V8 (Node/Chrome): ~10.000-15.000
+// SpiderMonkey (Firefox): ~20.000-50.000
+```
+
+**Tail Call Optimization (TCO)**: ES6 especificou TCO, onde chamadas recursivas em posição de cauda
+reutilizam o frame atual em vez de criar um novo. Na prática, **apenas o Safari (JavaScriptCore)
+implementa TCO**. V8 e SpiderMonkey não implementaram.
+
+---
+
+## Aplicações Clássicas de Stack
+
+### 1. Bracket Matching — O Clássico de Entrevistas
+
+```typescript
+function isValidBrackets(s: string): boolean {
+  const stack: string[] = [];
+  const pairs: Record<string, string> = {
+    ")": "(",
+    "]": "[",
+    "}": "{",
+  };
+
+  for (const char of s) {
+    if ("([{".includes(char)) {
+      stack.push(char);
+    } else if (char in pairs) {
+      // Se a stack está vazia ou o topo não corresponde → inválido
+      if (stack.length === 0 || stack.pop() !== pairs[char]) {
+        return false;
+      }
+    }
+  }
+
+  return stack.length === 0; // stack deve estar vazia no final
+}
+```
+
+**Complexidade**: O(n) tempo, O(n) espaço no pior caso (ex: `"(((((((((("` — tudo abre).
+
+### 2. Conversão Infix → Postfix (Shunting-Yard Algorithm)
+
+O **Shunting-Yard Algorithm** de Dijkstra converte expressões infix (`3 + 4 * 2`) para postfix
+(notação polonesa reversa: `3 4 2 * +`) usando uma stack de operadores. Isso elimina a necessidade
+de parênteses e respeita precedência/associatividade:
+
+```typescript
+type Token = string;
+
+function infixToPostfix(tokens: Token[]): Token[] {
+  const output: Token[] = [];
+  const opStack: Token[] = [];
+
+  const precedence: Record<string, number> = {
+    "+": 1,
+    "-": 1,
+    "*": 2,
+    "/": 2,
+    "^": 3,
+  };
+  // ^ é right-associative, os demais são left-associative
+  const rightAssoc = new Set(["^"]);
+
+  for (const token of tokens) {
+    if (!isNaN(Number(token))) {
+      // Operando → direto para o output
+      output.push(token);
+    } else if (token === "(") {
+      opStack.push(token);
+    } else if (token === ")") {
+      // Pop até encontrar o "(" correspondente
+      while (opStack.length > 0 && opStack[opStack.length - 1] !== "(") {
+        output.push(opStack.pop()!);
+      }
+      opStack.pop(); // Remove o "("
+    } else {
+      // Operador: pop operadores com maior (ou igual, se left-assoc) precedência
+      while (
+        opStack.length > 0 &&
+        opStack[opStack.length - 1] !== "(" &&
+        (precedence[opStack[opStack.length - 1]] > precedence[token] ||
+          (precedence[opStack[opStack.length - 1]] === precedence[token] &&
+            !rightAssoc.has(token)))
+      ) {
+        output.push(opStack.pop()!);
+      }
+      opStack.push(token);
+    }
+  }
+
+  // Esvazia operadores restantes
+  while (opStack.length > 0) {
+    output.push(opStack.pop()!);
+  }
+
+  return output;
+}
+
+// Exemplo: "3 + 4 * 2 / ( 1 - 5 ) ^ 2 ^ 3"
+const tokens = "3 + 4 * 2 / ( 1 - 5 ) ^ 2 ^ 3".split(" ");
+console.log(infixToPostfix(tokens).join(" "));
+// Saída: "3 4 2 * 1 5 - 2 3 ^ ^ / +"
+```
+
+### 3. Undo/Redo com Duas Stacks
+
+```typescript
+class UndoRedoManager<T> {
+  private undoStack: T[] = [];
+  private redoStack: T[] = [];
+
+  execute(state: T): void {
+    this.undoStack.push(state);
+    this.redoStack.length = 0; // Limpa o redo ao executar nova ação
+  }
+
+  undo(): T | undefined {
+    const state = this.undoStack.pop();
+    if (state !== undefined) this.redoStack.push(state);
+    return state;
+  }
+
+  redo(): T | undefined {
+    const state = this.redoStack.pop();
+    if (state !== undefined) this.undoStack.push(state);
+    return state;
+  }
+}
+```
+
+---
+
+## Queue — Definição Formal como ADT
+
+Uma **queue** (fila) é um ADT que obedece a disciplina **FIFO (First In, First Out)**:
+
+```
+Queue<T>:
+  enqueue(item: T) → void    // insere no final — O(1)
+  dequeue() → T              // remove e retorna o início — O(1)
+  front() → T                // retorna o início sem remover — O(1)
+  isEmpty() → boolean        // verifica se está vazia — O(1)
+  size() → number            // número de elementos — O(1)
+```
+
+**Axiomas:**
+- `dequeue(enqueue(empty, x)) = (empty, x)` — dequeue retorna o primeiro elemento enfileirado
+- `front(enqueue(empty, x)) = x`
+
+### O Problema do Array Simples
+
+Usar `Array.shift()` como `dequeue` é **O(n)** porque todos os elementos precisam ser movidos uma posição para a esquerda:
+
+```
+Antes do shift:  [A, B, C, D, E]
+                  ↑
+                  remove A
+
+Depois do shift: [B, C, D, E]  ← B, C, D, E foram COPIADOS uma posição
+```
+
+Em JavaScript, `Array.shift()` é uma das operações mais custosas. Para 1 milhão de elementos,
+cada `shift()` move ~1 milhão de valores. Isso é inaceitável em qualquer sistema de produção.
+
+---
+
+## Circular Buffer (Ring Buffer) — Implementação Eficiente de Queue
+
+A solução é um **circular buffer**: um array de tamanho fixo com dois ponteiros (`head` e `tail`)
+que "envolvem" (wrap around) ao chegar no final. O enqueue e o dequeue são O(1) sem mover nenhum
+elemento:
+
+```
+Capacidade: 8
+Head (leitura) = 2, Tail (escrita) = 6
+
+Índices:  0   1   2   3   4   5   6   7
+        [ _ | _ | A | B | C | D | _ | _ ]
+                  ↑               ↑
+                head            tail
+
+Após enqueue(E): tail avança para 7
+        [ _ | _ | A | B | C | D | E | _ ]
+
+Após dequeue(): retorna A, head avança para 3
+        [ _ | _ | _ | B | C | D | E | _ ]
+
+Wrap-around: tail chega ao índice 7, próximo enqueue vai para 0
+        [ F | _ | _ | B | C | D | E | _ ]
+          ↑                           ↑
+         tail                        (continua)
+```
+
+```typescript
+class CircularQueue<T> {
+  private buffer: (T | undefined)[];
+  private head: number = 0;
+  private tail: number = 0;
+  private _size: number = 0;
+  private capacity: number;
+
+  constructor(capacity: number) {
+    this.capacity = capacity;
+    this.buffer = new Array(capacity);
+  }
+
+  enqueue(item: T): void {
+    if (this._size === this.capacity) {
+      this.resize(this.capacity * 2);
+    }
+    this.buffer[this.tail] = item;
+    this.tail = (this.tail + 1) % this.capacity; // wrap-around com módulo
+    this._size++;
+  }
+
+  dequeue(): T {
+    if (this._size === 0) throw new Error("Queue underflow");
+    const item = this.buffer[this.head]!;
+    this.buffer[this.head] = undefined; // permite GC
+    this.head = (this.head + 1) % this.capacity;
+    this._size--;
+    return item;
+  }
+
+  front(): T {
+    if (this._size === 0) throw new Error("Queue underflow");
+    return this.buffer[this.head]!;
+  }
+
+  isEmpty(): boolean {
+    return this._size === 0;
+  }
+
+  get size(): number {
+    return this._size;
+  }
+
+  private resize(newCapacity: number): void {
+    const newBuffer = new Array<T | undefined>(newCapacity);
+    for (let i = 0; i < this._size; i++) {
+      newBuffer[i] = this.buffer[(this.head + i) % this.capacity];
+    }
+    this.buffer = newBuffer;
+    this.head = 0;
+    this.tail = this._size;
+    this.capacity = newCapacity;
+  }
+}
+```
+
+**Por que funciona**: O operador módulo (`%`) faz o índice "voltar ao início" quando chega
+no final do array. `(tail + 1) % capacity` transforma índice 7 → 0 quando capacity = 8.
+Isso elimina a necessidade de mover elementos, garantindo **O(1) estrito** para ambas as operações.
+
+---
+
+## Deque — Double-Ended Queue
+
+Um **deque** (pronuncia-se "deck") permite inserção e remoção em **ambas as extremidades**:
+
+```
+Deque<T>:
+  pushFront(item: T) → void   // O(1) amortizado
+  pushBack(item: T) → void    // O(1) amortizado
+  popFront() → T              // O(1)
+  popBack() → T               // O(1)
+```
+
+Deque é a estrutura mais geral: com um deque, você pode implementar tanto stack (usando apenas
+`pushBack`/`popBack`) quanto queue (usando `pushBack`/`popFront`). Internamente, é implementado
+como um circular buffer com crescimento em ambas as direções.
+
+**Onde aparece na prática**: `collections.deque` do Python, `std::deque` do C++, e é a base para
+implementar **monotonic queues** (veremos adiante).
+
+---
+
+## Priority Queue e Binary Heap
+
+### Priority Queue como ADT
+
+Uma **priority queue** não é FIFO — o elemento com **maior (ou menor) prioridade** sai primeiro:
+
+```
+PriorityQueue<T>:
+  insert(item: T, priority: number) → void   // O(log n)
+  extractMin() → T                           // O(log n)
+  peekMin() → T                              // O(1)
+  decreaseKey(item: T, newPriority) → void   // O(log n)
+```
+
+A implementação canônica é o **binary heap**.
+
+### Binary Heap — Propriedades
+
+Um **min-heap** é uma árvore binária completa onde cada nó é ≤ seus filhos:
+
+```
+Min-Heap (array representation):
+Índice:    0    1    2    3    4    5    6
+Valor:   [ 1 |  3 |  2 |  7 |  6 |  5 |  4 ]
+
+Árvore correspondente:
+            1           ← raiz = mínimo
+          /   \
+         3     2
+        / \   / \
+       7   6 5   4
+```
+
+**Propriedade fundamental** — Para um array 0-indexed:
+- **Pai de i**: `Math.floor((i - 1) / 2)`
+- **Filho esquerdo de i**: `2 * i + 1`
+- **Filho direito de i**: `2 * i + 2`
+
+Para 1-indexed (mais elegante matematicamente):
+- **Pai**: `⌊i/2⌋`
+- **Filhos**: `2i` e `2i + 1`
+
+**Por que array?** Uma árvore binária **completa** não tem "buracos" — todos os níveis estão preenchidos
+da esquerda para a direita. Isso permite representação compacta em array sem ponteiros, com excelente
+localidade de cache.
+
+### Implementação Completa
+
+```typescript
+class MinHeap<T> {
+  private heap: T[] = [];
+  private comparator: (a: T, b: T) => number;
+
+  constructor(comparator: (a: T, b: T) => number = (a, b) => (a as any) - (b as any)) {
+    this.comparator = comparator;
+  }
+
+  insert(value: T): void {
+    this.heap.push(value);
+    this.bubbleUp(this.heap.length - 1);
+  }
+
+  extractMin(): T {
+    if (this.heap.length === 0) throw new Error("Heap underflow");
+    const min = this.heap[0];
+    const last = this.heap.pop()!;
+    if (this.heap.length > 0) {
+      this.heap[0] = last;
+      this.sinkDown(0);
+    }
+    return min;
+  }
+
+  peek(): T {
+    if (this.heap.length === 0) throw new Error("Heap underflow");
+    return this.heap[0];
+  }
+
+  get size(): number {
+    return this.heap.length;
+  }
+
+  // Sobe o elemento até restaurar a propriedade de heap
+  private bubbleUp(i: number): void {
+    while (i > 0) {
+      const parent = Math.floor((i - 1) / 2);
+      if (this.comparator(this.heap[i], this.heap[parent]) >= 0) break;
+      [this.heap[i], this.heap[parent]] = [this.heap[parent], this.heap[i]];
+      i = parent;
+    }
+  }
+
+  // Desce o elemento até restaurar a propriedade de heap
+  private sinkDown(i: number): void {
+    const n = this.heap.length;
+    while (true) {
+      let smallest = i;
+      const left = 2 * i + 1;
+      const right = 2 * i + 2;
+
+      if (left < n && this.comparator(this.heap[left], this.heap[smallest]) < 0) {
+        smallest = left;
+      }
+      if (right < n && this.comparator(this.heap[right], this.heap[smallest]) < 0) {
+        smallest = right;
+      }
+      if (smallest === i) break;
+
+      [this.heap[i], this.heap[smallest]] = [this.heap[smallest], this.heap[i]];
+      i = smallest;
+    }
+  }
+
+  // Constrói heap a partir de array existente — O(n) bottom-up!
+  static heapify<T>(arr: T[], comparator?: (a: T, b: T) => number): MinHeap<T> {
+    const heap = new MinHeap<T>(comparator);
+    heap.heap = [...arr];
+    // Começa do último nó interno (pai da última folha) e desce
+    for (let i = Math.floor(arr.length / 2) - 1; i >= 0; i--) {
+      heap.sinkDown(i);
+    }
+    return heap;
+  }
+}
+```
+
+### Heapify: O(n) vs O(n log n)
+
+**Inserção individual** — inserir n elementos um por um:
+- Cada insert é O(log n) → total **O(n log n)**
+
+**Bottom-up heapify** — aplicar sinkDown de baixo para cima:
+- Parece O(n log n), mas a análise matemática mostra **O(n)**
+
+**Prova**: No nível k (contando da raiz = 0), existem no máximo `⌈n / 2^(k+1)⌉` nós,
+e cada nó no nível k faz no máximo `h - k` swaps (onde h = ⌊log₂ n⌋). O custo total é:
+
+```
+T(n) = Σ (k=0 até h) ⌈n/2^(k+1)⌉ · (h - k)
+
+     = n · Σ (k=0 até h) (h - k) / 2^(k+1)
+
+Substituindo j = h - k:
+
+     = n · Σ (j=0 até h) j / 2^(h-j+1)
+
+     = (n / 2^(h+1)) · Σ (j=0 até h) j · 2^j
+
+A série Σ j·2^j converge para um valor finito ≤ 2 · 2^h
+
+Logo: T(n) ≤ (n / 2^(h+1)) · 2 · 2^h = n
+```
+
+**Resultado**: heapify bottom-up é **Θ(n)**, estritamente melhor que construção por inserções repetidas.
+Isso é contra-intuitivo mas matematicamente rigoroso — a maioria dos nós está nos últimos níveis
+e precisa descer muito pouco.
+
+---
+
+## Aplicações em Sistemas Reais
+
+### DFS com Stack (iterativo) e BFS com Queue
+
+```typescript
+// DFS iterativo usando stack explícita — evita stack overflow
+function dfsIterative(graph: Map<string, string[]>, start: string): string[] {
+  const visited = new Set<string>();
+  const stack = [start];
+  const order: string[] = [];
+
+  while (stack.length > 0) {
+    const node = stack.pop()!;
+    if (visited.has(node)) continue;
+    visited.add(node);
+    order.push(node);
+
+    // Adiciona vizinhos na stack (ordem reversa para manter a ordem de visita)
+    const neighbors = graph.get(node) || [];
+    for (let i = neighbors.length - 1; i >= 0; i--) {
+      if (!visited.has(neighbors[i])) {
+        stack.push(neighbors[i]);
+      }
+    }
+  }
+  return order;
+}
+
+// BFS usando queue — encontra menor caminho em grafos não-ponderados
+function bfs(graph: Map<string, string[]>, start: string): string[] {
+  const visited = new Set<string>([start]);
+  const queue = [start]; // Em produção, usar CircularQueue
+  let head = 0; // Simula dequeue sem shift()
+  const order: string[] = [];
+
+  while (head < queue.length) {
+    const node = queue[head++]; // "dequeue" O(1)
+    order.push(node);
+
+    for (const neighbor of graph.get(node) || []) {
+      if (!visited.has(neighbor)) {
+        visited.add(neighbor);
+        queue.push(neighbor);
+      }
+    }
+  }
+  return order;
+}
+```
+
+**Nota sobre o BFS**: usamos `head++` em vez de `queue.shift()` para evitar O(n) por operação.
+Essa técnica simples (two-pointer no array) é suficiente quando a queue não precisa ser reutilizada.
+
+### Event Loop do JavaScript — Task Queue e Microtask Queue
+
+O event loop é a aplicação mais importante de queues no ecossistema JavaScript:
+
+```
+┌──────────────────────────────────────────────┐
+│                 Call Stack                     │
+│  (stack de frames — execução síncrona)        │
+└────────────────────┬─────────────────────────┘
+                     │
+        ┌────────────▼────────────┐
+        │    Stack está vazia?     │◄─── Loop
+        │    (verification)        │
+        └────┬───────────────┬────┘
+             │ Sim           │ Não → continua
+             ▼               │       executando
+   ┌─────────────────┐      │
+   │ Microtask Queue  │      │
+   │ (Promise.then,   │      │
+   │  queueMicrotask, │      │
+   │  MutationObserver)│     │
+   │ ESVAZIA TUDO!     │     │
+   └────────┬──────────┘     │
+            │ vazia          │
+            ▼                │
+   ┌─────────────────┐      │
+   │  Task Queue      │      │
+   │  (setTimeout,    │      │
+   │   setInterval,   │      │
+   │   I/O callbacks,│      │
+   │   MessageChannel)│      │
+   │  PEGA UMA só     │      │
+   └──────────────────┘      │
+```
+
+**Regras críticas:**
+1. A **microtask queue** tem prioridade absoluta — é esvaziada completamente antes de processar qualquer task
+2. A **task queue** processa **uma task por vez**, depois verifica microtasks novamente
+3. Microtasks podem agendar novas microtasks, causando **starvation** de tasks (rendering fica bloqueado)
+
+```javascript
+// Demonstração da ordem de execução
+console.log("1 - síncrono");
+
+setTimeout(() => console.log("5 - task queue"), 0);
+
+Promise.resolve().then(() => {
+  console.log("3 - microtask");
+  Promise.resolve().then(() => console.log("4 - microtask aninhada"));
+});
+
+queueMicrotask(() => console.log("3.5 - queueMicrotask"));
+
+console.log("2 - síncrono");
+
+// Saída: 1, 2, 3, 3.5, 4, 5
+```
+
+### Message Queues Distribuídas (RabbitMQ, SQS)
+
+Em sistemas distribuídos, queues são a cola que conecta microsserviços:
+
+```
+Producer → [Message Queue] → Consumer
+
+Propriedades essenciais:
+- Durabilidade: mensagens sobrevivem restart do broker
+- At-least-once delivery: garante que toda mensagem é processada
+- Ordering: SQS standard NÃO garante ordem; SQS FIFO e RabbitMQ sim
+- Dead Letter Queue (DLQ): mensagens que falham N vezes vão para uma fila separada
+- Backpressure: consumidores lentos não derrubam produtores rápidos
+```
+
+**RabbitMQ** usa o modelo AMQP com exchanges, bindings e queues. **SQS** é managed e serverless.
+**Kafka** tecnicamente não é uma queue — é um log distribuído com semântica de consumer groups.
+
+---
+
+## Monotonic Stack — Técnica Avançada
+
+Uma **monotonic stack** mantém elementos em ordem monotonicamente crescente (ou decrescente).
+Elementos que violam a monotonia são removidos antes da inserção. Isso permite resolver problemas
+como "próximo elemento maior" e "sliding window maximum" em O(n).
+
+### Next Greater Element
+
+```typescript
+// Para cada elemento, encontra o próximo elemento maior à direita
+// Entrada: [2, 1, 2, 4, 3]
+// Saída:   [4, 2, 4, -1, -1]
+function nextGreaterElement(nums: number[]): number[] {
+  const result = new Array(nums.length).fill(-1);
+  const stack: number[] = []; // stack de ÍNDICES
+
+  for (let i = 0; i < nums.length; i++) {
+    // Enquanto o elemento atual for maior que o topo da stack,
+    // o topo encontrou seu "next greater element"
+    while (stack.length > 0 && nums[i] > nums[stack[stack.length - 1]]) {
+      const idx = stack.pop()!;
+      result[idx] = nums[i];
+    }
+    stack.push(i);
+  }
+  return result;
+}
+```
+
+**Complexidade**: O(n) tempo! Cada elemento entra e sai da stack no máximo uma vez → 2n operações totais.
+
+### Sliding Window Maximum (Monotonic Deque)
+
+Dado um array e uma janela de tamanho k, encontrar o máximo em cada posição da janela. Solução
+ingênua é O(nk). Com um **monotonic deque**, resolvemos em **O(n)**:
+
+```typescript
+// Entrada: nums = [1, 3, -1, -3, 5, 3, 6, 7], k = 3
+// Saída:          [3, 3, 5, 5, 6, 7]
+function maxSlidingWindow(nums: number[], k: number): number[] {
+  const result: number[] = [];
+  const deque: number[] = []; // índices — frente tem o maior
+
+  for (let i = 0; i < nums.length; i++) {
+    // Remove elementos fora da janela (frente do deque)
+    while (deque.length > 0 && deque[0] <= i - k) {
+      deque.shift(); // Em produção, usar deque real com O(1)
+    }
+
+    // Mantém monotonia decrescente: remove do final elementos menores que nums[i]
+    while (deque.length > 0 && nums[deque[deque.length - 1]] <= nums[i]) {
+      deque.pop();
+    }
+
+    deque.push(i);
+
+    // A janela está completa a partir de i >= k - 1
+    if (i >= k - 1) {
+      result.push(nums[deque[0]]); // frente do deque = máximo da janela
+    }
+  }
+  return result;
+}
+```
+
+**Por que funciona**: O deque mantém apenas candidatos úteis em ordem decrescente. Se `nums[j] ≤ nums[i]`
+e `j < i`, então `j` nunca será o máximo enquanto `i` estiver na janela — pode ser descartado com segurança.
+Cada elemento entra e sai do deque no máximo uma vez → **O(n) total**.
+
+---
+
+## Resumo de Complexidades
+
+```
+┌──────────────────────┬────────────┬────────────┬────────────┐
+│ Operação             │ Stack      │ Queue      │ Heap       │
+│                      │ (array)    │ (circular) │ (binary)   │
+├──────────────────────┼────────────┼────────────┼────────────┤
+│ Inserção             │ O(1)*      │ O(1)*      │ O(log n)   │
+│ Remoção              │ O(1)       │ O(1)       │ O(log n)   │
+│ Peek                 │ O(1)       │ O(1)       │ O(1)       │
+│ Busca                │ O(n)       │ O(n)       │ O(n)       │
+│ Build (heapify)      │ —          │ —          │ O(n)       │
+│ Espaço               │ O(n)       │ O(n)       │ O(n)       │
+└──────────────────────┴────────────┴────────────┴────────────┘
+* amortizado
+```
+
+**Quando usar cada estrutura:**
+- **Stack**: backtracking, parsing, DFS, reversão de sequências, call stack management
+- **Queue**: BFS, processamento em ordem de chegada, buffers de I/O, task scheduling
+- **Deque**: sliding window problems, work-stealing schedulers, undo/redo bidirecional
+- **Priority Queue (Heap)**: Dijkstra, A*, scheduling com prioridades, merge de k listas ordenadas, mediana em streaming
+- **Monotonic Stack/Deque**: next greater/smaller element, sliding window min/max, histograma (largest rectangle)

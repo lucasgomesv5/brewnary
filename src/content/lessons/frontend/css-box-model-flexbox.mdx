@@ -1,0 +1,661 @@
+---
+title: "CSS Box Model e Flexbox"
+description: "Domine o box model, formatting contexts e layouts 1D com Flexbox"
+track: "frontend"
+order: 3
+section: "CSS"
+priority: "high"
+tags: ["css", "box-model", "flexbox", "layout"]
+prerequisites: []
+keyTakeaways:
+  - "Sempre use box-sizing: border-box globalmente para dimensionamento previsível"
+  - "Flexbox distribui espaço entre items em um eixo principal e um eixo cruzado"
+  - "Use gap em vez de margin para espaçamento entre flex items"
+---
+
+## Box Model — A Base de Todo Layout CSS
+
+Cada elemento no DOM gera uma caixa retangular composta por quatro camadas. Entender essas
+camadas é fundamental para controlar dimensionamento e espaçamento com precisão.
+
+```
+┌──────────────────────────────────────────────────────────┐
+│                      margin                              │
+│    ┌────────────────────────────────────────────────┐    │
+│    │                   border                       │    │
+│    │    ┌──────────────────────────────────────┐    │    │
+│    │    │              padding                  │    │    │
+│    │    │    ┌────────────────────────────┐     │    │    │
+│    │    │    │          content            │     │    │    │
+│    │    │    │   (width × height aqui)     │     │    │    │
+│    │    │    └────────────────────────────┘     │    │    │
+│    │    └──────────────────────────────────────┘    │    │
+│    └────────────────────────────────────────────────┘    │
+└──────────────────────────────────────────────────────────┘
+
+content  → O conteúdo real do elemento (texto, imagem, filhos)
+padding  → Espaço INTERNO entre o conteúdo e a borda
+border   → Borda visível (pode ter largura, estilo e cor)
+margin   → Espaço EXTERNO entre este elemento e os vizinhos
+```
+
+### box-sizing: content-box vs border-box
+
+A propriedade `box-sizing` define **o que `width` e `height` controlam**. Essa distinção
+é a fonte de incontáveis bugs em layouts CSS.
+
+```css
+/*
+  content-box (padrão do browser):
+  width/height = SOMENTE o conteúdo
+  Padding e border são adicionados POR FORA.
+
+  Conta:
+    width: 200px
+    padding: 20px (esquerda + direita = 40px)
+    border: 2px solid (esquerda + direita = 4px)
+    ────────────────────────────────────────
+    Largura renderizada = 200 + 40 + 4 = 244px  ← surpresa!
+*/
+.content-box-example {
+  box-sizing: content-box;
+  width: 200px;
+  padding: 20px;
+  border: 2px solid #333;
+  /* Largura total renderizada: 244px */
+}
+
+/*
+  border-box:
+  width/height = conteúdo + padding + border INCLUSOS
+  O browser reduz o conteúdo para que tudo caiba na width definida.
+
+  Conta:
+    width: 200px (total fixo)
+    padding: 20px (esquerda + direita = 40px)
+    border: 2px solid (esquerda + direita = 4px)
+    ────────────────────────────────────────
+    Espaço real para conteúdo = 200 - 40 - 4 = 156px
+    Largura renderizada = 200px  ← previsível!
+*/
+.border-box-example {
+  box-sizing: border-box;
+  width: 200px;
+  padding: 20px;
+  border: 2px solid #333;
+  /* Largura total renderizada: 200px */
+}
+```
+
+**Reset universal obrigatório** — todo projeto sério usa isto:
+
+```css
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+```
+
+Sem este reset, componentes de terceiros e pseudo-elementos herdam `content-box`, causando
+inconsistências difíceis de rastrear.
+
+---
+
+## Block vs Inline vs Inline-block
+
+Esses três valores de `display` controlam como o elemento participa no **formatting context**.
+
+```
+┌─ Block (display: block) ─────────────────────────────────┐
+│ • Ocupa 100% da largura do pai por padrão                │
+│ • Sempre começa em nova linha                            │
+│ • Respeita width, height, margin, padding em TODOS lados │
+│ • Ex: div, p, h1-h6, section, article                    │
+└──────────────────────────────────────────────────────────┘
+
+┌─ Inline (display: inline) ──────────────────────────────┐
+│ • Ocupa apenas o espaço do conteúdo                     │
+│ • NÃO respeita width nem height                         │
+│ • Margin/padding vertical NÃO empurram vizinhos         │
+│ • Ex: span, a, strong, em                               │
+└─────────────────────────────────────────────────────────┘
+
+┌─ Inline-block (display: inline-block) ──────────────────┐
+│ • Flui como inline (lado a lado)                        │
+│ • MAS respeita width, height, margin, padding           │
+│ • Útil para botões, badges, chips                       │
+│ • Ex: comportamento de <button>, <input>                │
+└─────────────────────────────────────────────────────────┘
+```
+
+### Block Formatting Context (BFC)
+
+Um **BFC** é uma região independente de layout. Elementos dentro de um BFC não afetam
+o layout externo e vice-versa. Criar um BFC resolve diversos problemas clássicos.
+
+```css
+/* Situações que criam um NOVO BFC: */
+.bfc-overflow   { overflow: hidden; }  /* ou auto, scroll */
+.bfc-display    { display: flow-root; } /* forma moderna e semântica */
+.bfc-float      { float: left; }       /* qualquer valor exceto none */
+.bfc-flex       { display: flex; }     /* flex/grid containers */
+.bfc-position   { position: absolute; } /* ou fixed */
+
+/* Problema clássico: pai colapsa quando filhos flutuam */
+.parent {
+  /* Sem BFC, a altura do pai = 0 se todos filhos flutuam */
+}
+.parent-fixed {
+  display: flow-root; /* Cria BFC → pai envolve os filhos flutuantes */
+}
+```
+
+---
+
+## Margin Collapsing — O Comportamento Mais Mal-entendido do CSS
+
+Margens verticais de elementos **block-level adjacentes** se fundem (colapsam) em uma
+única margem. Esse comportamento **só acontece no eixo vertical** em fluxo normal.
+
+```
+Sem colapso (o que você espera):
+
+  ┌──────────┐
+  │ Bloco A  │
+  └──────────┘
+       ↕ 20px (margin-bottom de A)
+       ↕ 30px (margin-top de B)
+       = 50px total
+  ┌──────────┐
+  │ Bloco B  │
+  └──────────┘
+
+Com colapso (o que realmente acontece):
+
+  ┌──────────┐
+  │ Bloco A  │
+  └──────────┘
+       ↕ 30px (max(20, 30) = 30px)
+  ┌──────────┐
+  │ Bloco B  │
+  └──────────┘
+```
+
+### Regras do Margin Collapsing
+
+```css
+/*
+  QUANDO ACONTECE:
+  1. Irmãos adjacentes → margin-bottom + margin-top colapsam
+  2. Pai e primeiro filho → margin-top do pai + margin-top do filho
+  3. Pai e último filho  → margin-bottom do pai + margin-bottom do filho
+  4. Elemento vazio      → margin-top + margin-bottom do mesmo elemento
+
+  QUANDO NÃO ACONTECE (maneiras de evitar):
+  • Elementos com float ou position: absolute
+  • Flex items ou Grid items (nunca colapsam!)
+  • Elementos com overflow ≠ visible (criam BFC)
+  • display: flow-root no pai (cria BFC)
+  • Padding ou border entre as margens (quebra adjacência)
+  • Elementos inline-block
+*/
+
+/* Exemplo: evitando colapso pai-filho */
+.parent-problematic {
+  margin-top: 0;
+  /* O margin-top: 20px do filho "vaza" para fora do pai */
+}
+.parent-problematic > .child {
+  margin-top: 20px;
+}
+
+/* Solução 1: padding no pai */
+.parent-fixed-1 {
+  padding-top: 1px; /* Qualquer padding quebra a adjacência */
+}
+
+/* Solução 2: BFC no pai */
+.parent-fixed-2 {
+  display: flow-root; /* BFC impede colapso com filhos */
+}
+
+/* Solução 3: Flex (flex items não colapsam) */
+.parent-fixed-3 {
+  display: flex;
+  flex-direction: column;
+}
+```
+
+---
+
+## Flexbox — O Motor de Layout 1D
+
+Flexbox trabalha em **um eixo por vez**: o eixo principal (main axis) e o eixo cruzado
+(cross axis). Entender essa dualidade é a chave para dominar Flexbox.
+
+```
+flex-direction: row (padrão)
+═══════════════════════════════════════
+Main Axis →  (horizontal)
+Cross Axis ↓ (vertical)
+
+┌─────────────────────────────────────┐
+│ ┌───────┐ ┌───────┐ ┌───────┐      │
+│ │ Item1 │ │ Item2 │ │ Item3 │  ←→  │ ← espaço disponível
+│ └───────┘ └───────┘ └───────┘      │
+└─────────────────────────────────────┘
+
+flex-direction: column
+═══════════════════════════════════════
+Main Axis ↓  (vertical)
+Cross Axis → (horizontal)
+
+┌──────────────────┐
+│ ┌──────────────┐ │
+│ │    Item 1    │ │
+│ └──────────────┘ │
+│ ┌──────────────┐ │
+│ │    Item 2    │ │
+│ └──────────────┘ │
+│        ↕         │
+│   espaço livre   │
+└──────────────────┘
+```
+
+### Propriedades do Flex Container
+
+```css
+.flex-container {
+  display: flex; /* ou inline-flex para container inline */
+
+  /* ═══ Eixo Principal ═══ */
+  flex-direction: row;        /* row | row-reverse | column | column-reverse */
+  flex-wrap: nowrap;          /* nowrap | wrap | wrap-reverse */
+  /* shorthand: flex-flow: row wrap; */
+
+  /* ═══ Alinhamento no Eixo Principal ═══ */
+  justify-content: flex-start;
+  /*
+    flex-start   → |||________
+    flex-end     → ________|||
+    center       → ____|||____
+    space-between→ |_____|_____|
+    space-around → _|___|___|_  (metade nas pontas)
+    space-evenly → __|__|__|__  (espaço igual em tudo)
+  */
+
+  /* ═══ Alinhamento no Eixo Cruzado (linha única) ═══ */
+  align-items: stretch;
+  /*
+    stretch    → items esticam para preencher o container
+    flex-start → items alinhados ao topo
+    flex-end   → items alinhados ao fundo
+    center     → items centralizados verticalmente
+    baseline   → items alinhados pela baseline do texto
+  */
+
+  /* ═══ Alinhamento no Eixo Cruzado (múltiplas linhas) ═══ */
+  align-content: stretch;
+  /* Mesmo valores de justify-content, mas para as LINHAS no cross axis */
+  /* Só funciona com flex-wrap: wrap e múltiplas linhas */
+
+  /* ═══ Espaçamento ═══ */
+  gap: 16px;          /* row-gap e column-gap iguais */
+  gap: 16px 24px;     /* row-gap: 16px, column-gap: 24px */
+}
+```
+
+### Propriedades dos Flex Items — O Algoritmo de Distribuição
+
+Os flex items controlam como o espaço **disponível** (ou **faltante**) é distribuído
+entre eles. É aqui que mora a complexidade real do Flexbox.
+
+```css
+.flex-item {
+  /* ═══ flex-basis ═══ */
+  /* Tamanho INICIAL do item antes de crescer/encolher */
+  /* Funciona como width (em row) ou height (em column) */
+  flex-basis: auto;  /* usa width/height do item, ou conteúdo */
+  flex-basis: 200px; /* tamanho inicial fixo */
+  flex-basis: 0%;    /* ignora tamanho do conteúdo */
+
+  /* ═══ flex-grow ═══ */
+  /* Proporção de espaço SOBRANDO que o item recebe */
+  /* 0 = não cresce (padrão) */
+  flex-grow: 0;
+
+  /* ═══ flex-shrink ═══ */
+  /* Proporção de espaço FALTANDO que o item cede */
+  /* 1 = encolhe proporcionalmente (padrão) */
+  flex-shrink: 1;
+
+  /* ═══ align-self ═══ */
+  /* Override do align-items para um item específico */
+  align-self: center;
+
+  /* ═══ order ═══ */
+  /* Altera a ordem visual (não a do DOM!) */
+  order: 0; /* padrão; valores menores aparecem primeiro */
+}
+```
+
+### O Algoritmo de Distribuição — Como o Browser Calcula
+
+```
+Passo 1: Determinar o espaço disponível
+─────────────────────────────────────────
+  container_width = 900px
+  sum_flex_basis  = 200 + 100 + 300 = 600px
+  gap_total       = 2 × 16px = 32px
+  available_space = 900 - 600 - 32 = 268px (sobrando!)
+
+Passo 2: Distribuir espaço sobrando via flex-grow
+─────────────────────────────────────────
+  Item A: flex-grow: 2  → recebe 2/4 de 268 = 134px → 200 + 134 = 334px
+  Item B: flex-grow: 1  → recebe 1/4 de 268 =  67px → 100 +  67 = 167px
+  Item C: flex-grow: 1  → recebe 1/4 de 268 =  67px → 300 +  67 = 367px
+                                                        TOTAL = 868px + 32px gap = 900px ✓
+
+Passo 3 (se espaço negativo): Distribuir encolhimento via flex-shrink
+─────────────────────────────────────────
+  O cálculo de shrink é PONDERADO pelo flex-basis!
+  shrink_factor_i = flex-shrink_i × flex-basis_i
+  ratio_i = shrink_factor_i / sum(shrink_factors)
+  reduction_i = ratio_i × |negative_space|
+
+  Isso significa que items com basis maior encolhem MAIS
+  proporcionalmente — um comportamento intencional para
+  manter proporções visuais.
+```
+
+### flex Shorthand — As Três Formas Essenciais
+
+```css
+/*
+  flex: <grow> <shrink> <basis>
+  ─────────────────────────────────────────────────────
+  flex: 1      →  flex: 1 1 0%
+    Cresce, encolhe, base zero → ignora conteúdo, distribui espaço igualmente
+    USE: quando quer colunas de MESMA largura
+
+  flex: auto   →  flex: 1 1 auto
+    Cresce, encolhe, base = tamanho do conteúdo
+    USE: quando quer que o conteúdo influencie a proporção
+
+  flex: none   →  flex: 0 0 auto
+    Não cresce, não encolhe, usa tamanho natural
+    USE: ícones, botões, elementos de tamanho fixo
+
+  flex: 0 0 250px →  tamanho fixo de 250px
+    USE: sidebars, thumbnails, elementos com largura definida
+*/
+
+/* Exemplo: header com logo fixo e nav que cresce */
+.header { display: flex; align-items: center; gap: 16px; }
+.logo   { flex: none; /* tamanho natural, nunca muda */ }
+.nav    { flex: 1;    /* ocupa todo espaço restante */ }
+.cta    { flex: none; /* botão fixo à direita */ }
+```
+
+### Hypothetical Main Size e min-width: auto
+
+O browser calcula o **hypothetical main size** de cada item — o tamanho que o item
+teria se houvesse espaço infinito. Depois aplica grow/shrink a partir desse valor.
+
+```css
+/*
+  PEGADINHA CLÁSSICA: min-width: auto
+  ────────────────────────────────────
+  Flex items têm min-width: auto por padrão (não 0!).
+  Isso significa que um item NUNCA encolhe menor que seu conteúdo.
+
+  Sintoma: texto longo causa overflow horizontal no container.
+*/
+.item-overflow-bug {
+  flex: 1;
+  /* Se o conteúdo for maior que o espaço, o item NÃO encolhe! */
+}
+
+/* Solução 1: sobrescrever min-width */
+.item-fixed {
+  flex: 1;
+  min-width: 0; /* Permite encolher abaixo do conteúdo */
+}
+
+/* Solução 2: overflow hidden (cria BFC + limita visualmente) */
+.item-fixed-alt {
+  flex: 1;
+  overflow: hidden; /* Também reseta min-width implicitamente */
+}
+
+/* Solução 3: truncar texto */
+.item-truncate {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+```
+
+---
+
+## Padrões Comuns com Flexbox
+
+### Centralização perfeita (horizontal + vertical)
+
+```css
+/* O padrão mais procurado no StackOverflow */
+.center-absolute {
+  display: flex;
+  justify-content: center; /* centraliza no main axis */
+  align-items: center;     /* centraliza no cross axis */
+  min-height: 100vh;       /* garante altura total */
+}
+
+/* Alternativa com margin auto (funciona em flex items) */
+.center-margin {
+  display: flex;
+}
+.center-margin > .child {
+  margin: auto; /* margin auto em flex absorve espaço livre! */
+}
+```
+
+### Holy Grail Layout
+
+```css
+/*
+  ┌──────────────────────────┐
+  │         Header           │
+  ├──────┬───────────┬───────┤
+  │ Nav  │   Main    │ Aside │
+  │      │           │       │
+  ├──────┴───────────┴───────┤
+  │         Footer           │
+  └──────────────────────────┘
+*/
+.holy-grail {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+.holy-grail-body {
+  display: flex;
+  flex: 1; /* corpo cresce para empurrar footer para baixo */
+}
+.holy-grail-nav   { flex: 0 0 200px; order: -1; }
+.holy-grail-main  { flex: 1; }
+.holy-grail-aside { flex: 0 0 200px; }
+```
+
+### Sticky Footer
+
+```css
+/*
+  Footer sempre no fundo da página, mesmo com pouco conteúdo.
+  Se o conteúdo for grande, footer vai para baixo naturalmente.
+*/
+.page {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+.page-header  { /* altura natural */ }
+.page-content { flex: 1; /* preenche o espaço restante */ }
+.page-footer  { /* altura natural, sempre no fundo */ }
+```
+
+### Card Grid com Wrap
+
+```css
+.card-grid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 24px;
+}
+.card {
+  flex: 1 1 300px;
+  /*
+    base: 300px → cada card começa com 300px
+    grow: 1     → cards crescem para preencher a linha
+    shrink: 1   → cards podem encolher se necessário
+
+    Em tela de 1000px: 3 cards de ~300px
+    Em tela de 700px:  2 cards de ~338px
+    Em tela de 400px:  1 card de 400px
+
+    ⚠️  ATENÇÃO: se sobrar 1 card na última linha,
+    ele CRESCE para ocupar a linha inteira.
+    Use CSS Grid se quiser largura consistente.
+  */
+}
+```
+
+### Espaçar items com margin auto
+
+```css
+/* Padrão: nav com items à esquerda e ação à direita */
+.toolbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.toolbar-action {
+  margin-left: auto;
+  /*
+    margin auto em flex items "absorve" todo espaço livre.
+    Empurra este item (e todos depois dele) para a direita.
+
+    ┌──────────────────────────────────────┐
+    │ [A] [B] [C]              [Action]    │
+    │            ← margin auto →           │
+    └──────────────────────────────────────┘
+  */
+}
+```
+
+---
+
+## Debugging Flexbox — DevTools e Pitfalls
+
+### Chrome/Firefox DevTools
+
+```
+1. Inspecione o flex container → veja o badge "flex" no painel Elements
+2. Clique no badge "flex" para ativar o OVERLAY:
+   - Linhas pontilhadas mostram os limites de cada item
+   - Áreas sombreadas mostram o espaço distribuído por grow
+   - Setas indicam a direção do main axis
+
+3. No painel Styles → seção flex:
+   - Editor visual de justify-content e align-items
+   - Visualize todas as opções com um clique
+
+4. No painel Layout → seção Flexbox:
+   - Lista todos flex containers da página
+   - Toggle overlay por container
+```
+
+### Pitfalls Comuns
+
+```css
+/*
+  ❌ PROBLEMA 1: Item não encolhe (overflow)
+  Causa: min-width: auto (padrão de flex items)
+  Solução: min-width: 0 ou overflow: hidden
+*/
+
+/*
+  ❌ PROBLEMA 2: Imagem distorcida dentro de flex item
+  Causa: align-items: stretch (padrão) estica o item,
+         e a imagem herda essa altura
+*/
+.flex-with-image {
+  display: flex;
+  align-items: flex-start; /* Não esticar items */
+}
+.flex-with-image img {
+  max-width: 100%;
+  height: auto; /* Manter proporção */
+}
+
+/*
+  ❌ PROBLEMA 3: flex-basis vs width — qual tem prioridade?
+  Resposta: flex-basis SEMPRE vence width no main axis.
+  Mas width funciona como fallback se flex-basis: auto.
+
+  Ordem de resolução do tamanho no main axis:
+  1. flex-basis (se não for auto)
+  2. width/height (depende do flex-direction)
+  3. Tamanho do conteúdo
+*/
+
+/*
+  ❌ PROBLEMA 4: gap não funciona em Safari antigo
+  Safari < 14.1 não suporta gap em Flexbox.
+  Fallback com margin:
+*/
+.compat-grid {
+  display: flex;
+  flex-wrap: wrap;
+  margin: -8px; /* Compensa o margin dos filhos */
+}
+.compat-grid > * {
+  margin: 8px; /* Simula gap de 16px */
+}
+
+/*
+  ❌ PROBLEMA 5: Último item cresce demais com flex-wrap
+  Quando a última linha tem menos items, flex-grow faz
+  cada item crescer mais que nas linhas cheias.
+  Solução: use CSS Grid com auto-fill/minmax para grids.
+*/
+```
+
+---
+
+## Resumo Mental — Quando Usar o Quê
+
+```
+┌──────────────────────────────────────────────────────────┐
+│  DECISÃO DE LAYOUT                                       │
+│                                                          │
+│  Distribuir items em UMA direção?                        │
+│    → Flexbox (justify-content, align-items, gap)         │
+│                                                          │
+│  Criar grid de LINHAS e COLUNAS?                         │
+│    → CSS Grid (grid-template-columns/rows)               │
+│                                                          │
+│  Centralizar um único elemento?                          │
+│    → Flexbox (display: flex + justify + align center)    │
+│    → Grid (display: grid + place-items: center)          │
+│                                                          │
+│  Cards/tiles com wrap responsivo?                        │
+│    → Grid (auto-fill + minmax) — tamanhos consistentes   │
+│    → Flexbox (flex-wrap) — items crescem para preencher  │
+│                                                          │
+│  Empurrar item para a ponta oposta?                      │
+│    → Flexbox + margin-left: auto (ou margin-right)       │
+│    → Flexbox + justify-content: space-between            │
+└──────────────────────────────────────────────────────────┘
+```

@@ -1,0 +1,570 @@
+---
+title: "Redes Neurais"
+description: "Perceptron, MLP, funcoes de ativacao, forward pass, funcoes de perda e backpropagation -- a anatomia completa de uma rede neural"
+track: "ia"
+order: 4
+section: "Modelos"
+priority: "high"
+tags: ["redes-neurais", "perceptron", "backpropagation", "mlp"]
+prerequisites: []
+keyTakeaways:
+  - "Um perceptron e um classificador linear que computa y = f(w*x + b); redes multicamada (MLP) empilham perceptrons com funcoes de ativacao nao-lineares para aproximar qualquer funcao continua"
+  - "Funcoes de ativacao (ReLU, sigmoid, tanh) introduzem nao-linearidade -- sem elas, empilhar camadas lineares e equivalente a uma unica camada linear"
+  - "Backpropagation aplica a regra da cadeia do calculo para propagar o erro da saida ate os pesos de cada camada, permitindo atualizar cada peso proporcionalmente a sua contribuicao para o erro"
+---
+
+# Redes Neurais
+
+## 1. O Perceptron
+
+O **Perceptron** (Frank Rosenblatt, 1957) e o modelo mais simples de neuronio artificial. Ele recebe entradas, aplica pesos, soma, e produz uma saida binaria.
+
+```
+Perceptron:
+
+  x1 ─(w1)──┐
+             │
+  x2 ─(w2)──┼──→ [ z = Σ(wi*xi) + b ] ──→ [ f(z) ] ──→ y
+             │
+  x3 ─(w3)──┘
+
+  z = w1*x1 + w2*x2 + w3*x3 + b    (combinacao linear)
+  y = f(z)                            (funcao de ativacao)
+
+  Para o Perceptron original:
+  f(z) = 1  se z >= 0
+  f(z) = 0  se z < 0                  (step function)
+```
+
+### Implementacao
+
+```python
+import numpy as np
+
+class Perceptron:
+    def __init__(self, n_features, lr=0.01):
+        self.w = np.zeros(n_features)
+        self.b = 0
+        self.lr = lr
+
+    def predict(self, x):
+        z = np.dot(self.w, x) + self.b
+        return 1 if z >= 0 else 0
+
+    def train(self, X, y, epochs=100):
+        for _ in range(epochs):
+            for xi, yi in zip(X, y):
+                pred = self.predict(xi)
+                error = yi - pred
+                # Regra de atualizacao do Perceptron
+                self.w += self.lr * error * xi
+                self.b += self.lr * error
+
+# Exemplo: aprender AND logico
+X = np.array([[0,0], [0,1], [1,0], [1,1]])
+y = np.array([0, 0, 0, 1])
+
+p = Perceptron(n_features=2)
+p.train(X, y, epochs=10)
+
+for xi in X:
+    print(f"{xi} -> {p.predict(xi)}")
+# [0, 0] -> 0
+# [0, 1] -> 0
+# [1, 0] -> 0
+# [1, 1] -> 1
+```
+
+### Limitacao Fundamental: o Problema XOR
+
+O Perceptron so pode resolver problemas **linearmente separaveis** -- onde existe uma reta (ou hiperplano) que separa as classes.
+
+```
+AND (linearmente separavel):     XOR (NAO linearmente separavel):
+
+  y                                y
+  1│     ●(1,1)                    1│ ●(0,1)     ●(1,1)
+   │                                │  classe 1   classe 0
+  0│ ●(0,0)  ●(1,0)               0│ ●(0,0)     ●(1,0)
+   └──────────── x                  │  classe 0   classe 1
+     Uma reta separa ● de ○          └──────────── x
+                                     Nenhuma reta separa as classes!
+```
+
+Essa limitacao, demonstrada por Minsky e Papert em 1969, desencadeou o primeiro AI Winter. A solucao? **Redes multicamada (MLP)**.
+
+---
+
+## 2. Funcoes de Ativacao
+
+Funcoes de ativacao introduzem **nao-linearidade** na rede. Sem elas, empilhar multiplas camadas lineares seria equivalente a uma unica camada linear (composicao de funcoes lineares e linear).
+
+### Sigmoid
+
+```
+σ(z) = 1 / (1 + e^(-z))
+
+Saida: (0, 1)
+Derivada: σ'(z) = σ(z) * (1 - σ(z))
+
+  1 ─────────────────────────●●●●●
+                          ●●●
+                        ●●
+                      ●●
+                    ●●
+  0.5 ────────────●──────────────────
+                ●●
+              ●●
+            ●●
+         ●●●
+  0 ●●●●●──────────────────────────
+    -6  -4  -2   0   2   4   6
+
+Vantagens: saida entre 0 e 1 (interpretavel como probabilidade)
+Problemas: vanishing gradient (derivada → 0 para |z| grande),
+           saida nao centrada em zero, exp() e lento
+```
+
+### Tanh
+
+```
+tanh(z) = (e^z - e^(-z)) / (e^z + e^(-z))
+
+Saida: (-1, 1)
+Derivada: tanh'(z) = 1 - tanh²(z)
+
+  1 ─────────────────────────●●●●●
+                          ●●●
+                       ●●●
+  0 ────────────────●──────────────
+               ●●●
+            ●●●
+ -1 ●●●●●──────────────────────────
+    -4  -3  -2  -1   0   1   2   3   4
+
+Vantagens: centrada em zero (melhor que sigmoid para camadas ocultas)
+Problemas: ainda sofre vanishing gradient para |z| grande
+```
+
+### ReLU (Rectified Linear Unit)
+
+```
+ReLU(z) = max(0, z)
+
+Saida: [0, +∞)
+Derivada: 1 se z > 0, 0 se z < 0
+
+      │          ╱
+      │        ╱
+      │      ╱
+      │    ╱
+      │  ╱
+  ────●──────────
+      0
+
+Vantagens: simples, rapido, sem vanishing gradient para z > 0,
+           gera ativacoes esparsas (muitos zeros = eficiente)
+Problemas: "dying ReLU" (neuronios com z < 0 param de aprender)
+```
+
+### Variantes de ReLU
+
+```python
+# Leaky ReLU: resolve dying ReLU
+def leaky_relu(z, alpha=0.01):
+    return np.where(z > 0, z, alpha * z)
+
+# GELU (Gaussian Error Linear Unit): usada em Transformers (BERT, GPT)
+def gelu(z):
+    return 0.5 * z * (1 + np.tanh(np.sqrt(2/np.pi) * (z + 0.044715 * z**3)))
+
+# SiLU / Swish: usada em modelos modernos
+def silu(z):
+    return z * (1 / (1 + np.exp(-z)))  # z * sigmoid(z)
+```
+
+### Quando usar cada funcao
+
+```
+┌─────────────────┬────────────────────────────────────────┐
+│ Funcao          │ Quando usar                            │
+├─────────────────┼────────────────────────────────────────┤
+│ ReLU            │ Padrao para camadas ocultas de MLPs    │
+│ Leaky ReLU      │ Quando muitos neuronios estao "morrendo"│
+│ GELU            │ Transformers (BERT, GPT, etc.)         │
+│ SiLU/Swish      │ Modelos de visao modernos (EfficientNet)│
+│ Sigmoid         │ Camada de saida para classificacao     │
+│                 │ binaria (saida 0-1)                    │
+│ Softmax         │ Camada de saida para classificacao     │
+│                 │ multiclasse (soma = 1)                 │
+│ Tanh            │ Camadas ocultas de RNNs (historico)    │
+│ Linear (nenhuma)│ Camada de saida para regressao         │
+└─────────────────┴────────────────────────────────────────┘
+```
+
+---
+
+## 3. MLP (Multi-Layer Perceptron)
+
+Um MLP e uma rede neural com **uma ou mais camadas ocultas**. Cada camada e uma transformacao linear seguida de uma funcao de ativacao nao-linear.
+
+```
+Input     Hidden Layer 1    Hidden Layer 2    Output
+(3)           (4)               (4)            (2)
+
+x1 ─────●─────●─────●─────●──────●──────●──────●──── y1
+        │╲   ╱│╲   ╱│╲   ╱│╲    ╱│╲    ╱│╲    ╱│
+x2 ─────●──╲╱─●──╲╱─●──╲╱─●──╲╱──●──╲╱──●──╲╱──●── y2
+        │  ╱╲ │  ╱╲ │  ╱╲ │  ╱╲  │  ╱╲  │  ╱╲  │
+x3 ─────●╱───╲●╱───╲●╱───╲●╱────╲●╱────╲●╱────╲●
+
+Cada aresta tem um peso (parametro aprendido).
+Cada neuronio aplica: z = Σ(wi*xi) + b, a = f(z)
+
+Total de parametros:
+  Camada 1: 3*4 + 4 = 16    (pesos + biases)
+  Camada 2: 4*4 + 4 = 20
+  Camada 3: 4*2 + 2 = 10
+  Total: 46 parametros
+```
+
+### Universal Approximation Theorem
+
+O **Teorema da Aproximacao Universal** (Cybenko, 1989; Hornik, 1991) estabelece que um MLP com **uma unica camada oculta** com numero suficiente de neuronios pode aproximar **qualquer funcao continua** em um dominio compacto com precisao arbitraria.
+
+Isso nao significa que uma camada e suficiente na pratica. Redes profundas (muitas camadas) sao mais eficientes em parametros para representar funcoes complexas.
+
+---
+
+## 4. Forward Pass
+
+O **forward pass** e a computacao que transforma a entrada em saida, propagando dados atraves de todas as camadas.
+
+```python
+import numpy as np
+
+class MLP:
+    def __init__(self, layer_sizes):
+        """
+        layer_sizes: lista com tamanho de cada camada
+        Exemplo: [3, 4, 4, 2] -> 3 inputs, 2 hidden (4 neuronios), 2 outputs
+        """
+        self.weights = []
+        self.biases = []
+
+        for i in range(len(layer_sizes) - 1):
+            # Inicializacao He (bom para ReLU)
+            w = np.random.randn(layer_sizes[i], layer_sizes[i+1]) * np.sqrt(2.0 / layer_sizes[i])
+            b = np.zeros((1, layer_sizes[i+1]))
+            self.weights.append(w)
+            self.biases.append(b)
+
+    def relu(self, z):
+        return np.maximum(0, z)
+
+    def softmax(self, z):
+        exp_z = np.exp(z - np.max(z, axis=1, keepdims=True))
+        return exp_z / exp_z.sum(axis=1, keepdims=True)
+
+    def forward(self, X):
+        """Forward pass: propaga X por todas as camadas."""
+        self.activations = [X]  # salvar para backpropagation
+        self.z_values = []
+
+        a = X
+        for i in range(len(self.weights)):
+            z = a @ self.weights[i] + self.biases[i]  # linear
+            self.z_values.append(z)
+
+            if i < len(self.weights) - 1:
+                a = self.relu(z)        # ReLU nas camadas ocultas
+            else:
+                a = self.softmax(z)     # Softmax na saida
+
+            self.activations.append(a)
+
+        return a
+
+# Exemplo
+model = MLP([3, 4, 4, 2])
+X = np.array([[1.0, 2.0, 3.0]])  # 1 amostra, 3 features
+output = model.forward(X)
+print(f"Saida: {output}")        # [0.62, 0.38] (probabilidades)
+print(f"Soma: {output.sum():.4f}")  # 1.0000
+```
+
+---
+
+## 5. Funcoes de Perda (Loss Functions)
+
+A funcao de perda quantifica **quao errada** esta a predicao do modelo. O objetivo do treinamento e minimizar essa funcao.
+
+### MSE (Mean Squared Error) -- para regressao
+
+```
+MSE = (1/n) * Σ(y_pred - y_real)²
+
+Propriedades:
+  - Penaliza erros grandes mais que erros pequenos (quadratico)
+  - Derivada simples: dMSE/dy_pred = (2/n) * (y_pred - y_real)
+  - Sensivel a outliers
+```
+
+### Cross-Entropy -- para classificacao
+
+```
+Classificacao binaria:
+  L = -[y * log(p) + (1-y) * log(1-p)]
+
+  onde y ∈ {0, 1} e p ∈ (0, 1) e a probabilidade predita
+
+Classificacao multiclasse:
+  L = -Σ(y_i * log(p_i))
+
+  onde y e one-hot e p e a saida do softmax
+```
+
+```python
+def cross_entropy(y_true, y_pred):
+    """
+    y_true: one-hot encoded (ex: [0, 1, 0] para classe 1)
+    y_pred: probabilidades do softmax (ex: [0.1, 0.7, 0.2])
+    """
+    epsilon = 1e-15  # evitar log(0)
+    y_pred = np.clip(y_pred, epsilon, 1 - epsilon)
+    return -np.sum(y_true * np.log(y_pred))
+
+# Predicao boa (alta prob na classe correta)
+print(cross_entropy([0, 1, 0], [0.05, 0.90, 0.05]))  # 0.105 (loss baixa)
+
+# Predicao ruim (baixa prob na classe correta)
+print(cross_entropy([0, 1, 0], [0.40, 0.30, 0.30]))  # 1.204 (loss alta)
+```
+
+**Intuicao**: cross-entropy mede a "surpresa" do modelo. Se o modelo preve 90% de probabilidade para a classe correta, a surpresa e baixa (loss baixa). Se preve 30%, a surpresa e alta (loss alta).
+
+---
+
+## 6. Backpropagation
+
+**Backpropagation** (Rumelhart, Hinton & Williams, 1986) e o algoritmo que calcula o gradiente da funcao de perda em relacao a **cada peso** da rede. Ele usa a **regra da cadeia** do calculo, propagando o erro da saida de volta ate a entrada.
+
+### Intuicao
+
+```
+Forward pass: dados fluem da entrada para a saida
+              X → h1 → h2 → y_pred → Loss
+
+Backward pass: gradientes fluem da saida para a entrada
+              ∂L/∂W1 ← ∂L/∂h1 ← ∂L/∂h2 ← ∂L/∂y_pred ← Loss
+
+Cada peso e atualizado proporcionalmente a sua
+contribuicao para o erro total.
+```
+
+### Passo a Passo para uma Rede de 2 Camadas
+
+Considere uma rede simples:
+
+```
+Camada 1: z1 = X @ W1 + b1,  a1 = ReLU(z1)
+Camada 2: z2 = a1 @ W2 + b2, a2 = softmax(z2) = y_pred
+Loss:     L = cross_entropy(y_true, y_pred)
+```
+
+**Backward pass (derivando com regra da cadeia):**
+
+```
+Passo 1: Gradiente da loss em relacao a z2 (saida antes do softmax)
+  dz2 = y_pred - y_true
+  (para softmax + cross-entropy, a derivada simplifica para isso)
+
+Passo 2: Gradientes dos pesos da camada 2
+  dW2 = a1^T @ dz2
+  db2 = sum(dz2, axis=0)
+
+Passo 3: Propagar o erro para a camada anterior
+  da1 = dz2 @ W2^T
+
+Passo 4: Passar pela derivada do ReLU
+  dz1 = da1 * (z1 > 0)    (derivada do ReLU: 1 se z>0, 0 se z<=0)
+
+Passo 5: Gradientes dos pesos da camada 1
+  dW1 = X^T @ dz1
+  db1 = sum(dz1, axis=0)
+
+Passo 6: Atualizar todos os pesos
+  W1 = W1 - lr * dW1
+  b1 = b1 - lr * db1
+  W2 = W2 - lr * dW2
+  b2 = b2 - lr * db2
+```
+
+### Implementacao Completa
+
+```python
+import numpy as np
+
+class NeuralNetwork:
+    def __init__(self, input_size, hidden_size, output_size, lr=0.01):
+        # Inicializacao He
+        self.W1 = np.random.randn(input_size, hidden_size) * np.sqrt(2.0 / input_size)
+        self.b1 = np.zeros((1, hidden_size))
+        self.W2 = np.random.randn(hidden_size, output_size) * np.sqrt(2.0 / hidden_size)
+        self.b2 = np.zeros((1, output_size))
+        self.lr = lr
+
+    def relu(self, z):
+        return np.maximum(0, z)
+
+    def softmax(self, z):
+        exp_z = np.exp(z - np.max(z, axis=1, keepdims=True))
+        return exp_z / exp_z.sum(axis=1, keepdims=True)
+
+    def forward(self, X):
+        self.z1 = X @ self.W1 + self.b1
+        self.a1 = self.relu(self.z1)
+        self.z2 = self.a1 @ self.W2 + self.b2
+        self.a2 = self.softmax(self.z2)
+        return self.a2
+
+    def backward(self, X, y_true):
+        m = X.shape[0]  # numero de amostras
+
+        # Passo 1: gradiente da saida
+        dz2 = self.a2 - y_true                       # (m, output_size)
+
+        # Passo 2: gradientes da camada 2
+        dW2 = (1/m) * self.a1.T @ dz2                # (hidden, output)
+        db2 = (1/m) * np.sum(dz2, axis=0, keepdims=True)
+
+        # Passo 3: propagar erro para camada 1
+        da1 = dz2 @ self.W2.T                        # (m, hidden)
+
+        # Passo 4: derivada do ReLU
+        dz1 = da1 * (self.z1 > 0)                    # (m, hidden)
+
+        # Passo 5: gradientes da camada 1
+        dW1 = (1/m) * X.T @ dz1                      # (input, hidden)
+        db1 = (1/m) * np.sum(dz1, axis=0, keepdims=True)
+
+        # Passo 6: atualizar pesos
+        self.W2 -= self.lr * dW2
+        self.b2 -= self.lr * db2
+        self.W1 -= self.lr * dW1
+        self.b1 -= self.lr * db1
+
+    def train(self, X, y_true, epochs=1000):
+        for epoch in range(epochs):
+            # Forward
+            y_pred = self.forward(X)
+
+            # Loss (cross-entropy)
+            loss = -np.mean(np.sum(y_true * np.log(y_pred + 1e-15), axis=1))
+
+            # Backward
+            self.backward(X, y_true)
+
+            if epoch % 200 == 0:
+                print(f"Epoch {epoch:4d}: loss = {loss:.4f}")
+
+# Resolver XOR (que o Perceptron nao consegue!)
+X = np.array([[0,0], [0,1], [1,0], [1,1]])
+y = np.array([[1,0], [0,1], [0,1], [1,0]])  # one-hot: [nao-xor, xor]
+
+nn = NeuralNetwork(input_size=2, hidden_size=8, output_size=2, lr=0.5)
+nn.train(X, y, epochs=2000)
+
+# Testar
+for xi in X:
+    pred = nn.forward(xi.reshape(1, -1))
+    classe = np.argmax(pred)
+    print(f"{xi} -> classe {classe} (probs: {pred[0].round(3)})")
+
+# Saida esperada:
+# [0 0] -> classe 0 (probs: [0.98  0.02 ])
+# [0 1] -> classe 1 (probs: [0.02  0.98 ])
+# [1 0] -> classe 1 (probs: [0.02  0.98 ])
+# [1 1] -> classe 0 (probs: [0.97  0.03 ])
+```
+
+---
+
+## 7. Inicializacao de Pesos
+
+A inicializacao dos pesos afeta drasticamente a convergencia do treinamento.
+
+```
+┌──────────────┬──────────────────────────────────────────────┐
+│ Metodo       │ Descricao                                    │
+├──────────────┼──────────────────────────────────────────────┤
+│ Zeros        │ NUNCA use. Todos os neuronios aprendem a     │
+│              │ mesma coisa (simetria nao e quebrada).        │
+├──────────────┼──────────────────────────────────────────────┤
+│ Xavier/Glorot│ w ~ N(0, 2/(n_in + n_out))                   │
+│              │ Bom para sigmoid e tanh.                      │
+├──────────────┼──────────────────────────────────────────────┤
+│ He/Kaiming   │ w ~ N(0, 2/n_in)                             │
+│              │ Bom para ReLU. Padrao em PyTorch.             │
+└──────────────┴──────────────────────────────────────────────┘
+```
+
+---
+
+## 8. Regularizacao
+
+Tecnicas para evitar **overfitting** (modelo memoriza treino, falha em dados novos).
+
+### Dropout
+
+```
+Treinamento (dropout = 0.5):         Inferencia:
+Desativa 50% dos neuronios           Todos os neuronios ativos
+aleatoriamente a cada batch.          (pesos * (1-dropout))
+
+  ● ─── ● ─── ●                      ● ─── ● ─── ●
+  ● ─── X ─── ●  (desativado)        ● ─── ● ─── ●
+  ● ─── ● ─── X  (desativado)        ● ─── ● ─── ●
+  ● ─── ● ─── ●                      ● ─── ● ─── ●
+
+Efeito: forca cada neuronio a ser util independentemente,
+evitando co-adaptacao. Funciona como um ensemble implicito.
+```
+
+### Batch Normalization
+
+Normaliza as ativacoes de cada camada para ter media 0 e variancia 1. Beneficios: treinamento mais estavel, permite learning rates maiores, funciona como regularizador leve.
+
+```python
+# Em PyTorch:
+import torch.nn as nn
+
+model = nn.Sequential(
+    nn.Linear(784, 256),
+    nn.BatchNorm1d(256),    # batch norm
+    nn.ReLU(),
+    nn.Dropout(0.3),        # dropout de 30%
+    nn.Linear(256, 128),
+    nn.BatchNorm1d(128),
+    nn.ReLU(),
+    nn.Dropout(0.3),
+    nn.Linear(128, 10),     # 10 classes
+)
+```
+
+---
+
+## 9. De MLP a Deep Learning
+
+O MLP e o bloco fundamental de praticamente toda arquitetura de deep learning:
+
+```
+MLP puro           → Classificacao tabular
+MLP + Convolucao   → CNN (visao computacional)
+MLP + Recorrencia  → RNN/LSTM (sequencias)
+MLP + Attention    → Transformer (tudo: texto, imagem, audio)
+```
+
+O que torna redes **profundas** (deep) poderosas e a capacidade de aprender **hierarquias de representacoes**: camadas iniciais aprendem features simples (bordas, fonemas), camadas intermediarias compoe features complexas (formas, palavras) e camadas finais capturam conceitos de alto nivel (objetos, sentimentos).
+
+Essa compreensao de como redes neurais simples funcionam -- forward pass, loss, backpropagation e atualizacao de pesos -- e a fundacao para entender CNNs, RNNs e Transformers nas proximas licoes.

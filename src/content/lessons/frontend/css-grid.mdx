@@ -1,0 +1,686 @@
+---
+title: "CSS Grid"
+description: "Domine layouts 2D com CSS Grid, subgrid e padrões responsivos avançados"
+track: "frontend"
+order: 4
+section: "CSS"
+priority: "high"
+tags: ["css", "grid", "layout", "responsivo"]
+prerequisites: ["css-box-model-flexbox"]
+keyTakeaways:
+  - "CSS Grid é para layouts 2D — linhas E colunas ao mesmo tempo"
+  - "auto-fill com minmax() cria layouts responsivos sem media queries"
+  - "Grid template areas permitem nomear regiões do layout de forma visual"
+---
+
+## CSS Grid — O Sistema de Layout 2D
+
+Grid é o sistema de layout mais poderoso do CSS. Diferente do Flexbox (1D),
+Grid opera em **duas dimensões simultaneamente** — colunas e linhas são cidadãos
+de primeira classe.
+
+```
+┌─── Grid Container ──────────────────────────────────────┐
+│                                                          │
+│  column 1      column 2      column 3                    │
+│  ┌───────────┬─────────────┬───────────┐  ← row 1       │
+│  │           │             │           │                 │
+│  │  cell     │  cell       │  cell     │                 │
+│  │  (1,1)    │  (1,2)      │  (1,3)    │                 │
+│  ├───────────┼─────────────┼───────────┤  ← row 2       │
+│  │           │             │           │                 │
+│  │  cell     │  cell       │  cell     │                 │
+│  │  (2,1)    │  (2,2)      │  (2,3)    │                 │
+│  └───────────┴─────────────┴───────────┘                 │
+│                                                          │
+│  ↑ grid lines: 1    2      3          4                  │
+│    (linhas numeram as DIVISÓRIAS, não as colunas)        │
+└──────────────────────────────────────────────────────────┘
+```
+
+### Grid Lines — O Conceito Fundamental
+
+```
+  Grid lines são INVISÍVEIS — são as linhas entre as tracks.
+  Uma grid de 3 colunas tem 4 column lines (1, 2, 3, 4).
+  Uma grid de 2 rows tem 3 row lines (1, 2, 3).
+
+  Linhas negativas contam do final:
+    -1 = última linha, -2 = penúltima, etc.
+
+  col lines:  1       2       3       4
+              ↓       ↓       ↓       ↓
+              ┌───────┬───────┬───────┐ ← row line 1
+              │       │       │       │
+              │       │       │       │
+              ├───────┼───────┼───────┤ ← row line 2
+              │       │       │       │
+              │       │       │       │
+              └───────┴───────┴───────┘ ← row line 3
+              ↑                       ↑
+              1 (ou -4)               4 (ou -1)
+```
+
+---
+
+## Propriedades do Grid Container
+
+```css
+.grid-container {
+  display: grid; /* ou inline-grid */
+
+  /* ═══ Definindo Colunas e Linhas (Grid Explícito) ═══ */
+  grid-template-columns: 200px 1fr 200px;
+  grid-template-rows: auto 1fr auto;
+  /*
+    200px  → tamanho fixo
+    1fr    → fração do espaço disponível
+    auto   → tamanho do conteúdo
+
+    Cálculo de fr:
+    Container = 1000px, gap = 0
+    Espaço fixo = 200 + 200 = 400px
+    Espaço para fr = 1000 - 400 = 600px
+    1fr = 600px
+  */
+
+  /* ═══ repeat() — Evitar Repetição ═══ */
+  grid-template-columns: repeat(3, 1fr);
+  /* Equivale a: 1fr 1fr 1fr */
+
+  grid-template-columns: repeat(2, 100px 1fr);
+  /* Equivale a: 100px 1fr 100px 1fr */
+
+  /* ═══ Espaçamento ═══ */
+  gap: 24px;            /* row-gap e column-gap iguais */
+  gap: 16px 24px;       /* row-gap: 16px, column-gap: 24px */
+  /* Nota: gap é descontado ANTES de calcular fr units */
+}
+```
+
+### A Unidade fr — Frações do Espaço Disponível
+
+```css
+/*
+  fr distribui o espaço RESTANTE após elementos fixos e gaps.
+
+  Exemplo: container de 1200px, gap de 20px
+  grid-template-columns: 200px 2fr 1fr;
+
+  Cálculo:
+    Espaço total    = 1200px
+    Fixo            = 200px
+    Gaps            = 2 × 20px = 40px
+    Disponível      = 1200 - 200 - 40 = 960px
+    1fr             = 960 / 3 = 320px
+    2fr             = 640px
+
+  Resultado: 200px | 640px | 320px
+*/
+
+/* ATENÇÃO: fr e minmax têm interação sutil */
+.grid-fr-vs-minmax {
+  /* fr pode encolher para 0 se não houver espaço */
+  grid-template-columns: 1fr 1fr 1fr;
+
+  /* minmax garante tamanho mínimo */
+  grid-template-columns: repeat(3, minmax(200px, 1fr));
+  /* Cada coluna: mínimo 200px, máximo 1fr */
+}
+```
+
+### minmax(), auto-fill e auto-fit
+
+```css
+/*
+  minmax(min, max) — define faixa de tamanho para uma track
+*/
+.grid-minmax {
+  grid-template-columns: minmax(100px, 300px) 1fr minmax(100px, 200px);
+  /* Coluna 1: entre 100-300px, Coluna 3: entre 100-200px */
+}
+
+/*
+  auto-fill vs auto-fit — a diferença CRUCIAL
+  ─────────────────────────────────────────────
+
+  auto-fill: cria colunas VAZIAS para preencher o espaço
+  auto-fit:  COLAPSA colunas vazias → items esticam
+
+  Com 2 items em container de 1200px, minmax(200px, 1fr):
+*/
+.grid-auto-fill {
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  /*
+    Cria 6 colunas de 200px (1200/200 = 6)
+    2 items ocupam 2 colunas, 4 ficam vazias mas EXISTEM
+    Items NÃO esticam além de ~200px
+
+    | item1 | item2 |       |       |       |       |
+  */
+}
+
+.grid-auto-fit {
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+  /*
+    Cria 6 colunas de 200px, MAS colapsa as 4 vazias (largura 0)
+    O espaço das colunas colapsadas é redistribuído via 1fr
+    Items ESTICAM para preencher toda a largura
+
+    |       item1       |       item2       |
+  */
+}
+
+/*
+  REGRA PRÁTICA:
+  auto-fill → quando quer espaçamento consistente (card grids)
+  auto-fit  → quando quer que poucos items preencham a largura
+*/
+```
+
+---
+
+## Posicionamento de Items na Grid
+
+### grid-column e grid-row
+
+```css
+.item-positioned {
+  /* Posicionar por grid lines */
+  grid-column: 1 / 3;     /* Da line 1 até a line 3 (ocupa 2 colunas) */
+  grid-row: 1 / 2;        /* Da line 1 até a line 2 (ocupa 1 linha) */
+
+  /* Shorthand com span */
+  grid-column: 1 / span 2; /* Começa na line 1, ocupa 2 colunas */
+  grid-column: span 2;     /* Ocupa 2 colunas a partir da posição automática */
+
+  /* Linhas negativas (contam do final) */
+  grid-column: 1 / -1;    /* Da primeira até a última line → full width */
+}
+
+/* Exemplo visual: item que ocupa a largura total */
+/*
+  grid de 4 colunas:
+  line:  1      2      3      4      5
+
+  ┌──────┬──────┬──────┬──────┐
+  │      header (1 / -1)      │  ← grid-column: 1 / -1
+  ├──────┼──────┼──────┼──────┤
+  │ nav  │ main (2/4)  │ aside│  ← main: grid-column: 2 / 4
+  ├──────┼──────┼──────┼──────┤
+  │      footer (1 / -1)      │
+  └──────┴──────┴──────┴──────┘
+*/
+```
+
+### Named Grid Lines
+
+```css
+.grid-named-lines {
+  grid-template-columns:
+    [sidebar-start] 250px
+    [sidebar-end content-start] 1fr
+    [content-end aside-start] 250px
+    [aside-end];
+  grid-template-rows:
+    [header-start] auto
+    [header-end body-start] 1fr
+    [body-end footer-start] auto
+    [footer-end];
+}
+
+.sidebar { grid-column: sidebar-start / sidebar-end; }
+.content { grid-column: content-start / content-end; }
+.header  { grid-row: header-start / header-end; grid-column: 1 / -1; }
+```
+
+### Grid Template Areas — Layout Visual
+
+```css
+.page-layout {
+  display: grid;
+  grid-template-areas:
+    "header  header  header"
+    "sidebar main   aside"
+    "footer  footer  footer";
+  grid-template-columns: 220px 1fr 220px;
+  grid-template-rows: auto 1fr auto;
+  min-height: 100vh;
+  gap: 0;
+}
+
+/*
+  Cada string é uma ROW. Cada palavra é uma CELL.
+  Nomes repetidos fundem as células.
+  Use "." para célula vazia.
+*/
+.header  { grid-area: header; }
+.sidebar { grid-area: sidebar; }
+.main    { grid-area: main; }
+.aside   { grid-area: aside; }
+.footer  { grid-area: footer; }
+
+/* Layout responsivo com áreas */
+@media (max-width: 768px) {
+  .page-layout {
+    grid-template-areas:
+      "header"
+      "main"
+      "sidebar"
+      "aside"
+      "footer";
+    grid-template-columns: 1fr;
+  }
+}
+```
+
+---
+
+## Grid Implícito vs Explícito
+
+O **grid explícito** é o que você define com `grid-template-*`. Quando items são
+posicionados **fora** do grid explícito, o browser cria tracks **implícitas**.
+
+```css
+.grid-implicit {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr); /* 3 colunas explícitas */
+  grid-template-rows: 100px 100px;       /* 2 linhas explícitas */
+
+  /* Se houver mais de 6 items, linhas extras são IMPLÍCITAS */
+  /* Por padrão, linhas implícitas têm altura: auto (conteúdo) */
+
+  /* Controlar tamanho das tracks implícitas: */
+  grid-auto-rows: 150px;
+  /* Agora linhas implícitas têm 150px */
+
+  grid-auto-rows: minmax(100px, auto);
+  /* Mínimo 100px, máximo = conteúdo (melhor opção!) */
+}
+```
+
+### grid-auto-flow — Controlando o Preenchimento
+
+```css
+.grid-flow {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  grid-auto-rows: 100px;
+
+  /* row (padrão): preenche linha por linha */
+  grid-auto-flow: row;
+
+  /* column: preenche coluna por coluna */
+  grid-auto-flow: column;
+
+  /* dense: preenche BURACOS com items menores */
+  grid-auto-flow: row dense;
+  /*
+    Sem dense:                Com dense:
+    ┌────┬─┬─┐               ┌────┬─┬─┐
+    │ 1  │2│3│               │ 1  │2│3│
+    │    ├─┼─┤               │    ├─┼─┤
+    │    │_│4│               │    │5│4│  ← 5 preenche o buraco
+    ├────┼─┼─┤               ├────┼─┼─┤
+    │ 5  │ │ │               │ 6  │ │ │
+    └────┴─┴─┘               └────┴─┴─┘
+
+    ⚠️  dense ALTERA a ordem visual! Pode confundir
+    leitores de tela e navegação por Tab.
+  */
+}
+```
+
+---
+
+## Subgrid — Alinhamento de Grids Aninhados
+
+Subgrid permite que um item da grid **herde as tracks do pai** em vez de definir
+suas próprias. Resolve o problema clássico de alinhar conteúdo entre cards.
+
+```css
+/*
+  PROBLEMA: cards com alturas diferentes de título e conteúdo
+
+  Sem subgrid:
+  ┌──────────┐ ┌──────────┐ ┌──────────┐
+  │ Título   │ │ Título   │ │ Título   │
+  │ curto    │ │ muito    │ │ médio    │
+  ├──────────┤ │ longo    │ ├──────────┤  ← desalinhado!
+  │ Conteúdo │ │ demais   │ │ Conteúdo │
+  │          │ ├──────────┤ │          │
+  │          │ │ Conteúdo │ │          │
+  └──────────┘ └──────────┘ └──────────┘
+
+  Com subgrid:
+  ┌──────────┐ ┌──────────┐ ┌──────────┐
+  │ Título   │ │ Título   │ │ Título   │
+  │ curto    │ │ muito    │ │ médio    │
+  │          │ │ longo    │ │          │
+  │          │ │ demais   │ │          │  ← alinhado!
+  ├──────────┤ ├──────────┤ ├──────────┤
+  │ Conteúdo │ │ Conteúdo │ │ Conteúdo │
+  │          │ │          │ │          │
+  └──────────┘ └──────────┘ └──────────┘
+*/
+
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  grid-template-rows: auto auto; /* 2 rows: título e conteúdo */
+  gap: 24px;
+}
+
+.card {
+  display: grid;
+  grid-row: span 2;          /* Card ocupa 2 rows */
+  grid-template-rows: subgrid; /* HERDA as rows do pai */
+  gap: 8px;
+  border: 1px solid #e0e0e0;
+  border-radius: 8px;
+  padding: 16px;
+}
+
+.card-title   { /* Primeira row — altura sincronizada entre cards */ }
+.card-content { /* Segunda row — altura sincronizada entre cards */ }
+```
+
+---
+
+## Grid vs Flexbox — Quando Usar Cada Um
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    FLEXBOX vs GRID                           │
+├────────────────────────────┬────────────────────────────────┤
+│         FLEXBOX            │           GRID                 │
+├────────────────────────────┼────────────────────────────────┤
+│ Layout 1D (row OU column)  │ Layout 2D (rows E columns)    │
+│ Conteúdo determina layout  │ Layout determina conteúdo     │
+│ Items decidem seu tamanho  │ Container decide o tamanho    │
+│ Ordem flexível (order)     │ Posicionamento explícito      │
+│ Alinhamento em UM eixo     │ Alinhamento em DOIS eixos     │
+├────────────────────────────┼────────────────────────────────┤
+│ USE PARA:                  │ USE PARA:                      │
+│ • Nav bars                 │ • Page layouts                 │
+│ • Toolbars                 │ • Card grids uniformes         │
+│ • Centralização            │ • Dashboards                   │
+│ • Distribuição linear      │ • Layouts com áreas nomeadas   │
+│ • Componentes internos     │ • Alinhamento 2D               │
+└────────────────────────────┴────────────────────────────────┘
+
+COMBINANDO AMBOS (o mais comum na prática):
+  Grid → estrutura macro da página (header, main, sidebar, footer)
+  Flexbox → componentes internos (nav items, cards, buttons)
+```
+
+```css
+/* Grid para estrutura, Flexbox para componentes */
+.dashboard {
+  display: grid;
+  grid-template-columns: 260px 1fr;
+  grid-template-rows: 64px 1fr;
+  grid-template-areas:
+    "sidebar header"
+    "sidebar content";
+  min-height: 100vh;
+}
+
+.header {
+  grid-area: header;
+  display: flex;         /* Flexbox dentro de Grid */
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 24px;
+}
+
+.content {
+  grid-area: content;
+  display: grid;          /* Grid aninhado */
+  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  gap: 24px;
+  padding: 24px;
+}
+```
+
+---
+
+## Padrões Responsivos Sem Media Queries
+
+### auto-fill + minmax() — O Padrão Universal
+
+```css
+/* Cards que se reorganizam automaticamente */
+.responsive-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr));
+  gap: 24px;
+  /*
+    min(300px, 100%) → resolve o bug em containers pequenos!
+    Em telas < 300px, usa 100% em vez de 300px (que causaria overflow)
+
+    Container 1200px → 4 colunas de ~288px
+    Container 900px  → 3 colunas de ~284px
+    Container 600px  → 2 colunas de ~288px
+    Container 300px  → 1 coluna de 300px
+    Container 250px  → 1 coluna de 250px (sem overflow!)
+  */
+}
+```
+
+### clamp() para Sizing Fluido
+
+```css
+.fluid-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(clamp(200px, 25vw, 400px), 1fr));
+  gap: clamp(12px, 2vw, 32px);
+  padding: clamp(16px, 4vw, 48px);
+  /*
+    clamp(min, preferred, max):
+    - Abaixo do min → usa min
+    - Acima do max → usa max
+    - Entre → usa preferred (responsivo!)
+
+    Resultado: grid completamente fluida sem um único media query
+  */
+}
+```
+
+---
+
+## Layouts Complexos
+
+### Dashboard Layout
+
+```css
+/*
+  ┌──────────────────────────────────────┐
+  │              Header                  │
+  ├──────┬───────────────────────────────┤
+  │      │  KPI 1  │  KPI 2  │  KPI 3   │
+  │ Side │─────────┼─────────┼──────────│
+  │ bar  │         │                     │
+  │      │  Chart  │     Table           │
+  │      │         │                     │
+  └──────┴─────────┴─────────────────────┘
+*/
+.dashboard-layout {
+  display: grid;
+  grid-template-columns: 240px repeat(3, 1fr);
+  grid-template-rows: 60px auto 1fr;
+  grid-template-areas:
+    "sidebar header  header  header"
+    "sidebar kpi1    kpi2    kpi3"
+    "sidebar chart   table   table";
+  min-height: 100vh;
+  gap: 16px;
+}
+
+.sidebar { grid-area: sidebar; }
+.header  { grid-area: header; }
+.kpi1    { grid-area: kpi1; }
+.kpi2    { grid-area: kpi2; }
+.kpi3    { grid-area: kpi3; }
+.chart   { grid-area: chart; }
+.table   { grid-area: table; }
+
+@media (max-width: 768px) {
+  .dashboard-layout {
+    grid-template-columns: 1fr 1fr;
+    grid-template-areas:
+      "header  header"
+      "kpi1    kpi2"
+      "kpi3    chart"
+      "table   table";
+    /* Sidebar vira drawer/bottom nav no mobile */
+  }
+  .sidebar { display: none; }
+}
+```
+
+### Magazine Layout
+
+```css
+/*
+  ┌──────────────┬───────┐
+  │              │   2   │
+  │     1        ├───────┤
+  │  (destaque)  │   3   │
+  ├───────┬──────┼───────┤
+  │   4   │  5   │   6   │
+  └───────┴──────┴───────┘
+*/
+.magazine {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  grid-template-rows: repeat(3, 200px);
+  gap: 16px;
+}
+
+.magazine-hero {
+  grid-column: 1 / 3; /* Colunas 1-2 */
+  grid-row: 1 / 3;    /* Linhas 1-2 */
+}
+/* Demais items fluem automaticamente */
+```
+
+### Masonry (Experimental)
+
+```css
+/*
+  ⚠️ EXPERIMENTAL — Apenas Firefox (flag) até 2025
+  Masonry = grid onde items preenchem espaços verticais
+  como um layout Pinterest/Waterfall
+
+  Enquanto não houver suporte universal, use:
+  1. JS libraries (Masonry.js, Isotope)
+  2. CSS columns (limitado, sem controle de ordem)
+  3. O polyfill grid-auto-flow: dense (aproximação)
+*/
+
+/* Sintaxe proposta (Firefox Nightly) */
+.masonry-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(250px, 1fr));
+  grid-template-rows: masonry; /* ← a mágica */
+  gap: 16px;
+}
+
+/* Alternativa com CSS columns (funciona hoje) */
+.masonry-fallback {
+  columns: 3;
+  column-gap: 16px;
+}
+.masonry-fallback > * {
+  break-inside: avoid;
+  margin-bottom: 16px;
+}
+```
+
+---
+
+## Alinhamento no Grid — place-items e place-content
+
+```css
+.grid-alignment {
+  display: grid;
+  grid-template-columns: repeat(3, 200px);
+  grid-template-rows: repeat(2, 150px);
+
+  /* ═══ Alinhamento dos ITEMS dentro de suas células ═══ */
+  justify-items: stretch;  /* horizontal: start | end | center | stretch */
+  align-items: stretch;    /* vertical: start | end | center | stretch */
+  /* shorthand: */
+  place-items: center center; /* align-items / justify-items */
+
+  /* ═══ Alinhamento do GRID inteiro dentro do container ═══ */
+  justify-content: center; /* horizontal: start | end | center | space-between | ... */
+  align-content: center;   /* vertical: idem */
+  /* shorthand: */
+  place-content: center center;
+}
+
+/* Alinhamento individual de um item */
+.grid-item-self {
+  justify-self: end;    /* horizontal */
+  align-self: center;   /* vertical */
+  place-self: center end; /* shorthand */
+}
+
+/* O pattern mais útil: centralizar perfeitamente */
+.perfect-center {
+  display: grid;
+  place-items: center;  /* UMA linha para centralizar! */
+  min-height: 100vh;
+}
+```
+
+---
+
+## Debugging CSS Grid — DevTools
+
+```
+Chrome/Firefox DevTools:
+────────────────────────
+
+1. Inspecione o grid container → veja o badge "grid" no painel Elements
+2. Clique no badge → ativa o OVERLAY com:
+   - Números das grid lines
+   - Nomes das áreas (se usar grid-template-areas)
+   - Tamanho de cada track
+   - Gaps visualizados como áreas sombreadas
+
+3. Painel Layout → seção Grid:
+   - Toggle overlay por container
+   - Mostrar/ocultar números das lines
+   - Mostrar/ocultar nomes das áreas
+   - Visualizar tracks implícitas (pontilhadas vs sólidas)
+
+4. Erros comuns visíveis no overlay:
+   - Item posicionado fora do grid explícito (track implícita)
+   - Overlap de items (dois items na mesma célula)
+   - Track com tamanho inesperado (fr calculado errado)
+```
+
+---
+
+## Resumo — Propriedades Essenciais
+
+```
+CONTAINER                          ITEMS
+─────────────────────────────      ────────────────────────────
+display: grid                      grid-column: start / end
+grid-template-columns              grid-row: start / end
+grid-template-rows                 grid-area: name
+grid-template-areas                justify-self
+gap (row-gap, column-gap)          align-self
+justify-items / align-items        place-self
+justify-content / align-content
+place-items / place-content        SIZING
+grid-auto-rows                     ────────────────────────────
+grid-auto-columns                  fr, minmax(), auto
+grid-auto-flow                     min(), max(), clamp()
+                                   repeat(), auto-fill, auto-fit
+                                   fit-content()
+```

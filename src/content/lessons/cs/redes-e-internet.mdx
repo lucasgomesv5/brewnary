@@ -1,0 +1,648 @@
+---
+title: "Redes e Internet"
+description: "Modelo OSI/TCP-IP, subnetting, TCP/UDP, DNS, HTTP/1.1-2-3, TLS, WebSocket, CDN e load balancing"
+track: "cs"
+order: 17
+section: "Sistemas"
+priority: "high"
+tags: ["redes", "HTTP", "TCP", "DNS", "internet", "TLS", "OSI", "load-balancing", "CDN"]
+prerequisites: []
+keyTakeaways:
+  - "O modelo OSI possui 7 camadas com PDUs específicas; o TCP/IP condensa em 4 camadas práticas — entender encapsulamento é fundamental"
+  - "TCP garante entrega ordenada via three-way handshake, sliding window e congestion control (slow start, AIMD, BBR); UDP sacrifica confiabilidade por latência"
+  - "Dominar subnetting CIDR, resolução hierárquica DNS, TLS handshake e as diferenças entre HTTP/1.1, HTTP/2 e HTTP/3 (QUIC) demonstra profundidade técnica"
+---
+
+# Redes e Internet
+
+## 1. Modelo OSI vs TCP/IP
+
+O modelo OSI (Open Systems Interconnection, ISO/IEC 7498-1) define 7 camadas de abstração. O modelo TCP/IP, usado na prática, condensa essas camadas em 4. A correspondência não é perfeita — é uma aproximação funcional.
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│              OSI (7 camadas)       TCP/IP (4 camadas)       │
+├─────────────────────────────────────────────────────────────┤
+│  7 │ Aplicação    ─┐                                       │
+│  6 │ Apresentação  ├──────── Aplicação (HTTP, DNS, SMTP)   │
+│  5 │ Sessão       ─┘                                       │
+│  4 │ Transporte   ────────── Transporte (TCP, UDP)         │
+│  3 │ Rede         ────────── Internet (IP, ICMP)           │
+│  2 │ Enlace       ─┐                                       │
+│  1 │ Física       ─┴──────── Acesso à Rede (Ethernet, Wi-Fi)│
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Encapsulamento e PDUs
+
+Cada camada adiciona seu próprio cabeçalho (e às vezes trailer) ao payload recebido da camada superior. O nome formal da unidade de dados muda em cada nível:
+
+```
+Aplicação       →  Data (mensagem HTTP, query DNS, etc.)
+Transporte      →  Segment (TCP) / Datagram (UDP)
+Rede            →  Packet (IP datagram)
+Enlace          →  Frame (Ethernet frame)
+Física          →  Bits (sinais elétricos, ópticos, rádio)
+
+Encapsulamento (envio):
+┌──────────────────────────────────────────────────────────────┐
+│ Eth Header │ IP Header │ TCP Header │ HTTP Data │ Eth Trailer│
+│  (14 B)    │ (20-60 B) │ (20-60 B)  │ (variável)│   (4 B)   │
+└──────────────────────────────────────────────────────────────┘
+              └─────── IP Packet ───────┘
+│             └──────────── Ethernet Frame ────────────────────│
+```
+
+O MTU (Maximum Transmission Unit) padrão Ethernet é **1500 bytes** (payload do frame). Se um pacote IP excede o MTU, ocorre fragmentação (IPv4) ou o remetente recebe ICMP Packet Too Big (IPv6, que proíbe fragmentação intermediária).
+
+---
+
+## 2. Camada de Enlace (Data Link — L2)
+
+### MAC Address
+
+Endereço de 48 bits (6 octetos), gravado na NIC (Network Interface Card). Formato: `AA:BB:CC:DD:EE:FF`. Os 3 primeiros octetos identificam o fabricante (OUI — Organizationally Unique Identifier, atribuído pelo IEEE). O endereço `FF:FF:FF:FF:FF:FF` é broadcast L2.
+
+### Ethernet Frame (IEEE 802.3)
+
+```
+┌──────────┬──────────┬──────┬──────────────────┬─────┐
+│ Dst MAC  │ Src MAC  │ Type │     Payload      │ FCS │
+│  6 bytes │  6 bytes │2 byte│  46–1500 bytes   │4 byte│
+└──────────┴──────────┴──────┴──────────────────┴─────┘
+                       │
+                       ├─ 0x0800 = IPv4
+                       ├─ 0x86DD = IPv6
+                       └─ 0x0806 = ARP
+```
+
+O campo **FCS** (Frame Check Sequence) contém um CRC-32 para detecção de erros. Frames corrompidos são descartados silenciosamente — a camada de enlace **não** retransmite.
+
+### ARP (Address Resolution Protocol — RFC 826)
+
+Resolve IP → MAC dentro de uma mesma rede local (broadcast domain). O fluxo:
+
+```
+Host A (10.0.0.2) quer falar com Host B (10.0.0.5):
+
+1. A envia ARP Request (broadcast L2: FF:FF:FF:FF:FF:FF):
+   "Quem tem 10.0.0.5? Diga para 10.0.0.2 (MAC: AA:AA:AA:AA:AA:AA)"
+
+2. B responde ARP Reply (unicast para A):
+   "10.0.0.5 está em BB:BB:BB:BB:BB:BB"
+
+3. A armazena o mapeamento na ARP cache (TTL típico: 20 min)
+```
+
+**ARP Spoofing**: um atacante envia ARP Replies falsos para se posicionar como man-in-the-middle. Mitigação: Dynamic ARP Inspection (DAI) em switches gerenciáveis, ou ARP estático.
+
+### Switch vs Hub
+
+- **Hub** (L1): repetidor burro — recebe um frame e replica para **todas** as portas. Colisões constantes. Domínio de colisão único. Obsoleto.
+- **Switch** (L2): mantém uma **MAC address table** (CAM table). Aprende o MAC de origem de cada frame e associa à porta. Encaminha frames apenas para a porta correta (unicast) ou todas as portas (broadcast/unknown unicast). Cada porta é um domínio de colisão separado.
+
+---
+
+## 3. Camada de Rede (Network — L3)
+
+### IPv4
+
+Endereço de **32 bits**, representado em notação decimal pontuada: `192.168.1.100`. Espaço total: 2³² = ~4,3 bilhões de endereços.
+
+**Cabeçalho IPv4 (20 bytes mínimo):**
+
+```
+ 0                   1                   2                   3
+ 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9 0 1
+├─┼─┼─┼─┼─┼─┼─┼─┼─┼─┼─┼─┼─┼─┼─┼─┼─┼─┼─┼─┼─┼─┼─┼─┼─┼─┼─┼─┼─┼─┼─┼─┤
+│Version│  IHL  │    DSCP   │ECN│         Total Length          │
+├───────┴───────┼───────────┴───┼───────────────────────────────┤
+│ Identification│Flags│ Fragment Offset                         │
+├───────────────┼─────┴─────────────────────────────────────────┤
+│      TTL      │   Protocol    │      Header Checksum          │
+├───────────────┴───────────────┴───────────────────────────────┤
+│                    Source IP Address                           │
+├───────────────────────────────────────────────────────────────┤
+│                  Destination IP Address                        │
+└───────────────────────────────────────────────────────────────┘
+```
+
+Campos críticos:
+- **TTL** (Time To Live): decrementado a cada hop. Quando chega a 0, o roteador descarta o pacote e envia ICMP Time Exceeded (base do `traceroute`).
+- **Protocol**: identifica o protocolo da camada superior (6 = TCP, 17 = UDP, 1 = ICMP).
+- **Flags**: bit DF (Don't Fragment) e MF (More Fragments).
+
+### Subnetting CIDR (Classless Inter-Domain Routing)
+
+A notação CIDR `10.1.0.0/22` indica que os **22 bits mais significativos** são a porção de rede; os restantes **10 bits** são para hosts.
+
+**Cálculo formal para `192.168.10.0/26`:**
+
+```
+Máscara: /26 → 26 bits de rede, 6 bits de host
+Máscara em binário:  11111111.11111111.11111111.11000000
+Máscara em decimal:  255.255.255.192
+
+Endereço de rede:    192.168.10.0   AND  255.255.255.192
+                     11000000.10101000.00001010.00|000000
+                                                  └── 6 bits de host
+
+Endereço de rede:      192.168.10.0     (todos os bits de host = 0)
+Primeiro host:         192.168.10.1
+Último host:           192.168.10.62
+Endereço de broadcast: 192.168.10.63    (todos os bits de host = 1)
+Total de hosts:        2⁶ - 2 = 62
+
+Sub-redes de /26 dentro de 192.168.10.0/24:
+  192.168.10.0/26    →  .0   a .63
+  192.168.10.64/26   →  .64  a .127
+  192.168.10.128/26  →  .128 a .191
+  192.168.10.192/26  →  .192 a .255
+```
+
+**Fórmula geral:**
+- Hosts por sub-rede: `2^(32 - prefixo) - 2`
+- Sub-redes possíveis: `2^(prefixo - prefixo_original)`
+
+### Faixas privadas (RFC 1918)
+
+```
+10.0.0.0/8       →  10.0.0.0    – 10.255.255.255    (classe A)
+172.16.0.0/12    →  172.16.0.0  – 172.31.255.255    (classe B)
+192.168.0.0/16   →  192.168.0.0 – 192.168.255.255   (classe C)
+```
+
+### IPv6
+
+Endereço de **128 bits**, representado em hexadecimal: `2001:0db8:85a3:0000:0000:8a2e:0370:7334`. Regras de abreviação: zeros à esquerda podem ser omitidos; uma sequência contígua de grupos all-zero pode ser substituída por `::` (uma única vez). O espaço total de 2¹²⁸ é efetivamente inesgotável.
+
+Diferenças fundamentais em relação ao IPv4: sem fragmentação intermediária (Path MTU Discovery obrigatório), sem broadcast (substituído por multicast), sem NAT necessário (abundância de endereços), IPsec nativo.
+
+### NAT (Network Address Translation — RFC 3022)
+
+NAT permite que múltiplos hosts em uma rede privada compartilhem um único IP público. O tipo mais comum é **NAPT** (Network Address Port Translation), que traduz o par `(IP_privado, porta_origem)` para `(IP_público, porta_mapeada)`.
+
+```
+Host interno          NAT Gateway              Servidor externo
+10.0.0.5:54321  ──→  203.0.113.1:40001  ──→   93.184.216.34:443
+10.0.0.8:54322  ──→  203.0.113.1:40002  ──→   93.184.216.34:443
+                      ↕ Tabela NAT ↕
+```
+
+Problemas: quebra o princípio end-to-end da internet, dificulta conexões peer-to-peer (necessidade de hole punching via STUN/TURN), adiciona estado no roteador.
+
+### ICMP (Internet Control Message Protocol — RFC 792)
+
+Protocolo auxiliar para diagnóstico e controle na camada de rede. Tipos fundamentais:
+
+- **Type 8 / Type 0**: Echo Request / Echo Reply (`ping`)
+- **Type 11, Code 0**: Time Exceeded — TTL expirado em trânsito (usado por `traceroute`)
+- **Type 3**: Destination Unreachable (vários codes: port unreachable, network unreachable, fragmentation needed)
+
+```
+traceroute envia pacotes com TTL incremental:
+  TTL=1  →  Roteador 1 responde ICMP Time Exceeded
+  TTL=2  →  Roteador 2 responde ICMP Time Exceeded
+  TTL=3  →  Destino final responde (ICMP Echo Reply ou porta UDP)
+
+Resultado:
+  1  192.168.1.1    1.2 ms
+  2  10.0.0.1       5.4 ms
+  3  203.0.113.1   12.1 ms
+  4  93.184.216.34  18.7 ms
+```
+
+---
+
+## 4. Camada de Transporte (L4)
+
+### TCP (Transmission Control Protocol — RFC 793, 5681, 7323)
+
+Protocolo orientado à conexão que garante entrega confiável, ordenada e sem duplicatas. Cada byte transmitido possui um **sequence number**.
+
+**Three-Way Handshake (estabelecimento de conexão):**
+
+```
+Cliente                                      Servidor
+   │                                            │
+   │──── SYN (seq=x) ─────────────────────────→│
+   │                                            │
+   │←─── SYN-ACK (seq=y, ack=x+1) ────────────│
+   │                                            │
+   │──── ACK (seq=x+1, ack=y+1) ──────────────→│
+   │                                            │
+   │         Conexão ESTABLISHED                │
+```
+
+**Four-Way Teardown (encerramento):**
+
+```
+Cliente                                      Servidor
+   │──── FIN (seq=u) ────────────────────────→│
+   │←─── ACK (ack=u+1) ──────────────────────│
+   │            (servidor pode ainda enviar)   │
+   │←─── FIN (seq=v) ────────────────────────│
+   │──── ACK (ack=v+1) ──────────────────────→│
+   │                                           │
+   │     Cliente entra em TIME_WAIT (2×MSL)    │
+```
+
+O estado **TIME_WAIT** (tipicamente 60s–120s) existe para garantir que ACKs retardatários não corrompam novas conexões no mesmo par `(IP, porta)`. Em servidores de alta carga, isso pode exaurir portas efêmeras — mitigação: `SO_REUSEADDR`, `SO_REUSEPORT`, `tcp_tw_reuse`.
+
+**Cabeçalho TCP (20 bytes mínimo):**
+
+```
+┌───────────────────┬───────────────────┐
+│   Source Port     │ Destination Port  │   4 bytes
+├───────────────────┴───────────────────┤
+│            Sequence Number            │   4 bytes
+├───────────────────────────────────────┤
+│         Acknowledgment Number         │   4 bytes
+├────┬──────┬─┬─┬─┬─┬─┬─┬─────────────┤
+│Off │Reserv│C│E│U│A│P│S│   Window     │   4 bytes
+│set │      │W│C│R│C│S│Y│    Size      │
+│    │      │R│E│G│K│H│N│              │
+├────┴──────┴─┴─┴─┴─┴─┴─┴─────────────┤
+│       Checksum    │  Urgent Pointer   │   4 bytes
+└───────────────────┴───────────────────┘
+```
+
+### Flow Control — Sliding Window
+
+O receptor anuncia uma **receive window** (`rwnd`) no campo Window Size do cabeçalho TCP, indicando quantos bytes pode aceitar sem que o buffer transborde. O emissor não pode ter mais que `rwnd` bytes in-flight sem confirmação.
+
+```
+Janela do emissor (cwnd = min(cwnd, rwnd)):
+
+Bytes:  [1][2][3][4][5][6][7][8][9][10][11][12]...
+         ▲──ACK'd──▲──Enviados──▲──Pode enviar─▲
+         │         │ sem ACK    │  (dentro da   │
+       base     unacked       janela)      janela limite
+```
+
+A **Window Scale Option** (RFC 7323) permite que o campo Window Size de 16 bits seja estendido com um fator de escala (shift count até 14), suportando janelas de até 2³⁰ bytes (~1 GB) — essencial para links de alta largura de banda e latência (high BDP — Bandwidth-Delay Product).
+
+### Congestion Control
+
+O TCP mantém uma variável `cwnd` (congestion window) que limita a taxa de envio para evitar congestionar a rede.
+
+**Slow Start**: `cwnd` começa com 1 MSS (ou IW=10 no Linux moderno, RFC 6928) e **dobra** a cada RTT (crescimento exponencial) até atingir `ssthresh`.
+
+**Congestion Avoidance (AIMD)**: após `ssthresh`, `cwnd` cresce **1 MSS por RTT** (crescimento linear — Additive Increase). Na detecção de perda (timeout ou 3 duplicate ACKs), `ssthresh = cwnd/2` e `cwnd` cai (Multiplicative Decrease).
+
+```
+cwnd
+  │          ╱ Congestion Avoidance (linear)
+  │        ╱──────────────╲ ← perda detectada
+  │      ╱                 ╲ ssthresh = cwnd/2
+  │    ╱                    ╲
+  │  ╱  Slow Start           ╲───────╱ AIMD
+  │╱   (exponencial)                ╱
+  └──────────────────────────────────── tempo
+```
+
+**Fast Retransmit / Fast Recovery (RFC 5681)**: ao receber 3 ACKs duplicados, o TCP retransmite imediatamente sem esperar timeout e reduz `cwnd` pela metade (em vez de resetar para 1 MSS).
+
+**BBR (Bottleneck Bandwidth and Round-trip propagation time)**: algoritmo do Google (usado no YouTube, Google Cloud) que modela a rede medindo `BtlBw` (gargalo de bandwidth) e `RTprop` (RTT mínimo). Opera em 4 fases: Startup, Drain, ProbeBW, ProbeRTT. Diferente do AIMD, BBR **não** usa perda de pacotes como sinal primário de congestão — usa estimativas de bandwidth e RTT, alcançando melhor throughput em redes com perda.
+
+### UDP (User Datagram Protocol — RFC 768)
+
+Protocolo **connectionless**, sem handshake, sem garantia de entrega, sem ordenação. Cabeçalho minimalista de apenas **8 bytes**:
+
+```
+┌───────────────────┬───────────────────┐
+│   Source Port     │ Destination Port  │  4 bytes
+├───────────────────┼───────────────────┤
+│     Length        │     Checksum      │  4 bytes
+└───────────────────┴───────────────────┘
+```
+
+**Casos de uso:**
+- **DNS** (porta 53): queries simples cabem em um único datagram (512 bytes tradicional, até 4096 com EDNS0)
+- **Streaming de vídeo/áudio**: perder um frame é aceitável; reenviar causaria atraso pior
+- **Gaming**: estado do jogo atualiza constantemente; dados antigos são irrelevantes
+- **QUIC** (porta 443): protocolo da Google que implementa confiabilidade, multiplexação e criptografia **sobre UDP**, eliminando o head-of-line blocking do TCP
+
+---
+
+## 5. DNS (Domain Name System — RFC 1034, 1035)
+
+### Resolução Hierárquica
+
+DNS é um banco de dados distribuído e hierárquico. A resolução de `www.exemplo.com.br` segue:
+
+```
+Cliente (stub resolver)
+   │
+   ▼
+Recursive Resolver (ex: 8.8.8.8, ISP)
+   │
+   ├──→ Root Servers (.)          → "Pergunte ao .br"
+   │    (13 clusters: a.root-servers.net ... m.root-servers.net)
+   │
+   ├──→ TLD Server (.br)         → "Pergunte ao ns1.exemplo.com.br"
+   │
+   ├──→ Authoritative Server     → "www.exemplo.com.br = 203.0.113.50"
+   │    (ns1.exemplo.com.br)
+   │
+   ▼
+Cliente recebe: 203.0.113.50 (TTL=3600)
+```
+
+O recursive resolver faz **iterative queries** aos servidores autoritativos e cacheia cada resposta pelo TTL (Time To Live) indicado. O cliente faz uma **recursive query** ao resolver.
+
+### Tipos de Registros DNS
+
+```
+Tipo    │ Propósito                              │ Exemplo
+────────┼────────────────────────────────────────┼──────────────────────────
+A       │ Nome → IPv4                            │ exemplo.com → 93.184.216.34
+AAAA    │ Nome → IPv6                            │ exemplo.com → 2606:2800:220:1::
+CNAME   │ Alias (canonical name)                 │ www → exemplo.com
+MX      │ Mail exchanger (prioridade + host)     │ 10 mail.exemplo.com
+TXT     │ Texto arbitrário (SPF, DKIM, DMARC)   │ "v=spf1 include:_spf.google..."
+NS      │ Nameserver autoritativo                │ ns1.exemplo.com
+SOA     │ Start of Authority (serial, refresh)   │ ns1.exemplo.com admin.exemplo.com
+SRV     │ Serviço (porta + host + prioridade)    │ _sip._tcp 10 5 5060 sip.exemplo.com
+PTR     │ Reverso: IP → Nome                     │ 34.216.184.93.in-addr.arpa → exemplo.com
+CAA     │ Autorização de CA para emitir certs    │ 0 issue "letsencrypt.org"
+```
+
+### DNS-over-HTTPS (DoH — RFC 8484) e DNS-over-TLS (DoT — RFC 7858)
+
+DNS tradicional trafega em texto puro (UDP/53), expondo queries a interceptação e manipulação. **DoH** encapsula queries DNS em HTTPS (porta 443), tornando-as indistinguíveis de tráfego web normal. **DoT** usa TLS na porta 853. Ambos previnem eavesdropping e tampering, mas **não** escondem o domínio do servidor DNS recursivo (ele ainda vê as queries).
+
+---
+
+## 6. HTTP/1.1 vs HTTP/2 vs HTTP/3
+
+### HTTP/1.1 (RFC 9110, 9112)
+
+- **Uma requisição por conexão TCP por vez** (head-of-line blocking no nível de aplicação)
+- **Keep-Alive**: reutiliza a conexão TCP, mas as requisições são sequenciais no mesmo socket
+- Workaround: navegadores abrem **6 conexões TCP paralelas** por domínio (domain sharding)
+- Headers em texto puro, repetidos integralmente em cada requisição
+
+### HTTP/2 (RFC 9113)
+
+- **Multiplexação**: múltiplos streams (requisições/respostas) compartilham **uma única conexão TCP**
+- **Compressão de headers (HPACK)**: tabela estática + dinâmica de headers frequentes; codificação Huffman. Redução típica de 85-90% no tamanho dos headers
+- **Server Push**: servidor antecipa recursos e os envia antes do cliente pedir (na prática, pouco usado — removido no Chrome 106)
+- **Priorização de streams**: cliente indica dependências e pesos entre streams
+- **Binário**: frames HTTP/2 são binários, não textuais
+
+```
+HTTP/1.1 (sequencial):           HTTP/2 (multiplexado):
+
+Conn 1: ──GET /──res──           Conn 1: ──GET /───────────→
+Conn 2: ──GET /css──res──                 ──GET /css───────→
+Conn 3: ──GET /js──res──                  ──GET /js────────→
+Conn 4: ──GET /img──res──                 ──GET /img───────→
+(6 conexões TCP)                 (1 conexão TCP, N streams)
+```
+
+**Problema remanescente**: HTTP/2 usa TCP, e a perda de **um único pacote TCP** bloqueia **todos** os streams (head-of-line blocking na camada de transporte). Esse é o problema fundamental que HTTP/3 resolve.
+
+### HTTP/3 (RFC 9114) e QUIC (RFC 9000)
+
+- Roda sobre **QUIC**, que opera sobre **UDP** (porta 443)
+- QUIC implementa confiabilidade, flow control e congestion control **por stream** — perda em um stream não bloqueia os demais
+- **0-RTT e 1-RTT handshake**: QUIC integra o handshake de transporte com o TLS 1.3, reduzindo a latência de estabelecimento
+- **Connection migration**: conexões sobrevivem a mudanças de IP (ex: Wi-Fi → 4G) via Connection ID em vez de tupla (IP, porta)
+- Compressão de headers via **QPACK** (adaptação do HPACK para streams independentes)
+
+```
+Latência de estabelecimento:
+  TCP + TLS 1.2:  3 RTT (SYN + TLS handshake)
+  TCP + TLS 1.3:  2 RTT (SYN + TLS 1.3)
+  QUIC (1-RTT):   1 RTT (handshake integrado)
+  QUIC (0-RTT):   0 RTT (resumption com dados pré-enviados)
+```
+
+---
+
+## 7. TLS/SSL (Transport Layer Security)
+
+### TLS 1.3 Handshake (RFC 8446)
+
+TLS 1.3 simplificou drasticamente o handshake — de 2 RTTs (TLS 1.2) para **1 RTT** (ou 0-RTT com PSK resumption).
+
+```
+Cliente                                          Servidor
+   │                                                │
+   │── ClientHello ────────────────────────────────→│
+   │   (versões suportadas, cipher suites,          │
+   │    key_share: chave pública ECDHE,             │
+   │    SNI: domínio desejado)                      │
+   │                                                │
+   │←─ ServerHello + EncryptedExtensions ──────────│
+   │   (cipher suite escolhida, key_share,          │
+   │    Certificate, CertificateVerify,             │
+   │    Finished)                                   │
+   │                                                │
+   │── Finished (MAC do handshake) ────────────────→│
+   │                                                │
+   │       Dados da aplicação (criptografados)      │
+   │←─────────────────────────────────────────────→│
+```
+
+### Cadeia de Certificados (Certificate Chain)
+
+```
+Root CA (self-signed, armazenado no OS/browser)
+   └── Intermediate CA (assinado pela Root)
+         └── Leaf Certificate (assinado pela Intermediate)
+               └── Seu domínio: exemplo.com
+```
+
+O servidor envia o **leaf** + **intermediate(s)**. O cliente verifica a cadeia até encontrar uma Root CA confiável em sua trust store. Isso permite que Root CAs fiquem offline (air-gapped), reduzindo o risco de comprometimento.
+
+### Verificação de Revogação
+
+- **CRL (Certificate Revocation List)**: lista publicada pela CA com certificados revogados. Problema: listas enormes, download lento.
+- **OCSP (Online Certificate Status Protocol)**: cliente consulta a CA em tempo real. Problema: latência adicional, privacidade (CA sabe quais sites você visita).
+- **OCSP Stapling**: o **servidor** consulta o OCSP periodicamente e inclui a resposta assinada no TLS handshake. Solução preferida — elimina latência e problema de privacidade.
+
+### Certificate Pinning
+
+A aplicação fixa (pina) o hash da chave pública esperada do servidor. Se o certificado apresentado não corresponde ao pin, a conexão é rejeitada — mesmo que o certificado seja válido e assinado por uma CA confiável. Protege contra CAs comprometidas e ataques MITM sofisticados. Usado em apps mobile (ex: `TrustManager` customizado no Android). O HTTP Public Key Pinning (HPKP) foi **deprecated** nos navegadores por ser perigoso (pode causar DoS permanente se o pin estiver errado).
+
+### Cipher Suites (TLS 1.3)
+
+TLS 1.3 removeu suporte a algoritmos inseguros. As cipher suites permitidas:
+
+```
+TLS_AES_128_GCM_SHA256        (obrigatória)
+TLS_AES_256_GCM_SHA384
+TLS_CHACHA20_POLY1305_SHA256  (performante em CPUs sem AES-NI)
+```
+
+Key exchange: apenas **ECDHE** (Elliptic Curve Diffie-Hellman Ephemeral) ou **DHE**. RSA key exchange foi removido — não provê forward secrecy.
+
+**Forward Secrecy**: mesmo que a chave privada do servidor seja comprometida no futuro, sessões passadas não podem ser descriptografadas, pois cada sessão usa chaves efêmeras únicas.
+
+---
+
+## 8. WebSocket (RFC 6455)
+
+### Upgrade from HTTP
+
+WebSocket inicia como uma requisição HTTP/1.1 com o header `Upgrade`:
+
+```
+Cliente → Servidor:
+  GET /chat HTTP/1.1
+  Host: exemplo.com
+  Upgrade: websocket
+  Connection: Upgrade
+  Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==
+  Sec-WebSocket-Version: 13
+
+Servidor → Cliente:
+  HTTP/1.1 101 Switching Protocols
+  Upgrade: websocket
+  Connection: Upgrade
+  Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=
+```
+
+O `Sec-WebSocket-Accept` é calculado como: `Base64(SHA-1(Sec-WebSocket-Key + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"))`. Isso não é segurança — é apenas validação de que o servidor entende WebSocket.
+
+### Frames WebSocket
+
+```
+ 0                   1                   2                   3
+ 0 1 2 3 4 5 6 7 8 9 0 1 2 3 4 5 6 7 8 9
+├─┤─┤─┤─┤─┼─┼─┼─┤─┤─┼─┼─┼─┼─┼─┼─┤
+│F│R│R│R│ opcode│M│ Payload len │  Extended payload length...
+│I│S│S│S│       │A│             │
+│N│V│V│V│       │S│             │
+│ │1│2│3│       │K│             │
+```
+
+**Opcodes**: 0x1 = texto, 0x2 = binário, 0x8 = close, 0x9 = ping, 0xA = pong.
+
+### Heartbeat (Ping/Pong)
+
+Frames de controle ping (0x9) e pong (0xA) mantêm a conexão viva e detectam desconexões. O endpoint que recebe um ping **deve** responder com pong contendo o mesmo payload. Intervalo típico: 30s. Essencial para evitar que proxies intermediários (nginx, ALB) fechem conexões ociosas por timeout.
+
+---
+
+## 9. CDN (Content Delivery Network)
+
+### Arquitetura
+
+CDN distribui conteúdo em servidores de borda (edge servers) geograficamente próximos dos usuários.
+
+```
+Usuário (São Paulo)                    Usuário (Tóquio)
+       │                                      │
+       ▼                                      ▼
+  Edge Server (GRU)                    Edge Server (NRT)
+       │ cache miss                          │ cache hit
+       ▼                                     ▼
+  Origin Server (us-east-1)           Resposta imediata
+       │                              do edge cache
+       ▼
+  Edge cacheia para
+  próximas requisições
+```
+
+### Anycast
+
+CDNs usam **BGP Anycast**: o mesmo endereço IP é anunciado por múltiplos edge servers ao redor do mundo. O roteamento BGP direciona o cliente ao servidor mais "próximo" em termos de hops de rede (nem sempre geográfico). Quando um edge falha, o BGP converge automaticamente para o próximo servidor — failover transparente.
+
+### Cache Invalidation
+
+Estratégias para invalidar cache no edge:
+
+- **TTL-based**: header `Cache-Control: max-age=86400`. Simples, mas impreciso — conteúdo pode ficar stale até expirar.
+- **Purge explícito**: API da CDN para remover um objeto específico (`POST /purge {"url": "..."}`)
+- **Cache tags / Surrogate keys**: marca objetos com tags; invalida todos os objetos com uma tag de uma vez (`Surrogate-Key: product-123`)
+- **Stale-while-revalidate**: serve conteúdo expirado enquanto busca a versão nova em background — latência zero para o usuário
+
+```
+Cache-Control: public, max-age=3600, stale-while-revalidate=86400
+```
+
+Significa: conteúdo fresh por 1 hora; após expirar, serve stale por até 24h enquanto revalida.
+
+---
+
+## 10. Load Balancing
+
+### L4 (Transporte) vs L7 (Aplicação)
+
+```
+L4 Load Balancer:                    L7 Load Balancer:
+┌─────────────────────┐             ┌─────────────────────────┐
+│ Decide com base em: │             │ Decide com base em:     │
+│ - IP de origem      │             │ - URL path              │
+│ - Porta de destino  │             │ - Host header           │
+│ - Protocolo (TCP/   │             │ - Cookies / Headers     │
+│   UDP)              │             │ - Método HTTP           │
+│                     │             │ - Conteúdo do body      │
+│ Não inspeciona      │             │                         │
+│ payload. Mais       │             │ Termina TLS. Inspeciona │
+│ rápido, menos       │             │ HTTP. Mais flexível,    │
+│ flexível.           │             │ mais overhead.          │
+│                     │             │                         │
+│ Ex: AWS NLB, IPVS,  │             │ Ex: AWS ALB, nginx,     │
+│ HAProxy (modo TCP)  │             │ Envoy, HAProxy (HTTP)   │
+└─────────────────────┘             └─────────────────────────┘
+```
+
+### Algoritmos de Distribuição
+
+**Round-Robin**: distribui requisições sequencialmente entre backends. Simples, funciona bem quando os servidores são homogêneos e as requisições têm custo uniforme.
+
+**Weighted Round-Robin**: cada servidor recebe um peso proporcional à sua capacidade. Servidor com peso 3 recebe 3x mais requisições que um com peso 1.
+
+**Least Connections**: direciona para o servidor com menos conexões ativas. Melhor quando as requisições têm duração variável (ex: WebSocket, streaming).
+
+**Consistent Hashing**: mapeia tanto servidores quanto chaves (ex: ID do usuário, IP) para um anel hash. Uma requisição vai para o servidor mais próximo no anel no sentido horário. Quando um servidor é adicionado ou removido, apenas ~1/N das chaves são remapeadas (em vez de todas). Essencial para caches distribuídos (memcached, Redis cluster).
+
+```
+Anel de Consistent Hashing:
+
+              Server A (hash=30)
+                 ╱
+        ───────●─────────
+       ╱                  ╲
+      ╱    chave hash=25    ╲
+     │     vai para A →      │
+     │                       │
+     │                       ● Server B (hash=120)
+      ╲                    ╱
+       ╲                  ╱
+        ────●────────────
+         Server C (hash=200)
+
+Adicionar Server D (hash=80):
+  Apenas chaves entre 31-80 migram de B para D.
+  Restante permanece inalterado.
+```
+
+**IP Hash**: hash do IP de origem determina o backend. Garante que o mesmo cliente sempre vai ao mesmo servidor (session affinity). Problema: distribuição desigual quando muitos clientes estão atrás do mesmo NAT.
+
+### Health Checks
+
+Load balancers monitoram backends continuamente:
+- **Ativo**: envia probes periódicos (TCP connect, HTTP GET /health). Se N probes consecutivos falham, o backend é removido do pool.
+- **Passivo**: monitora respostas reais. Se taxa de erros 5xx excede um limiar, remove o backend temporariamente (circuit breaker pattern).
+
+---
+
+## Referências e RFCs
+
+```
+RFC 792   — ICMP                    RFC 793   — TCP
+RFC 768   — UDP                     RFC 826   — ARP
+RFC 1034  — DNS (conceitos)         RFC 1035  — DNS (implementação)
+RFC 3022  — NAT                     RFC 4291  — IPv6 Addressing
+RFC 5681  — TCP Congestion Control  RFC 6455  — WebSocket
+RFC 6928  — TCP Initial Window      RFC 7323  — TCP Extensions (Window Scale)
+RFC 7540  — HTTP/2                  RFC 7858  — DNS over TLS
+RFC 8446  — TLS 1.3                 RFC 8484  — DNS over HTTPS
+RFC 9000  — QUIC                    RFC 9110  — HTTP Semantics
+RFC 9113  — HTTP/2                  RFC 9114  — HTTP/3
+```

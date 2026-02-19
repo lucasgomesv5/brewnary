@@ -1,0 +1,48 @@
+---
+title: "The Pragmatic Programmer"
+author: "David Thomas & Andrew Hunt"
+description: "O livro que transforma sua mentalidade de executor de tarefas para solucionador de problemas"
+category: "Engenharia"
+priority: "essential"
+order: 3
+coverColor: "#F59E0B"
+---
+
+## Por que ler
+
+Nao e sobre uma linguagem ou framework. E sobre COMO PENSAR como engenheiro. E o livro que transforma sua mentalidade de "executor de tarefas" para "solucionador de problemas".
+
+## Conceitos-chave do livro
+
+**DRY (Don't Repeat Yourself):**
+Nao e so sobre codigo duplicado. E sobre CONHECIMENTO duplicado. Se a mesma regra de negocio esta em 3 lugares e muda, voce precisa mudar em 3 lugares. DRY diz: cada pedaco de conhecimento deve ter uma representacao unica e autoritativa.
+
+**Orthogonalidade:**
+Componentes sao ortogonais quando mudar um NAO afeta o outro. Seu sistema de pagamento nao deve depender do seu sistema de email. Se mudar o provedor de email quebra pagamentos, voce tem acoplamento.
+
+```javascript
+// ❌ Acoplado — mudar email afeta pagamento
+function processPayment(order) {
+  const result = chargeCard(order);
+  sendEmail(order.user.email, `Pagamento ${result.status}`);
+  return result;
+}
+
+// ✅ Ortogonal — independentes
+function processPayment(order) {
+  return chargeCard(order);
+}
+// Email é responsabilidade de quem chamou, ou de um event listener
+```
+
+**Tracer Bullets:**
+Em vez de planejar tudo e so entregar no final, crie um "esqueleto funcional" end-to-end o mais rapido possivel. Front -> API -> Banco funcionando (mesmo que feio). Depois melhora incrementalmente. Isso reduz risco e da feedback rapido.
+
+**The Broken Window Theory:**
+Um predio com uma janela quebrada -> ninguem se importa -> mais janelas quebram -> predio abandonado. Codigo ruim tem o mesmo efeito. Uma gambiarra que "e so temporaria" gera mais gambiarras. Conserte a janela quebrada imediatamente.
+
+**Rubber Duck Debugging:**
+Explique o problema para alguem (ou um patinho de borracha). O ato de verbalizar o problema frequentemente revela a solucao. Funciona porque te forca a organizar o pensamento linearmente.
+
+**Programacao por Coincidencia vs Programacao Deliberada:**
+Se seu codigo funciona mas voce nao sabe POR QUE funciona, voce esta programando por coincidencia. Qualquer mudanca pode quebrar. Programacao deliberada significa entender cada decisao.

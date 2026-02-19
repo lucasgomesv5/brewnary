@@ -1,0 +1,597 @@
+---
+title: "NoSQL"
+description: "Bancos de dados NoSQL: trade-offs fundamentais, arquiteturas internas, modelagem orientada a access patterns e CAP theorem aplicado"
+track: "backend"
+order: 13
+section: "Banco de Dados"
+priority: "high"
+tags: ["nosql", "banco-de-dados", "mongodb", "dynamodb", "cassandra", "redis", "neo4j"]
+prerequisites: ["sql-modelagem"]
+keyTakeaways:
+  - "NoSQL não é 'melhor' que SQL — são trade-offs fundamentais entre consistência, disponibilidade e flexibilidade de schema"
+  - "Modele NoSQL pelos access patterns primeiro, não pelas entidades — denormalização é a norma, não a exceção"
+  - "Entenda o CAP theorem na prática: MongoDB (CP), Cassandra (AP), DynamoDB (configurável)"
+---
+
+## Relacional vs NoSQL: Trade-offs Fundamentais
+
+A escolha entre SQL e NoSQL não é sobre tecnologia — é sobre **garantias** que você precisa.
+Bancos relacionais oferecem ACID. Bancos NoSQL oferecem BASE. Essa diferença define tudo.
+
+```
+ACID (Relacional)                    BASE (NoSQL)
+─────────────────                    ────────────
+Atomicity   → Tudo ou nada           Basically Available → Sempre responde
+Consistency → Estado sempre válido   Soft state → Estado pode ser temporário
+Isolation   → Transações isoladas    Eventually consistent → Converge com o tempo
+Durability  → Persistido em disco
+
+Trade-off central:
+  ACID garante correção → mas limita escala horizontal
+  BASE garante disponibilidade → mas aceita inconsistência temporária
+```
+
+### Schema vs Schemaless
+
+Bancos relacionais impõem schema no **write** (schema-on-write). Se o dado não respeita
+as constraints (tipos, foreign keys, NOT NULL), o INSERT falha. Isso garante integridade,
+mas torna migrações caras.
+
+Bancos NoSQL impõem schema no **read** (schema-on-read). Qualquer documento pode ser
+inserido. A responsabilidade de validação vai para a aplicação. Isso dá flexibilidade,
+mas transfere complexidade para o código.
+
+```typescript
+// Schema-on-write (PostgreSQL): o banco rejeita dados inválidos
+// ALTER TABLE users ADD COLUMN phone VARCHAR(20) NOT NULL;
+// → Migração pesada se a tabela tem milhões de linhas
+
+// Schema-on-read (MongoDB): o documento aceita qualquer formato
+// Mas agora VOCÊ precisa lidar com as variações:
+interface User {
+  _id: ObjectId;
+  name: string;
+  email: string;
+  phone?: string;        // Pode ou não existir
+  address?: {            // Pode ser string ou objeto
+    street: string;
+    city: string;
+  } | string;
+}
+
+// Na prática, use Zod ou joi para validar no application layer:
+import { z } from 'zod';
+
+const UserSchema = z.object({
+  name: z.string().min(1),
+  email: z.string().email(),
+  phone: z.string().optional(),
+  address: z.object({
+    street: z.string(),
+    city: z.string(),
+  }).optional(),
+});
+```
+
+---
+
+## Categorias de Bancos NoSQL
+
+### 1. Document Store (MongoDB)
+
+Armazena documentos JSON/BSON. Ideal para dados semi-estruturados onde o formato
+varia entre registros. Suporta queries ricas, índices secundários e agregações.
+
+```javascript
+// Documento MongoDB — note o embedding (orders dentro de user)
+{
+  _id: ObjectId("507f1f77bcf86cd799439011"),
+  name: "Lucas",
+  email: "lucas@example.com",
+  orders: [                          // Array embeddado
+    { product: "Teclado", price: 299.90, date: ISODate("2025-01-15") },
+    { product: "Mouse", price: 149.90, date: ISODate("2025-02-20") }
+  ],
+  metadata: {                        // Objeto aninhado
+    lastLogin: ISODate("2025-03-01"),
+    preferences: { theme: "dark", lang: "pt-BR" }
+  }
+}
+```
+
+### 2. Key-Value (Redis, DynamoDB)
+
+O modelo mais simples: chave → valor. Redis opera in-memory com persistência
+opcional (RDB snapshots + AOF). DynamoDB é serverless com partition key + sort key.
+
+```javascript
+// Redis: O(1) para GET/SET — ideal para cache, sessões, rate limiting
+await redis.set('session:abc123', JSON.stringify({ userId: 42 }), 'EX', 3600);
+await redis.get('session:abc123');
+
+// Redis como rate limiter com sliding window
+const key = `rate:${ip}:${Math.floor(Date.now() / 60000)}`;
+const count = await redis.incr(key);
+await redis.expire(key, 60);
+if (count > 100) throw new TooManyRequestsError();
+```
+
+### 3. Column-Family (Cassandra, HBase)
+
+Otimizado para escrita massiva e leitura por partition key. Dados organizados
+em partições distribuídas por consistent hashing.
+
+```cql
+-- Cassandra: modelagem orientada por query
+-- Cada tabela é otimizada para UMA query específica
+CREATE TABLE user_events_by_day (
+  user_id    UUID,
+  event_date DATE,
+  event_time TIMESTAMP,
+  event_type TEXT,
+  payload    TEXT,
+  PRIMARY KEY ((user_id, event_date), event_time)
+) WITH CLUSTERING ORDER BY (event_time DESC);
+
+-- A partition key (user_id, event_date) determina em qual nó o dado vive
+-- O clustering key (event_time) ordena dentro da partição
+-- Query eficiente: todos os eventos de um usuário em um dia
+SELECT * FROM user_events_by_day
+WHERE user_id = ? AND event_date = '2025-03-01';
+```
+
+### 4. Graph (Neo4j)
+
+Modelagem por nós e arestas. Ideal quando as **relações** são tão importantes
+quanto os dados. Queries de travessia são O(k) onde k é o grau de vizinhança,
+não O(n) como JOINs relacionais em tabelas grandes.
+
+```cypher
+// Neo4j Cypher: recomendação — amigos de amigos que compraram o mesmo produto
+MATCH (me:User {id: $userId})-[:FRIENDS_WITH]->(friend)-[:FRIENDS_WITH]->(fof)
+WHERE NOT (me)-[:FRIENDS_WITH]->(fof) AND me <> fof
+MATCH (fof)-[:PURCHASED]->(p:Product)<-[:PURCHASED]-(me)
+RETURN fof.name, collect(p.name) AS common_products, count(p) AS score
+ORDER BY score DESC LIMIT 10
+```
+
+---
+
+## MongoDB Internamente
+
+### BSON e WiredTiger
+
+MongoDB armazena documentos em **BSON** (Binary JSON), que é mais eficiente que
+JSON para parsing e suporta tipos adicionais (ObjectId, Date, Decimal128, Binary).
+
+O **WiredTiger** é o storage engine padrão desde a versão 3.2. Características:
+
+```
+WiredTiger Storage Engine
+─────────────────────────
+• Document-level concurrency control (não table-level lock)
+• Compressão: snappy (default), zlib, zstd
+• Cache: configura via --wiredTigerCacheSizeGB (default: 50% da RAM - 1GB)
+• Journaling: write-ahead log para durabilidade (fsync a cada 100ms)
+• Checkpoints: snapshot consistente a cada 60s para disco
+
+Fluxo de uma escrita:
+  1. Write entra no journal (WAL) → durável em caso de crash
+  2. Documento atualizado no cache WiredTiger (in-memory)
+  3. No próximo checkpoint, dados vão para disco (data files)
+```
+
+### Índices (B-Tree)
+
+MongoDB usa **B-Tree** para índices (mais especificamente, B+ Tree no WiredTiger).
+Cada índice é uma estrutura separada no disco que aponta para documentos.
+
+```javascript
+// Índice composto: otimiza queries que filtram por status E ordenam por date
+db.orders.createIndex({ status: 1, createdAt: -1 });
+
+// Covered query: se o índice contém todos os campos da query,
+// o MongoDB não precisa acessar o documento (IXSCAN, não FETCH)
+db.orders.find(
+  { status: "completed" },
+  { createdAt: 1, _id: 0 }       // Projection só com campos do índice
+).explain("executionStats");
+// → totalDocsExamined: 0 (covered query!)
+
+// Índice parcial: indexa apenas documentos que atendem um filtro
+db.orders.createIndex(
+  { customerId: 1 },
+  { partialFilterExpression: { status: "active" } }
+);
+// Ocupa menos espaço e é mais rápido para queries com status: "active"
+
+// Text index para full-text search
+db.articles.createIndex({ title: "text", body: "text" });
+db.articles.find({ $text: { $search: "distributed systems" } });
+```
+
+### Replica Sets
+
+Um replica set é um grupo de processos `mongod` que mantêm o mesmo dataset:
+
+```
+Replica Set (mínimo 3 membros)
+──────────────────────────────
+  ┌─────────┐    oplog replication    ┌───────────┐
+  │ PRIMARY  │ ──────────────────────→ │ SECONDARY │
+  │ (writes) │                         │  (reads)  │
+  └─────────┘                         └───────────┘
+       │           oplog replication    ┌───────────┐
+       └───────────────────────────────→ │ SECONDARY │
+                                        │  (reads)  │
+                                        └───────────┘
+
+• Writes vão APENAS para o Primary
+• Secondaries replicam o oplog (operation log) do Primary
+• Se o Primary cai → eleição automática (Raft-like protocol)
+• Read preference: primary | secondary | primaryPreferred | nearest
+
+Write Concern (garante durabilidade):
+  w: 1          → Confirmado pelo Primary (default)
+  w: "majority" → Confirmado pela maioria dos membros
+  w: 3          → Confirmado por 3 membros específicos
+  j: true       → Confirmado após gravação no journal
+```
+
+### Sharding
+
+Sharding distribui dados entre múltiplos shards (cada um é um replica set):
+
+```
+                    ┌─────────────┐
+                    │   mongos    │  ← Router (não armazena dados)
+                    │  (router)   │
+                    └──────┬──────┘
+                           │
+              ┌────────────┼────────────┐
+              │            │            │
+        ┌─────────┐  ┌─────────┐  ┌─────────┐
+        │ Shard A  │  │ Shard B  │  │ Shard C  │
+        │ a-m      │  │ n-s      │  │ t-z      │
+        └─────────┘  └─────────┘  └─────────┘
+
+Shard Key — o campo que determina a distribuição:
+  • Hashed: distribuição uniforme, mas range queries são scatter-gather
+  • Ranged: range queries eficientes, mas risco de hot spots
+
+Chunk: intervalo contíguo de shard key values (~128MB default)
+Balancer: move chunks entre shards para manter equilíbrio
+```
+
+```javascript
+// Habilitar sharding para uma collection
+sh.enableSharding("ecommerce");
+sh.shardCollection("ecommerce.orders", { customerId: "hashed" });
+
+// Shard key ruim: campo com baixa cardinalidade (ex: status → hot shard)
+// Shard key boa: campo com alta cardinalidade + distribuição uniforme
+```
+
+---
+
+## DynamoDB: Arquitetura e Modelagem
+
+### Partition Key + Sort Key
+
+Cada item no DynamoDB é identificado por uma **partition key** (obrigatória) e
+opcionalmente uma **sort key**. A partition key determina em qual partição física
+o item reside (via hash). A sort key ordena itens dentro da partição.
+
+```typescript
+// Tabela com partition key + sort key
+// PK: userId, SK: order#<timestamp>
+const params: PutItemInput = {
+  TableName: 'UserOrders',
+  Item: {
+    PK: { S: 'USER#123' },           // Partition key
+    SK: { S: 'ORDER#2025-03-01T10:30:00Z' },  // Sort key
+    total: { N: '299.90' },
+    status: { S: 'completed' },
+    GSI1PK: { S: 'STATUS#completed' },  // Para GSI
+    GSI1SK: { S: '2025-03-01T10:30:00Z' },
+  },
+};
+
+// Query: todos os pedidos de um usuário (eficiente — mesma partição)
+const query: QueryInput = {
+  TableName: 'UserOrders',
+  KeyConditionExpression: 'PK = :pk AND begins_with(SK, :prefix)',
+  ExpressionAttributeValues: {
+    ':pk': { S: 'USER#123' },
+    ':prefix': { S: 'ORDER#' },
+  },
+};
+```
+
+### GSI/LSI e Capacity Units
+
+```
+GSI (Global Secondary Index)         LSI (Local Secondary Index)
+────────────────────────────         ────────────────────────────
+• Partition key diferente da tabela  • Mesma partition key da tabela
+• Criado a qualquer momento          • Criado apenas na criação da tabela
+• Eventually consistent (default)    • Strongly consistent disponível
+• Capacity units próprios            • Compartilha capacity da tabela
+• Máximo 20 por tabela               • Máximo 5 por tabela
+
+Capacity Units:
+  RCU (Read Capacity Unit):
+    • 1 RCU = 1 leitura strongly consistent de até 4KB/s
+    • 1 RCU = 2 leituras eventually consistent de até 4KB/s
+  WCU (Write Capacity Unit):
+    • 1 WCU = 1 escrita de até 1KB/s
+
+On-Demand: paga por request (melhor para workloads imprevisíveis)
+Provisioned: define RCU/WCU fixos (melhor para workloads previsíveis, mais barato)
+```
+
+### Single-Table Design
+
+Em DynamoDB, o padrão recomendado é **uma tabela para toda a aplicação**.
+Você modela os dados pelas queries, não pelas entidades:
+
+```typescript
+// Single-table design: Users, Orders e Products na mesma tabela
+// PK e SK são genéricos — o significado muda conforme o item type
+
+// Usuário
+{ PK: 'USER#123', SK: 'PROFILE', name: 'Lucas', email: 'lucas@ex.com' }
+
+// Pedidos do usuário (query por PK = USER#123, SK begins_with ORDER#)
+{ PK: 'USER#123', SK: 'ORDER#001', total: 299.90, status: 'completed' }
+{ PK: 'USER#123', SK: 'ORDER#002', total: 149.90, status: 'pending' }
+
+// Produto
+{ PK: 'PRODUCT#abc', SK: 'DETAILS', name: 'Teclado', price: 299.90 }
+
+// Item de pedido (query por PK = ORDER#001, SK begins_with ITEM#)
+{ PK: 'ORDER#001', SK: 'ITEM#1', productId: 'abc', qty: 1, price: 299.90 }
+
+// GSI1: buscar pedidos por status
+// GSI1PK = STATUS#completed, GSI1SK = 2025-03-01
+// Permite: "todos os pedidos completed ordenados por data"
+```
+
+---
+
+## Cassandra: Ring Architecture
+
+### Consistent Hashing
+
+Cassandra distribui dados em um **anel (ring)** usando consistent hashing.
+Cada nó é responsável por um range de tokens. Quando a partition key é
+hasheada (Murmur3), o resultado determina qual nó é o proprietário.
+
+```
+Token Ring (Murmur3: -2^63 a 2^63-1)
+─────────────────────────────────────
+         Node A (0..25%)
+        ╱                 ╲
+  Node D (75..100%)    Node B (25..50%)
+        ╲                 ╱
+         Node C (50..75%)
+
+Replication Factor = 3:
+  → Dado com token no range de A é replicado em A, B e C
+  → Se A cai, B e C ainda servem o dado
+
+Virtual Nodes (vnodes):
+  → Cada nó físico recebe ~256 vnodes (posições virtuais no anel)
+  → Distribuição mais uniforme que tokens fixos
+  → Quando um nó entra/sai, apenas ~1/N dos dados são redistribuídos
+```
+
+### Tunable Consistency
+
+Cassandra permite configurar o nível de consistência **por query**:
+
+```cql
+-- Consistency Levels (com RF = 3):
+-- ONE:    Responde após 1 réplica confirmar (mais rápido, menos consistente)
+-- QUORUM: Responde após 2 réplicas confirmarem (equilíbrio)
+-- ALL:    Responde após 3 réplicas confirmarem (mais lento, mais consistente)
+
+-- Fórmula para strong consistency:
+-- R + W > N  (onde R = read CL, W = write CL, N = replication factor)
+-- QUORUM + QUORUM > 3 → 2 + 2 > 3 → SIM (strong consistency)
+-- ONE + ALL > 3       → 1 + 3 > 3 → SIM (strong consistency)
+-- ONE + ONE > 3       → 1 + 1 > 3 → NÃO (eventual consistency)
+
+CONSISTENCY QUORUM;
+SELECT * FROM user_events_by_day
+WHERE user_id = ? AND event_date = '2025-03-01';
+```
+
+### Compaction Strategies
+
+```
+SizeTiered (STCS) — Default
+  → Merge SSTables de tamanho similar
+  → Bom para write-heavy workloads
+  → Problema: space amplification (precisa de 2x o espaço temporariamente)
+
+Leveled (LCS)
+  → SSTables organizados em níveis (L0, L1, L2...)
+  → Cada nível é 10x maior que o anterior
+  → Bom para read-heavy workloads (menos SSTables para consultar)
+  → Mais I/O de compaction
+
+Time-Window (TWCS)
+  → Agrupa SSTables por janela de tempo
+  → Ideal para time-series data
+  → SSTables antigos nunca são re-compactados (eficiente para TTL)
+```
+
+---
+
+## CAP Theorem Aplicado
+
+O CAP theorem afirma que em caso de **partition** (falha de rede entre nós),
+você deve escolher entre **Consistency** e **Availability**. Na prática:
+
+```
+                    Consistency
+                        │
+                   MongoDB (CP)
+                        │
+                        │
+  Availability ─────────┼──────────── Partition Tolerance
+                        │
+               Cassandra (AP)
+
+MongoDB (CP):
+  • Durante uma partição, o Primary pode ficar indisponível
+  • Mas os dados nunca ficam inconsistentes (writes só no Primary)
+  • Eleição de novo Primary leva ~10-12 segundos
+
+Cassandra (AP):
+  • Durante uma partição, todos os nós continuam aceitando writes
+  • Mas dois nós podem ter versões diferentes do mesmo dado
+  • Reconciliação posterior (last-write-wins por timestamp, ou CRDTs)
+
+DynamoDB (Configurável):
+  • Eventually consistent reads (default): AP behavior
+  • Strongly consistent reads: CP behavior (lê do leader da partição)
+  • Global Tables: multi-region com eventual consistency entre regiões
+```
+
+---
+
+## Data Modeling em NoSQL
+
+### Denormalização é a Norma
+
+Em SQL você normaliza para evitar duplicação. Em NoSQL você **denormaliza
+intencionalmente** para otimizar reads:
+
+```javascript
+// SQL normalizado: 3 tabelas, precisa de JOINs
+// users → orders → order_items → products
+
+// MongoDB denormalizado: embedding para queries rápidas
+const order = {
+  _id: ObjectId("..."),
+  customer: {                    // Dados do cliente duplicados aqui
+    id: "user_123",
+    name: "Lucas",
+    email: "lucas@example.com",  // Se o email mudar, precisa atualizar aqui também
+  },
+  items: [
+    {
+      productId: "prod_abc",
+      name: "Teclado Mecânico",   // Nome duplicado do produto
+      price: 299.90,              // Preço no momento da compra (snapshot)
+      quantity: 1,
+    },
+  ],
+  total: 299.90,
+  status: "completed",
+  createdAt: ISODate("2025-03-01"),
+};
+
+// Trade-off:
+// ✅ Uma query retorna tudo que preciso para exibir o pedido
+// ❌ Se o email do cliente mudar, preciso atualizar em todos os pedidos
+// Solução: dados que mudam pouco → embed. Dados voláteis → reference.
+```
+
+### Embedding vs Referencing
+
+```
+Embedding (subdocumento)              Referencing (foreign key)
+────────────────────────              ─────────────────────────
+• Leitura atômica (1 query)          • Leitura requer 2+ queries ou $lookup
+• Limite de 16MB por documento       • Sem limite de tamanho
+• Dados duplicados se compartilhados • Dados normalizados
+• Ideal para relação 1:poucos        • Ideal para relação 1:muitos ou N:N
+• Atualização atômica                • Atualização independente
+
+Regra prática:
+  → Dados acessados juntos? → Embed
+  → Dados compartilhados entre entidades? → Reference
+  → Array pode crescer sem limite? → Reference
+  → Precisa de atomicidade no update? → Embed
+```
+
+### Access Patterns First
+
+A regra de ouro do NoSQL: **defina as queries antes de modelar os dados**.
+
+```typescript
+// Passo 1: Liste TODOS os access patterns da aplicação
+const accessPatterns = [
+  'Buscar perfil do usuário por ID',
+  'Listar pedidos de um usuário ordenados por data',
+  'Buscar pedido por ID com todos os itens',
+  'Listar pedidos por status (para dashboard admin)',
+  'Top 10 produtos mais vendidos no mês',
+];
+
+// Passo 2: Modele a tabela/collection para suportar CADA pattern
+// Em DynamoDB single-table:
+//   Pattern 1 → PK=USER#id, SK=PROFILE
+//   Pattern 2 → PK=USER#id, SK begins_with ORDER# (sorted by date)
+//   Pattern 3 → PK=ORDER#id, SK begins_with ITEM#
+//   Pattern 4 → GSI: GSI1PK=STATUS#x, GSI1SK=date
+//   Pattern 5 → GSI: GSI2PK=MONTH#2025-03, GSI2SK=salesCount (desc)
+```
+
+---
+
+## Decision Framework: SQL vs NoSQL
+
+```
+Pergunta                                    SQL         NoSQL
+──────────────────────────────────────────  ──────────  ──────────
+Precisa de transações ACID multi-tabela?    ✅ SQL      ❌
+Dados são altamente relacionais?            ✅ SQL      ❌
+Queries ad-hoc complexas (analytics)?       ✅ SQL      ❌
+Schema evolui com frequência?               ❌          ✅ NoSQL
+Escala horizontal massiva (>10TB)?          ❌          ✅ NoSQL
+Latência ultra-baixa (<5ms p99)?            ❌          ✅ NoSQL
+Dados semi-estruturados ou polimórficos?    ❌          ✅ NoSQL
+Write throughput >100K ops/s?               ❌          ✅ NoSQL
+
+Resultado comum:
+  → A maioria dos projetos começa com PostgreSQL e está correta.
+  → NoSQL entra quando um access pattern específico não escala em SQL.
+  → Polyglot persistence: PostgreSQL para dados transacionais,
+    Redis para cache/sessões, Elasticsearch para full-text search,
+    DynamoDB para eventos de alta escala.
+```
+
+---
+
+## Polyglot Persistence
+
+Use o banco certo para cada contexto. Nenhum banco é melhor em tudo:
+
+```
+Contexto                          Banco Recomendado      Por quê
+──────────────────────────────    ──────────────────     ─────────────────────
+Dados transacionais (CRUD)        PostgreSQL             ACID, JOINs, maturidade
+Cache / Sessões / Rate limiting   Redis                  In-memory, O(1), TTL nativo
+Busca textual                     Elasticsearch          Inverted index, relevance scoring
+Eventos / Time-series             Cassandra / TimescaleDB Write-optimized, partição por tempo
+Catálogo e-commerce               MongoDB                Schema flexível, nested queries
+Grafos sociais / Recomendação     Neo4j                  Traversal O(k), Cypher expressivo
+Serverless / Event-driven         DynamoDB               Escala automática, pay-per-request
+Filas / Pub-sub                   Redis Streams / Kafka  Ordenação, consumer groups
+
+Arquitetura real de um e-commerce:
+  PostgreSQL  → Usuários, pagamentos, transações (ACID obrigatório)
+  MongoDB     → Catálogo de produtos (schema variável por categoria)
+  Redis       → Carrinho de compras, sessões, cache de preços
+  Elasticsearch → Busca de produtos com facets e autocomplete
+  DynamoDB    → Eventos de clickstream (milhões de writes/s)
+  Neo4j       → Engine de recomendação ("quem comprou X também comprou Y")
+```
+
+A chave é **não usar um martelo para tudo**. Cada banco NoSQL é otimizado para
+um conjunto específico de access patterns. Escolha com base nos seus requisitos
+de consistência, latência, throughput e complexidade de queries — não por hype.

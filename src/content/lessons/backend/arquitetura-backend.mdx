@@ -1,0 +1,1019 @@
+---
+title: "Padrões de Arquitetura Backend"
+description: "Arquiteturas de aplicação, padrões de design, comunicação entre serviços, resiliência e princípios cloud-native"
+track: "backend"
+order: 22
+section: "Arquitetura"
+priority: "medium"
+tags: ["arquitetura", "clean-architecture", "microserviços", "ddd", "cqrs", "resiliência", "12-factor"]
+prerequisites: ["rest-apis", "testes"]
+keyTakeaways:
+  - "Monolito modular é frequentemente a escolha correta — microserviços exigem maturidade operacional que a maioria das equipes não possui"
+  - "Hexagonal e Clean Architecture isolam o domínio de I/O, permitindo testabilidade e substituição de infraestrutura"
+  - "CQRS separa modelos de leitura e escrita; Event Sourcing persiste intenções em vez de estado"
+  - "Resiliência não é opcional: circuit breaker, bulkhead, retry com backoff exponencial e timeout são obrigatórios em sistemas distribuídos"
+---
+
+## Arquiteturas de Aplicação
+
+A escolha de arquitetura não é uma decisão técnica isolada — ela reflete a estrutura organizacional (Lei de Conway), a maturidade operacional da equipe e o estágio do produto. Não existe bala de prata.
+
+### Espectro Arquitetural
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    ESPECTRO DE ARQUITETURAS                        │
+│                                                                     │
+│  Monolito ──► Modular Monolith ──► SOA ──► Microserviços ──► Serverless │
+│                                                                     │
+│  ◄── Menor complexidade operacional    Maior complexidade ──►      │
+│  ◄── Maior acoplamento                 Menor acoplamento  ──►      │
+│  ◄── Deploy único                      Deploy independente ──►     │
+│  ◄── Latência intra-processo           Latência de rede    ──►     │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+---
+
+### Monolito: Quando é a Escolha Certa
+
+Um monolito bem estruturado não é um antipadrão. É a escolha racional quando:
+
+- A equipe tem menos de ~10 engenheiros
+- O domínio ainda não é bem compreendido (startup em fase de descoberta)
+- Não há infraestrutura de observabilidade madura (tracing distribuído, log aggregation)
+- O custo de latência de rede entre serviços é inaceitável
+
+O problema nunca foi o monolito — foi o **big ball of mud**. Código sem fronteiras claras, com acoplamento temporal e dependências circulares.
+
+```
+┌──────────────────────────────────────┐
+│           MONOLITO                   │
+│                                      │
+│  ┌──────────┐  ┌──────────────────┐  │
+│  │ HTTP API │  │  Background Jobs │  │
+│  └────┬─────┘  └───────┬──────────┘  │
+│       │                │             │
+│       ▼                ▼             │
+│  ┌──────────────────────────────┐    │
+│  │     Lógica de Negócio        │    │
+│  │  (tudo no mesmo processo)    │    │
+│  └─────────────┬────────────────┘    │
+│                │                     │
+│                ▼                     │
+│  ┌──────────────────────────────┐    │
+│  │     Banco de Dados Único     │    │
+│  └──────────────────────────────┘    │
+└──────────────────────────────────────┘
+
+Deploy: 1 artefato
+Escala: vertical (ou horizontal com sticky sessions / shared state)
+Transações: ACID local — sem saga, sem eventual consistency
+```
+
+### Modular Monolith: O Middle Ground
+
+O monolito modular preserva a simplicidade operacional do monolito mas introduz fronteiras explícitas entre módulos. Cada módulo tem sua própria raiz de agregação, seus repositórios e expõe uma interface pública (API interna).
+
+```
+┌───────────────────────────────────────────────────┐
+│                  MODULAR MONOLITH                  │
+│                                                    │
+│  ┌────────────┐  ┌────────────┐  ┌────────────┐   │
+│  │  Módulo A  │  │  Módulo B  │  │  Módulo C  │   │
+│  │ ┌────────┐ │  │ ┌────────┐ │  │ ┌────────┐ │   │
+│  │ │ Domain │ │  │ │ Domain │ │  │ │ Domain │ │   │
+│  │ │ Model  │ │  │ │ Model  │ │  │ │ Model  │ │   │
+│  │ └────────┘ │  │ └────────┘ │  │ └────────┘ │   │
+│  │ ┌────────┐ │  │ ┌────────┐ │  │ ┌────────┐ │   │
+│  │ │  API   │◄├──┤►│  API   │◄├──┤►│  API   │ │   │
+│  │ │Pública │ │  │ │Pública │ │  │ │Pública │ │   │
+│  │ └────────┘ │  │ └────────┘ │  │ └────────┘ │   │
+│  └─────┬──────┘  └─────┬──────┘  └──────┬─────┘   │
+│        │               │                │          │
+│        ▼               ▼                ▼          │
+│  ┌──────────────────────────────────────────────┐  │
+│  │          Banco de Dados Compartilhado         │  │
+│  │  (schemas separados por módulo idealmente)    │  │
+│  └──────────────────────────────────────────────┘  │
+└───────────────────────────────────────────────────┘
+
+Regras:
+  • Módulo A NÃO importa classes internas de Módulo B
+  • Comunicação via interface pública (método/evento in-process)
+  • Cada módulo pode ter seu próprio schema no banco
+  • Migração para microserviços: extrair módulo → serviço
+```
+
+**Regra de ouro:** Se você não consegue manter fronteiras em um monolito, microserviços vão amplificar o caos — não resolvê-lo.
+
+---
+
+### Microserviços: Decomposição por Domínio
+
+Microserviços são uma estratégia organizacional disfarçada de arquitetura técnica. A decomposição correta segue **bounded contexts** do DDD, não camadas técnicas.
+
+```
+    DECOMPOSIÇÃO ERRADA (por camada técnica):
+    ┌──────────┐ ┌──────────┐ ┌──────────┐
+    │ API Svc  │ │Logic Svc │ │ Data Svc │
+    └──────────┘ └──────────┘ └──────────┘
+    → Chatty, acoplado, distributed monolith
+
+    DECOMPOSIÇÃO CORRETA (por bounded context):
+    ┌──────────┐ ┌──────────┐ ┌──────────┐
+    │ Pedidos  │ │Pagamento │ │ Estoque  │
+    │  (Order) │ │(Payment) │ │(Inventory│
+    │ API+Lógica│ │API+Lógica│ │API+Lógica│
+    │ +Dados   │ │ +Dados   │ │ +Dados   │
+    └──────────┘ └──────────┘ └──────────┘
+    → Cada serviço é autônomo e deployável independentemente
+```
+
+**Overhead operacional real de microserviços:**
+- Tracing distribuído (Jaeger, Zipkin, OpenTelemetry)
+- Service discovery (Consul, DNS-based, Kubernetes services)
+- Orquestração de deploy (Kubernetes, Nomad)
+- Contratos entre serviços (schema registry, contract testing com Pact)
+- Consistência eventual (sagas, compensações)
+- Debugging em ambiente distribuído
+
+Se sua equipe não tem capacidade para manter essa infraestrutura, microserviços são overhead sem benefício.
+
+---
+
+### Serverless
+
+Serverless (FaaS — Functions as a Service) elimina a gestão de servidores, mas introduz restrições próprias:
+
+- **Cold start**: latência de inicialização imprevisível (especialmente em JVM)
+- **Vendor lock-in**: dependência forte do provider (AWS Lambda, Google Cloud Functions)
+- **Limites de execução**: timeout máximo (15 min no Lambda), tamanho de payload
+- **Debugging**: observabilidade limitada comparada a containers
+- **Custo**: econômico para tráfego esporádico, caro para throughput constante alto
+
+Serverless é ideal para: webhooks, processamento de eventos, cron jobs, APIs com tráfego irregular.
+
+---
+
+## Comunicação entre Serviços
+
+### Síncrona: HTTP/REST e gRPC
+
+```
+┌────────────┐   HTTP/JSON    ┌────────────┐
+│  Serviço A │ ──────────────►│  Serviço B │
+│            │◄────────────── │            │
+└────────────┘   Response     └────────────┘
+
+  • Simples de implementar e depurar
+  • Acoplamento temporal: A depende de B estar disponível
+  • Latência acumulativa em cadeias longas (A→B→C→D)
+
+┌────────────┐    gRPC        ┌────────────┐
+│  Serviço A │ ──────────────►│  Serviço B │
+│   (stub)   │◄────────────── │  (server)  │
+└────────────┘  Protocol Buf  └────────────┘
+
+  • Serialização binária (Protocol Buffers) — ~10x menor que JSON
+  • HTTP/2: multiplexing, streaming bidirecional
+  • Contrato forte via .proto (code generation)
+  • Ideal para comunicação interna de alta frequência
+```
+
+### Assíncrona: Message Queues e Eventos
+
+```
+┌────────────┐   publish    ┌─────────────────┐   consume   ┌────────────┐
+│  Serviço A │ ────────────►│  Message Broker  │────────────►│  Serviço B │
+│ (producer) │              │ (RabbitMQ/Kafka) │             │ (consumer) │
+└────────────┘              └─────────────────┘             └────────────┘
+
+  • Desacoplamento temporal: A não precisa de B online
+  • Buffer natural para picos de carga
+  • Retry e dead-letter queue integrados
+  • Eventual consistency — não há resposta imediata
+```
+
+**Point-to-point (Queue)** vs **Pub/Sub (Topic)**:
+
+```
+QUEUE (competição):                    TOPIC (fan-out):
+Producer → [msg] → 1 Consumer         Producer → [msg] → Consumer A
+                                                       → Consumer B
+                                                       → Consumer C
+
+Use Queue quando: um worker deve        Use Topic quando: múltiplos serviços
+processar cada mensagem exatamente       devem reagir ao mesmo evento
+uma vez (job queue, email sending)       (OrderCreated → Estoque, Email, Analytics)
+```
+
+**Kafka vs RabbitMQ — diferença fundamental:**
+- **RabbitMQ**: broker inteligente, consumidores simples. Mensagens removidas após ACK. Ideal para task queues.
+- **Kafka**: log distribuído imutável. Consumidores controlam offset. Replay de eventos. Ideal para event streaming e event sourcing.
+
+---
+
+## API Gateway
+
+O API Gateway é o ponto de entrada único para clientes externos. Centraliza cross-cutting concerns:
+
+```
+                    ┌──────────────────────────────────┐
+                    │          API GATEWAY              │
+   Clientes ───────►│                                  │
+   (Mobile,         │  • Routing                       │
+    Web,            │  • Rate Limiting                 │
+    3rd party)      │  • Autenticação / Autorização    │
+                    │  • Request/Response Transform    │
+                    │  • Circuit Breaking              │
+                    │  • Logging / Metrics             │
+                    │  • TLS Termination               │
+                    └──┬──────────┬──────────┬─────────┘
+                       │          │          │
+                       ▼          ▼          ▼
+                  ┌────────┐ ┌────────┐ ┌────────┐
+                  │Serviço │ │Serviço │ │Serviço │
+                  │   A    │ │   B    │ │   C    │
+                  └────────┘ └────────┘ └────────┘
+
+Implementações comuns: Kong, NGINX, AWS API Gateway, Envoy
+```
+
+### BFF (Backend for Frontend) Pattern
+
+Quando clientes diferentes (mobile, web, TV) precisam de respostas estruturadas de forma distinta, um API Gateway genérico não é suficiente. O padrão BFF cria uma camada de agregação específica por tipo de cliente.
+
+```
+┌───────────┐     ┌─────────────┐
+│  App iOS  │────►│  BFF Mobile │──┐
+└───────────┘     └─────────────┘  │    ┌──────────┐
+                                   ├───►│Serviço A │
+┌───────────┐     ┌─────────────┐  │    └──────────┘
+│  Web SPA  │────►│   BFF Web   │──┤
+└───────────┘     └─────────────┘  │    ┌──────────┐
+                                   ├───►│Serviço B │
+┌───────────┐     ┌─────────────┐  │    └──────────┘
+│ Smart TV  │────►│   BFF TV    │──┘
+└───────────┘     └─────────────┘
+
+Cada BFF:
+  • Agrega dados de múltiplos serviços
+  • Formata payload para seu cliente específico
+  • Pode implementar cache específico do frontend
+  • É mantido pela equipe do frontend correspondente
+```
+
+---
+
+## Service Mesh
+
+Quando o número de serviços cresce, cross-cutting concerns (mTLS, retries, observabilidade) se tornam inviáveis de implementar em cada serviço individualmente. Um Service Mesh move essa responsabilidade para a infraestrutura.
+
+```
+┌──────────────────────┐         ┌──────────────────────┐
+│      Pod / Host      │         │      Pod / Host      │
+│  ┌────────────────┐  │         │  ┌────────────────┐  │
+│  │   Serviço A    │  │         │  │   Serviço B    │  │
+│  │  (app code)    │  │         │  │  (app code)    │  │
+│  └───────┬────────┘  │         │  └───────▲────────┘  │
+│          │localhost   │         │          │localhost   │
+│  ┌───────▼────────┐  │  mTLS   │  ┌───────┴────────┐  │
+│  │  Sidecar Proxy │  │────────►│  │  Sidecar Proxy │  │
+│  │    (Envoy)     │  │         │  │    (Envoy)     │  │
+│  └────────────────┘  │         │  └────────────────┘  │
+└──────────────────────┘         └──────────────────────┘
+            │                                │
+            └────────────┬───────────────────┘
+                         ▼
+               ┌──────────────────┐
+               │   Control Plane  │
+               │  (Istio / Linkerd│
+               │   / Consul)      │
+               │                  │
+               │ • mTLS certs     │
+               │ • Traffic rules  │
+               │ • Telemetry      │
+               │ • Policy         │
+               └──────────────────┘
+
+O que o sidecar proxy gerencia:
+  • mTLS automático entre todos os serviços (zero-trust)
+  • Retry, timeout, circuit breaking (sem código na app)
+  • Load balancing inteligente (least connections, weighted)
+  • Traffic splitting (canary deploys: 5% novo, 95% antigo)
+  • Observabilidade: métricas, traces, access logs
+```
+
+**Istio vs Linkerd:**
+- **Istio**: mais funcionalidades, maior complexidade, Envoy como data plane
+- **Linkerd**: mais leve, menor footprint de memória, micro-proxy próprio em Rust
+
+**Quando usar Service Mesh:** a partir de ~15-20 serviços, quando mTLS e observabilidade uniforme se tornam requisitos críticos. Antes disso, o overhead operacional não se justifica.
+
+---
+
+## Padrões de Arquitetura Interna
+
+### Layered Architecture (Arquitetura em Camadas)
+
+```
+┌─────────────────────────────────────┐
+│        Presentation Layer           │  ← Controllers, Serializers
+│        (HTTP / GraphQL / gRPC)      │
+├─────────────────────────────────────┤
+│        Business Logic Layer         │  ← Services, Domain Model
+│        (Regras de Negócio)          │
+├─────────────────────────────────────┤
+│        Data Access Layer            │  ← Repositories, ORM, Queries
+│        (Persistência)               │
+├─────────────────────────────────────┤
+│        Infrastructure Layer         │  ← DB drivers, HTTP clients, Cache
+│        (Serviços Externos)          │
+└─────────────────────────────────────┘
+
+Regra de dependência: cada camada só depende da camada imediatamente abaixo.
+Presentation → Business → Data Access → Infrastructure
+
+Problema: a regra de dependência aponta para BAIXO, o que significa que
+Business Logic depende de Data Access (implementação concreta).
+```
+
+### Hexagonal Architecture (Ports & Adapters)
+
+A Arquitetura Hexagonal inverte a dependência: o domínio define **ports** (interfaces), e a infraestrutura implementa **adapters**.
+
+```
+                    ┌─────────────────────┐
+                    │    Adapter HTTP      │
+                    │   (Express/Fastify)  │
+                    └──────────┬──────────┘
+                               │ implements
+             ┌─────────────────▼──────────────────┐
+             │            INPUT PORT               │
+             │      (interface: Controller)        │
+             ├─────────────────────────────────────┤
+             │                                     │
+             │         CORE DOMAIN                 │
+             │                                     │
+             │    • Entities                       │
+             │    • Value Objects                  │
+             │    • Domain Services                │
+             │    • Use Cases                      │
+             │                                     │
+             ├─────────────────────────────────────┤
+             │           OUTPUT PORT               │
+             │  (interface: UserRepository)        │
+             └─────────────────┬──────────────────┘
+                               │ implements
+                    ┌──────────▼──────────┐
+                    │  Adapter PostgreSQL  │
+                    │   (implementação)    │
+                    └─────────────────────┘
+
+O domínio NÃO depende de nada externo.
+Adapters dependem do domínio (inversão de dependência).
+Trocar PostgreSQL por MongoDB = novo adapter, zero mudança no domínio.
+```
+
+```typescript
+// === OUTPUT PORT (interface definida pelo domínio) ===
+interface UserRepository {
+  findById(id: UserId): Promise<User | null>;
+  save(user: User): Promise<void>;
+  findByEmail(email: Email): Promise<User | null>;
+}
+
+// === CORE DOMAIN (use case — não conhece HTTP nem banco) ===
+class RegisterUserUseCase {
+  constructor(
+    private readonly userRepo: UserRepository,    // port
+    private readonly hasher: PasswordHasher,       // port
+    private readonly eventBus: DomainEventBus,     // port
+  ) {}
+
+  async execute(command: RegisterUserCommand): Promise<UserId> {
+    const existingUser = await this.userRepo.findByEmail(command.email);
+    if (existingUser) {
+      throw new EmailAlreadyInUseError(command.email);
+    }
+
+    const hashedPassword = await this.hasher.hash(command.password);
+    const user = User.create({
+      email: command.email,
+      name: command.name,
+      passwordHash: hashedPassword,
+    });
+
+    await this.userRepo.save(user);
+    await this.eventBus.publish(user.domainEvents);
+
+    return user.id;
+  }
+}
+
+// === ADAPTER (implementação concreta do port) ===
+class PostgresUserRepository implements UserRepository {
+  constructor(private readonly pool: Pool) {}
+
+  async findById(id: UserId): Promise<User | null> {
+    const result = await this.pool.query(
+      'SELECT * FROM users WHERE id = $1', [id.value]
+    );
+    return result.rows[0] ? UserMapper.toDomain(result.rows[0]) : null;
+  }
+
+  async save(user: User): Promise<void> {
+    const data = UserMapper.toPersistence(user);
+    await this.pool.query(
+      `INSERT INTO users (id, email, name, password_hash, created_at)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (id) DO UPDATE SET
+         email = $2, name = $3, password_hash = $4`,
+      [data.id, data.email, data.name, data.passwordHash, data.createdAt]
+    );
+  }
+
+  async findByEmail(email: Email): Promise<User | null> {
+    const result = await this.pool.query(
+      'SELECT * FROM users WHERE email = $1', [email.value]
+    );
+    return result.rows[0] ? UserMapper.toDomain(result.rows[0]) : null;
+  }
+}
+```
+
+### Clean Architecture
+
+Clean Architecture (Robert C. Martin) formaliza a regra de dependência em anéis concêntricos. Dependências sempre apontam para dentro.
+
+```
+┌───────────────────────────────────────────────────────┐
+│                  Frameworks & Drivers                  │
+│  (Express, PostgreSQL, Redis, AWS SDK, React)         │
+│  ┌───────────────────────────────────────────────┐    │
+│  │            Interface Adapters                  │    │
+│  │  (Controllers, Presenters, Gateways, Repos)   │    │
+│  │  ┌───────────────────────────────────────┐    │    │
+│  │  │          Use Cases                     │    │    │
+│  │  │  (Application Business Rules)          │    │    │
+│  │  │  ┌───────────────────────────────┐    │    │    │
+│  │  │  │        Entities                │    │    │    │
+│  │  │  │  (Enterprise Business Rules)   │    │    │    │
+│  │  │  │  • Domain Model                │    │    │    │
+│  │  │  │  • Value Objects               │    │    │    │
+│  │  │  │  • Domain Services             │    │    │    │
+│  │  │  └───────────────────────────────┘    │    │    │
+│  │  └───────────────────────────────────────┘    │    │
+│  └───────────────────────────────────────────────┘    │
+└───────────────────────────────────────────────────────┘
+
+REGRA: Dependências sempre apontam para o centro.
+  • Entities não conhecem Use Cases
+  • Use Cases não conhecem Controllers
+  • Controllers não conhecem Express
+  • A inversão é feita via interfaces (Dependency Inversion Principle)
+```
+
+**Diferença prática entre Hexagonal e Clean Architecture:** são conceitualmente equivalentes. Hexagonal enfatiza ports/adapters; Clean Architecture enfatiza os anéis e a regra de dependência. Na prática, a estrutura de código é quase idêntica.
+
+---
+
+## CQRS — Command Query Responsibility Segregation
+
+CQRS separa o modelo de escrita (commands) do modelo de leitura (queries). Cada lado pode ser otimizado independentemente.
+
+```
+                        ┌──────────────────┐
+                        │     Cliente      │
+                        └───────┬──────────┘
+                     Command    │    Query
+                   ┌────────────┼────────────┐
+                   ▼                         ▼
+          ┌────────────────┐        ┌────────────────┐
+          │  Command Side  │        │  Query Side    │
+          │                │        │                │
+          │ • Validação    │        │ • Read Model   │
+          │ • Regras       │        │ • Desnormalizado│
+          │ • Aggregates   │        │ • Otimizado    │
+          │ • Consistência │        │   para leitura │
+          └───────┬────────┘        └───────▲────────┘
+                  │                         │
+                  ▼                         │
+          ┌────────────┐  Projeção  ┌──────┴───────┐
+          │ Write DB   │ ─────────► │  Read DB     │
+          │ (normalizado│  (async)  │(desnormalizado│
+          │  PostgreSQL)│           │ Elasticsearch/│
+          └────────────┘           │  Redis/Mongo) │
+                                   └──────────────┘
+
+Quando usar CQRS:
+  • Leituras e escritas têm perfis de carga radicalmente diferentes
+  • O modelo de leitura precisa de estrutura diferente do modelo de escrita
+  • Escalabilidade independente de leitura e escrita
+  • Combinado com Event Sourcing para auditoria completa
+
+Quando NÃO usar CQRS:
+  • CRUD simples sem complexidade de domínio
+  • Equipes pequenas sem experiência com consistência eventual
+  • Quando a complexidade adicional não se justifica
+```
+
+### Event Sourcing como Complemento
+
+Em vez de persistir o estado atual, Event Sourcing persiste a sequência de eventos que produziu o estado.
+
+```
+Abordagem tradicional (state-based):
+  users table: { id: 1, balance: 150.00 }
+  → Perdeu-se a informação de COMO chegou em 150
+
+Event Sourcing:
+  Event 1: AccountCreated  { userId: 1, initialBalance: 0 }
+  Event 2: MoneyDeposited  { userId: 1, amount: 200.00 }
+  Event 3: MoneyWithdrawn  { userId: 1, amount: 50.00 }
+  → Estado atual = replay dos eventos = 0 + 200 - 50 = 150
+  → Auditoria completa, debug temporal, possibilidade de reprojeção
+```
+
+**Trade-offs do Event Sourcing:**
+- Complexidade de implementação significativa (versionamento de eventos, snapshots para performance)
+- Eventual consistency no modelo de leitura
+- Consultas ao estado atual requerem projeções
+- Excelente para domínios onde auditoria e histórico são requisitos (financeiro, compliance)
+
+---
+
+## Domain-Driven Design (DDD)
+
+DDD não é sobre padrões táticos — é sobre **alinhar o modelo de software ao modelo mental do domínio**. Os building blocks táticos existem para servir esse objetivo.
+
+### Linguagem Ubíqua (Ubiquitous Language)
+
+O código deve usar os mesmos termos que os especialistas do domínio. Se o negócio fala "pedido", o código tem `Order`, não `TransactionRecord`. Se o negócio fala "aprovar", o método é `approve()`, não `updateStatus("approved")`.
+
+### Building Blocks Táticos
+
+```typescript
+// === VALUE OBJECT ===
+// Imutável, comparado por valor (não por identidade)
+class Email {
+  private constructor(private readonly _value: string) {}
+
+  static create(raw: string): Email {
+    const normalized = raw.trim().toLowerCase();
+    if (!Email.isValid(normalized)) {
+      throw new InvalidEmailError(raw);
+    }
+    return new Email(normalized);
+  }
+
+  private static isValid(email: string): boolean {
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+  }
+
+  get value(): string { return this._value; }
+
+  equals(other: Email): boolean {
+    return this._value === other._value;
+  }
+}
+
+// === VALUE OBJECT ===
+class Money {
+  private constructor(
+    private readonly _amount: number,
+    private readonly _currency: string,
+  ) {}
+
+  static of(amount: number, currency: string): Money {
+    if (amount < 0) throw new NegativeAmountError(amount);
+    return new Money(Math.round(amount * 100) / 100, currency);
+  }
+
+  add(other: Money): Money {
+    if (this._currency !== other._currency) {
+      throw new CurrencyMismatchError(this._currency, other._currency);
+    }
+    return Money.of(this._amount + other._amount, this._currency);
+  }
+
+  subtract(other: Money): Money {
+    if (this._currency !== other._currency) {
+      throw new CurrencyMismatchError(this._currency, other._currency);
+    }
+    return Money.of(this._amount - other._amount, this._currency);
+  }
+
+  get amount(): number { return this._amount; }
+  get currency(): string { return this._currency; }
+}
+
+// === ENTITY (identidade própria) ===
+// === AGGREGATE ROOT (fronteira de consistência) ===
+class Order {
+  private _items: OrderItem[] = [];
+  private _status: OrderStatus;
+  private _domainEvents: DomainEvent[] = [];
+
+  private constructor(
+    private readonly _id: OrderId,
+    private readonly _customerId: CustomerId,
+    private readonly _createdAt: Date,
+  ) {
+    this._status = OrderStatus.DRAFT;
+  }
+
+  static create(customerId: CustomerId): Order {
+    const order = new Order(
+      OrderId.generate(),
+      customerId,
+      new Date(),
+    );
+    order.addEvent(new OrderCreatedEvent(order._id, customerId));
+    return order;
+  }
+
+  addItem(product: ProductSnapshot, quantity: number): void {
+    if (this._status !== OrderStatus.DRAFT) {
+      throw new OrderNotEditableError(this._id);
+    }
+    if (quantity <= 0) {
+      throw new InvalidQuantityError(quantity);
+    }
+
+    const existingItem = this._items.find(i => i.productId.equals(product.id));
+    if (existingItem) {
+      existingItem.increaseQuantity(quantity);
+    } else {
+      this._items.push(OrderItem.create(product, quantity));
+    }
+  }
+
+  confirm(): void {
+    if (this._status !== OrderStatus.DRAFT) {
+      throw new OrderNotEditableError(this._id);
+    }
+    if (this._items.length === 0) {
+      throw new EmptyOrderError(this._id);
+    }
+
+    this._status = OrderStatus.CONFIRMED;
+    this.addEvent(new OrderConfirmedEvent(this._id, this.total()));
+  }
+
+  total(): Money {
+    return this._items.reduce(
+      (sum, item) => sum.add(item.subtotal()),
+      Money.of(0, 'BRL'),
+    );
+  }
+
+  get domainEvents(): ReadonlyArray<DomainEvent> {
+    return [...this._domainEvents];
+  }
+
+  clearEvents(): void {
+    this._domainEvents = [];
+  }
+
+  private addEvent(event: DomainEvent): void {
+    this._domainEvents.push(event);
+  }
+}
+
+// === DOMAIN EVENT ===
+class OrderConfirmedEvent implements DomainEvent {
+  readonly occurredAt = new Date();
+
+  constructor(
+    readonly orderId: OrderId,
+    readonly totalAmount: Money,
+  ) {}
+}
+
+// === REPOSITORY (interface — port) ===
+interface OrderRepository {
+  findById(id: OrderId): Promise<Order | null>;
+  save(order: Order): Promise<void>;
+  nextId(): OrderId;
+}
+```
+
+**Aggregate = fronteira de consistência transacional.** Tudo dentro de um aggregate é consistente (ACID). Entre aggregates diferentes, a consistência é eventual (via domain events).
+
+---
+
+## 12-Factor App
+
+Os 12 fatores são princípios para construir aplicações cloud-native que são portáteis, escaláveis e deployáveis de forma contínua.
+
+```
+┌────┬────────────────────┬───────────────────────────────────────────────┐
+│ #  │ Fator              │ O que significa na prática                    │
+├────┼────────────────────┼───────────────────────────────────────────────┤
+│  1 │ Codebase           │ Um repo por app. Múltiplos deploys (staging, │
+│    │                    │ prod) do mesmo código.                        │
+├────┼────────────────────┼───────────────────────────────────────────────┤
+│  2 │ Dependencies       │ Declaradas explicitamente (package.json,     │
+│    │                    │ go.mod). Sem dependências implícitas do OS.   │
+├────┼────────────────────┼───────────────────────────────────────────────┤
+│  3 │ Config             │ Configuração via variáveis de ambiente.       │
+│    │                    │ NUNCA hardcoded. Segredos em vault, não repo. │
+├────┼────────────────────┼───────────────────────────────────────────────┤
+│  4 │ Backing Services   │ Banco, cache, fila = recursos anexados via   │
+│    │                    │ URL. Trocar PostgreSQL local por RDS = mudança│
+│    │                    │ de env var, não de código.                    │
+├────┼────────────────────┼───────────────────────────────────────────────┤
+│  5 │ Build, Release, Run│ Separação estrita: build → release (build +  │
+│    │                    │ config) → run. Releases são imutáveis.        │
+├────┼────────────────────┼───────────────────────────────────────────────┤
+│  6 │ Processes          │ Aplicação executa como processos stateless.   │
+│    │                    │ Estado compartilhado em backing service       │
+│    │                    │ (Redis, DB), nunca em memória local.          │
+├────┼────────────────────┼───────────────────────────────────────────────┤
+│  7 │ Port Binding       │ App é self-contained, exporta HTTP via port   │
+│    │                    │ binding. Não depende de runtime externo       │
+│    │                    │ (Apache/Tomcat injetado).                     │
+├────┼────────────────────┼───────────────────────────────────────────────┤
+│  8 │ Concurrency        │ Escala via processos. Horizontal scaling,     │
+│    │                    │ não threads manuais. Process types: web,      │
+│    │                    │ worker, scheduler.                            │
+├────┼────────────────────┼───────────────────────────────────────────────┤
+│  9 │ Disposability      │ Startup rápido, shutdown graceful. SIGTERM → │
+│    │                    │ termina requests em andamento → sai. Processos│
+│    │                    │ são descartáveis.                             │
+├────┼────────────────────┼───────────────────────────────────────────────┤
+│ 10 │ Dev/Prod Parity    │ Mínima divergência entre ambientes. Use a    │
+│    │                    │ mesma DB em dev (Docker). Não SQLite em dev e │
+│    │                    │ PostgreSQL em prod.                           │
+├────┼────────────────────┼───────────────────────────────────────────────┤
+│ 11 │ Logs               │ Trate logs como event streams. Escreva em    │
+│    │                    │ stdout. A plataforma (Docker/K8s) roteia.     │
+│    │                    │ Nunca grave em arquivo dentro do container.   │
+├────┼────────────────────┼───────────────────────────────────────────────┤
+│ 12 │ Admin Processes    │ Tarefas pontuais (migração, seed) rodam como │
+│    │                    │ processos one-off no mesmo release. Não SSH   │
+│    │                    │ no servidor para rodar scripts.               │
+└────┴────────────────────┴───────────────────────────────────────────────┘
+```
+
+---
+
+## Resiliência em Sistemas Distribuídos
+
+Em sistemas distribuídos, falhas não são exceção — são a norma. Rede falha, serviços caem, discos corrompem. Resiliência é a capacidade de operar sob falhas parciais.
+
+### Circuit Breaker
+
+Inspirado em disjuntores elétricos. Quando um serviço downstream falha repetidamente, o circuit breaker "abre" e curto-circuita chamadas, evitando cascata de falhas.
+
+```
+┌──────────────────────────────────────────────────────────┐
+│                    CIRCUIT BREAKER                        │
+│                                                          │
+│   CLOSED ──────► OPEN ──────► HALF-OPEN                  │
+│   (normal)      (falhas      (testa com                  │
+│    │            acumuladas)   poucas reqs)                │
+│    │                │              │                      │
+│    │  falhas >      │  timeout     │  sucesso → CLOSED   │
+│    │  threshold     │  expira      │  falha   → OPEN     │
+│    └───────────────►│              │                      │
+│                     └─────────────►│                      │
+└──────────────────────────────────────────────────────────┘
+
+Estados:
+  CLOSED    → Tráfego flui normalmente. Contabiliza falhas.
+  OPEN      → Rejeita TODAS as chamadas imediatamente (fail-fast).
+              Retorna fallback ou erro.
+  HALF-OPEN → Após timeout, permite N requests de teste.
+              Se passam → CLOSED. Se falham → OPEN novamente.
+```
+
+```typescript
+class CircuitBreaker {
+  private state: 'CLOSED' | 'OPEN' | 'HALF_OPEN' = 'CLOSED';
+  private failureCount = 0;
+  private lastFailureTime = 0;
+  private readonly failureThreshold: number;
+  private readonly resetTimeoutMs: number;
+  private readonly halfOpenMaxAttempts: number;
+  private halfOpenAttempts = 0;
+
+  constructor(options: {
+    failureThreshold: number;  // ex: 5 falhas
+    resetTimeoutMs: number;    // ex: 30000 (30s)
+    halfOpenMaxAttempts: number; // ex: 3
+  }) {
+    this.failureThreshold = options.failureThreshold;
+    this.resetTimeoutMs = options.resetTimeoutMs;
+    this.halfOpenMaxAttempts = options.halfOpenMaxAttempts;
+  }
+
+  async execute<T>(fn: () => Promise<T>, fallback?: () => T): Promise<T> {
+    if (this.state === 'OPEN') {
+      if (Date.now() - this.lastFailureTime > this.resetTimeoutMs) {
+        this.state = 'HALF_OPEN';
+        this.halfOpenAttempts = 0;
+      } else {
+        if (fallback) return fallback();
+        throw new CircuitOpenError('Circuit breaker está aberto');
+      }
+    }
+
+    if (this.state === 'HALF_OPEN') {
+      this.halfOpenAttempts++;
+      if (this.halfOpenAttempts > this.halfOpenMaxAttempts) {
+        this.trip();
+        if (fallback) return fallback();
+        throw new CircuitOpenError('Half-open: tentativas excedidas');
+      }
+    }
+
+    try {
+      const result = await fn();
+      this.onSuccess();
+      return result;
+    } catch (error) {
+      this.onFailure();
+      throw error;
+    }
+  }
+
+  private onSuccess(): void {
+    this.failureCount = 0;
+    this.state = 'CLOSED';
+  }
+
+  private onFailure(): void {
+    this.failureCount++;
+    this.lastFailureTime = Date.now();
+    if (this.failureCount >= this.failureThreshold) {
+      this.trip();
+    }
+  }
+
+  private trip(): void {
+    this.state = 'OPEN';
+  }
+}
+
+// Uso:
+const paymentCircuit = new CircuitBreaker({
+  failureThreshold: 5,
+  resetTimeoutMs: 30_000,
+  halfOpenMaxAttempts: 3,
+});
+
+const result = await paymentCircuit.execute(
+  () => paymentGateway.charge(order.total()),
+  () => ({ status: 'QUEUED', message: 'Pagamento será processado em breve' }),
+);
+```
+
+### Bulkhead (Compartimentalização)
+
+Inspirado em compartimentos de navios. Isola pools de recursos para que a falha em um componente não drene recursos de outros.
+
+```
+SEM BULKHEAD:                       COM BULKHEAD:
+┌──────────────────────┐            ┌──────────────────────────┐
+│    Thread Pool (100)  │            │  Pool A (40)  │ Pool B (40) │ Pool C (20)│
+│                       │            │  Serviço A    │ Serviço B   │ Serviço C  │
+│ Serviço A (lento)     │            │  (lento)      │ (ok)        │ (ok)       │
+│ consome todas →       │            │  isolado! ──► │ funciona!   │ funciona!  │
+│ Serviço B e C ficam   │            │  esgota       │             │            │
+│ sem threads           │            │  seu pool     │             │            │
+└──────────────────────┘            └──────────────────────────┘
+
+Implementação:
+  • Thread pools separados por dependência (Java: Hystrix, Resilience4j)
+  • Connection pools separados
+  • Semáforos limitando concorrência por recurso
+  • Em Node.js: limitar chamadas concorrentes com p-limit ou similar
+```
+
+### Retry com Exponential Backoff e Jitter
+
+Retries cegos causam **thundering herd** (todos os clientes retentando ao mesmo tempo). Exponential backoff com jitter distribui a carga.
+
+```
+Tentativa 1: falhou → espera  1s + jitter
+Tentativa 2: falhou → espera  2s + jitter
+Tentativa 3: falhou → espera  4s + jitter
+Tentativa 4: falhou → espera  8s + jitter
+Tentativa 5: falhou → desiste (dead-letter / alerta)
+
+Fórmula: delay = min(base * 2^attempt + random(0, base), maxDelay)
+
+Jitter é ESSENCIAL — sem ele, todos os clientes retentam nos mesmos instantes.
+```
+
+```typescript
+async function retryWithBackoff<T>(
+  fn: () => Promise<T>,
+  options: {
+    maxAttempts: number;
+    baseDelayMs: number;
+    maxDelayMs: number;
+    retryableErrors?: (error: unknown) => boolean;
+  },
+): Promise<T> {
+  const { maxAttempts, baseDelayMs, maxDelayMs, retryableErrors } = options;
+
+  for (let attempt = 0; attempt < maxAttempts; attempt++) {
+    try {
+      return await fn();
+    } catch (error) {
+      const isLastAttempt = attempt === maxAttempts - 1;
+      const isRetryable = retryableErrors ? retryableErrors(error) : true;
+
+      if (isLastAttempt || !isRetryable) {
+        throw error;
+      }
+
+      const exponentialDelay = baseDelayMs * Math.pow(2, attempt);
+      const jitter = Math.random() * baseDelayMs;
+      const delay = Math.min(exponentialDelay + jitter, maxDelayMs);
+
+      await new Promise(resolve => setTimeout(resolve, delay));
+    }
+  }
+
+  throw new Error('Unreachable');
+}
+
+// Uso:
+const data = await retryWithBackoff(
+  () => httpClient.get('https://api.partner.com/data'),
+  {
+    maxAttempts: 4,
+    baseDelayMs: 1000,
+    maxDelayMs: 15_000,
+    retryableErrors: (err) =>
+      err instanceof HttpError && [502, 503, 429].includes(err.status),
+  },
+);
+```
+
+### Timeout
+
+Todo I/O externo **deve** ter timeout explícito. Sem timeout, um serviço downstream lento segura recursos indefinidamente.
+
+```typescript
+// ERRADO — sem timeout, pode bloquear para sempre:
+const response = await fetch('https://api.external.com/data');
+
+// CORRETO — timeout explícito:
+const controller = new AbortController();
+const timeoutId = setTimeout(() => controller.abort(), 5000);
+
+try {
+  const response = await fetch('https://api.external.com/data', {
+    signal: controller.signal,
+  });
+  return await response.json();
+} catch (error) {
+  if (error.name === 'AbortError') {
+    throw new TimeoutError('Chamada externa excedeu 5s');
+  }
+  throw error;
+} finally {
+  clearTimeout(timeoutId);
+}
+```
+
+### Combinando Padrões de Resiliência
+
+Na prática, esses padrões são compostos em camadas:
+
+```
+Request
+  │
+  ▼
+┌──────────┐    ┌───────────────┐    ┌─────────────────┐    ┌──────────┐
+│ Timeout  │───►│Circuit Breaker│───►│Retry + Backoff  │───►│ Bulkhead │──► Serviço
+│  (5s)    │    │  (5 falhas →  │    │ (3 tentativas,  │    │(max 20   │   Externo
+│          │    │   30s aberto) │    │  backoff exp.)  │    │ conc.)   │
+└──────────┘    └───────────────┘    └─────────────────┘    └──────────┘
+
+Ordem importa:
+  1. Timeout: limite máximo absoluto para a operação inteira
+  2. Circuit Breaker: fail-fast se o serviço está comprovadamente fora
+  3. Retry: tenta novamente em caso de falhas transientes
+  4. Bulkhead: limita impacto no sistema que faz a chamada
+```
+
+---
+
+## Exercícios
+
+1. **Modular Monolith**: Pegue um monolito existente (ou crie um simples) com pelo menos 3 domínios. Refatore para módulos com interfaces públicas explícitas. Valide que nenhum módulo importa classes internas de outro.
+
+2. **Hexagonal na prática**: Implemente um use case de criação de pedido usando Hexagonal Architecture. O domínio deve definir ports (interfaces). Crie dois adapters diferentes para o repositório (in-memory para testes, PostgreSQL para produção).
+
+3. **CQRS com projeção**: Implemente um sistema onde escritas vão para PostgreSQL (normalizado) e leituras são servidas de Redis (desnormalizado). Crie um mecanismo de projeção que sincroniza os dois.
+
+4. **Circuit Breaker completo**: Implemente um circuit breaker com os três estados (closed, open, half-open), métricas de falha e fallback. Teste com um serviço simulado que falha intermitentemente.
+
+5. **Retry com observabilidade**: Implemente retry com exponential backoff, jitter e logging estruturado de cada tentativa (attempt number, delay, erro). Integre com métricas (Prometheus counters de tentativas e desistências).

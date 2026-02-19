@@ -1,0 +1,48 @@
+---
+title: "Entendendo Algoritmos (Grokking Algorithms)"
+author: "Aditya Bhargava"
+description: "O livro que torna algoritmos acessiveis com ilustracoes e analogias do mundo real"
+category: "Algoritmos"
+priority: "essential"
+order: 1
+coverColor: "#2563EB"
+---
+
+## Por que ler
+
+E o livro que torna algoritmos ACESSIVEIS. Enquanto o CLRS (Introduction to Algorithms) e a biblia academica com 1300 paginas de provas matematicas, o Grokking te ensina os mesmos conceitos com ilustracoes e analogias do mundo real. Perfeito para quem nao fez faculdade.
+
+## Conceitos-chave do livro
+
+**Capitulo 1 -- Binary Search:**
+O livro comeca mostrando que busca linear e como procurar uma palavra no dicionario pagina por pagina. Binary search e abrir no meio, ver se precisa ir para frente ou tras, e repetir. De O(n) para O(log n).
+
+**Capitulo 2 -- Selection Sort e Arrays vs Linked Lists:**
+Explica a diferenca fundamental: arrays tem acesso O(1) por indice mas insercao O(n), linked lists tem insercao O(1) mas acesso O(n). A escolha da estrutura de dados define a performance.
+
+**Capitulo 3 -- Recursao:**
+A analogia da caixa: imagine caixas dentro de caixas. Para encontrar a chave, voce abre uma caixa, se achar outra caixa, abre ela tambem (chamada recursiva), ate achar a chave (caso base).
+
+**Capitulo 4 -- Quicksort e Divide & Conquer:**
+A estrategia de dividir o problema em sub-problemas menores, resolver cada um, e combinar. Quicksort escolhe um pivo, separa menores e maiores, e repete recursivamente.
+
+**Capitulo 5 -- Hash Tables:**
+O livro usa a analogia de uma pessoa que memoriza precos no supermercado. Hash tables dao acesso O(1) medio. Explica colisoes e por que a funcao hash importa.
+
+**Capitulo 6 -- BFS (Breadth-First Search):**
+"Qual o caminho mais curto?" BFS explora nivel por nivel usando uma fila (Queue). A analogia e: para achar um vendedor de manga entre seus amigos, primeiro pergunta aos amigos diretos (nivel 1), depois amigos dos amigos (nivel 2).
+
+**Capitulo 7 -- Dijkstra:**
+BFS acha o caminho mais curto em numero de passos. Dijkstra acha o caminho mais curto considerando PESOS (distancia, custo). Usa um grafo ponderado.
+
+**Capitulo 8 -- Algoritmos Gulosos (Greedy):**
+Faz a melhor escolha LOCAL em cada passo, esperando que resulte no melhor GLOBAL. Nem sempre funciona, mas quando funciona e elegante. Exemplo: problema da mochila -- pegue sempre o item com melhor valor/peso.
+
+**Capitulo 9 -- Programacao Dinamica:**
+Quando greedy nao funciona, DP resolve sub-problemas e guarda os resultados (memoization). O livro usa o problema da mochila de forma visual com uma tabela que vai sendo preenchida.
+
+### Exercicio pos-leitura
+
+Depois de terminar o livro, resolva no LeetCode:
+- Easy: Two Sum, Valid Parentheses, Merge Two Sorted Lists
+- Medium: Binary Tree Level Order Traversal, Coin Change

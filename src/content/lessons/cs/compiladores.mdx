@@ -1,0 +1,379 @@
+---
+title: "Compiladores e Interpretadores"
+description: "Pipeline de compilação, análise léxica, parsing, ASTs, análise semântica, geração de código, otimizações e a diferença entre compilação AOT, JIT e interpretação"
+track: "cs"
+order: 16
+section: "Sistemas"
+priority: "medium"
+tags: ["compiladores", "interpretadores", "parsing", "AST", "JIT", "bytecode", "lexer", "LLVM"]
+prerequisites: ["linguagem-c", "trees", "recursao-e-dp"]
+keyTakeaways:
+  - "O pipeline clássico de compilação tem 6 fases: análise léxica → parsing → AST → análise semântica → geração de código intermediário → otimização → geração de código nativo"
+  - "Um lexer (tokenizer) transforma texto em tokens usando autômatos finitos — regex engines são implementações diretas de NFAs/DFAs"
+  - "Parsers convertem tokens em ASTs: recursive descent (LL) é simples e manual; parser generators (LALR/PEG) automatizam gramáticas complexas"
+  - "V8 (Node.js/Chrome) compila JavaScript usando dois compiladores: Sparkplug (baseline rápido) e TurboFan (JIT otimizador com type feedback)"
+  - "Babel, ESLint, Prettier e TypeScript são todos baseados em ASTs — entender compiladores é entender as ferramentas que você usa diariamente"
+  - "Ahead-of-Time (AOT) compila antes da execução (C, Rust, Go); Just-in-Time (JIT) compila durante a execução (V8, JVM HotSpot); interpretação pura executa sem compilar (CPython bytecode)"
+---
+
+# Compiladores e Interpretadores
+
+Compiladores e interpretadores são o software que torna todo o restante do software possível. Quando você escreve `const x = 42` em JavaScript, uma cadeia de transformações converte esse texto em instruções que o processador executa. Entender esse pipeline não é apenas acadêmico — é a base para compreender por que V8 é rápido, como TypeScript funciona, por que Babel existe, e como ferramentas como ESLint e Prettier analisam seu código.
+
+---
+
+## 1. O Pipeline de Compilação
+
+O modelo clássico de compilador (Aho, Sethi, Ullman — o "Dragon Book") define fases sequenciais que transformam código-fonte em código executável:
+
+```
+Código Fonte
+    ↓
+[1. Análise Léxica (Lexer/Tokenizer)]
+    ↓  tokens
+[2. Análise Sintática (Parser)]
+    ↓  AST (Abstract Syntax Tree)
+[3. Análise Semântica]
+    ↓  AST anotada (tipos, escopos)
+[4. Geração de Código Intermediário]
+    ↓  IR (Intermediate Representation)
+[5. Otimização]
+    ↓  IR otimizada
+[6. Geração de Código]
+    ↓
+Código de Máquina / Bytecode
+```
+
+Cada fase tem uma responsabilidade clara. Erros de sintaxe são detectados na fase 2. Erros de tipo na fase 3. Otimizações na fase 5. Essa separação em fases é um dos exemplos mais elegantes de separação de responsabilidades em software.
+
+---
+
+## 2. Análise Léxica (Lexer / Tokenizer)
+
+O lexer é a primeira fase: transforma uma sequência de caracteres em uma sequência de **tokens** (unidades léxicas significativas).
+
+### 2.1 De Caracteres a Tokens
+
+```javascript
+// Entrada (string)
+"const x = 42 + y;"
+
+// Saída (tokens)
+[
+  { type: "KEYWORD",    value: "const" },
+  { type: "IDENTIFIER", value: "x" },
+  { type: "EQUALS",     value: "=" },
+  { type: "NUMBER",     value: "42" },
+  { type: "PLUS",       value: "+" },
+  { type: "IDENTIFIER", value: "y" },
+  { type: "SEMICOLON",  value: ";" },
+]
+```
+
+O lexer descartar whitespace e comentários (na maioria das linguagens), agrupa caracteres em tokens usando regras definidas por **expressões regulares** ou **autômatos finitos**. Cada token tem um tipo (categoria) e um valor (lexema).
+
+### 2.2 Implementação: Autômatos Finitos
+
+Internamente, um lexer é um **autômato finito determinístico (DFA)**. Cada estado representa "estou no meio de reconhecer um número", "estou no meio de uma string", etc. Transições entre estados são governadas pelo próximo caractere lido.
+
+```javascript
+// Lexer simplificado para expressões aritméticas
+function tokenize(input) {
+  const tokens = [];
+  let i = 0;
+
+  while (i < input.length) {
+    // Pula whitespace
+    if (/\s/.test(input[i])) { i++; continue; }
+
+    // Números (pode ter múltiplos dígitos)
+    if (/\d/.test(input[i])) {
+      let num = '';
+      while (i < input.length && /\d/.test(input[i])) {
+        num += input[i++];
+      }
+      tokens.push({ type: 'NUMBER', value: Number(num) });
+      continue;
+    }
+
+    // Operadores
+    if ('+-*/()'.includes(input[i])) {
+      tokens.push({ type: 'OP', value: input[i++] });
+      continue;
+    }
+
+    throw new Error(`Caractere inesperado: ${input[i]}`);
+  }
+
+  return tokens;
+}
+```
+
+> **Conexão com a teoria:** Regex engines são implementações de autômatos finitos. Quando você escreve `/[a-z]+/`, o engine constrói um NFA (Non-deterministic Finite Automaton) e pode convertê-lo em DFA para execução eficiente.
+
+---
+
+## 3. Análise Sintática (Parser)
+
+O parser recebe a sequência de tokens e constrói uma **AST (Abstract Syntax Tree)** — uma representação hierárquica da estrutura do programa.
+
+### 3.1 Gramáticas Livres de Contexto
+
+A sintaxe de linguagens de programação é definida por **gramáticas livres de contexto (CFG)**. Uma gramática define regras de produção:
+
+```
+expressão  → termo (('+' | '-') termo)*
+termo      → fator (('*' | '/') fator)*
+fator      → NUMBER | '(' expressão ')'
+```
+
+Essa gramática resolve precedência de operadores naturalmente: multiplicação e divisão (em `termo`) têm precedência maior que adição e subtração (em `expressão`).
+
+### 3.2 Recursive Descent Parser
+
+O parser mais intuitivo é o **recursive descent**, onde cada regra da gramática vira uma função:
+
+```javascript
+// Parser para expressões aritméticas
+class Parser {
+  constructor(tokens) {
+    this.tokens = tokens;
+    this.pos = 0;
+  }
+
+  peek() { return this.tokens[this.pos]; }
+  consume() { return this.tokens[this.pos++]; }
+
+  // expressão → termo (('+' | '-') termo)*
+  parseExpression() {
+    let left = this.parseTerm();
+
+    while (this.peek()?.value === '+' || this.peek()?.value === '-') {
+      const op = this.consume().value;
+      const right = this.parseTerm();
+      left = { type: 'BinaryExpr', op, left, right };
+    }
+
+    return left;
+  }
+
+  // termo → fator (('*' | '/') fator)*
+  parseTerm() {
+    let left = this.parseFactor();
+
+    while (this.peek()?.value === '*' || this.peek()?.value === '/') {
+      const op = this.consume().value;
+      const right = this.parseFactor();
+      left = { type: 'BinaryExpr', op, left, right };
+    }
+
+    return left;
+  }
+
+  // fator → NUMBER | '(' expressão ')'
+  parseFactor() {
+    const token = this.peek();
+
+    if (token.type === 'NUMBER') {
+      this.consume();
+      return { type: 'NumberLiteral', value: token.value };
+    }
+
+    if (token.value === '(') {
+      this.consume(); // '('
+      const expr = this.parseExpression();
+      this.consume(); // ')'
+      return expr;
+    }
+
+    throw new Error(`Token inesperado: ${token.value}`);
+  }
+}
+```
+
+Para a entrada `3 + 4 * 2`, o parser produz:
+
+```
+    BinaryExpr (+)
+   /          \
+NumberLiteral(3)  BinaryExpr (*)
+                 /          \
+          NumberLiteral(4)  NumberLiteral(2)
+```
+
+A multiplicação fica mais profunda na árvore (é avaliada primeiro), preservando a precedência correta.
+
+### 3.3 Tipos de Parsers
+
+| Tipo | Direção | Exemplos | Uso |
+|------|---------|----------|-----|
+| LL(k) | Top-down, left-to-right | Recursive descent, ANTLR | Parsers manuais, TypeScript parser |
+| LR(k) / LALR | Bottom-up, left-to-right | Yacc, Bison | Gramáticas complexas, linguagens compiladas |
+| PEG | Top-down com backtracking | PEG.js, pest (Rust) | DSLs, parsers modernos |
+| Pratt | Top-down, operator precedence | V8 parser, Rust compiler | Expressões com precedência |
+
+---
+
+## 4. Abstract Syntax Trees (ASTs)
+
+A AST é a representação central que conecta todas as fases. Ferramentas do ecossistema JavaScript dependem fortemente de ASTs:
+
+### 4.1 ASTs no Dia a Dia
+
+| Ferramenta | O que faz com a AST |
+|------------|---------------------|
+| **Babel** | Parseia JS → transforma nós da AST → gera JS de volta |
+| **ESLint** | Parseia JS → percorre AST procurando padrões problemáticos |
+| **Prettier** | Parseia JS → gera output formatado a partir da AST |
+| **TypeScript** | Parseia TS → analisa tipos na AST → emite JS |
+| **Webpack/Rollup** | Parseia imports na AST → constrói grafo de dependências |
+
+Você pode explorar ASTs de JavaScript em [AST Explorer](https://astexplorer.net/).
+
+### 4.2 Visitors e Transformações
+
+O padrão **Visitor** é usado para percorrer e transformar ASTs:
+
+```javascript
+// Padrão visitor para AST
+function evaluate(node) {
+  switch (node.type) {
+    case 'NumberLiteral':
+      return node.value;
+
+    case 'BinaryExpr': {
+      const left = evaluate(node.left);
+      const right = evaluate(node.right);
+      switch (node.op) {
+        case '+': return left + right;
+        case '-': return left - right;
+        case '*': return left * right;
+        case '/': return left / right;
+      }
+    }
+  }
+}
+
+// evaluate(ast) para "3 + 4 * 2" retorna 11
+```
+
+---
+
+## 5. Análise Semântica
+
+A análise semântica verifica regras que não podem ser expressas pela gramática:
+
+- **Type checking:** `"hello" + 42` é válido em JS mas erro em TypeScript
+- **Resolução de nomes:** a variável `x` na linha 10 refere-se à declaração na linha 3
+- **Escopo:** `let` tem block scope, `var` tem function scope
+- **Detecção de erros:** variável usada antes de ser declarada, return fora de função
+
+O TypeScript é essencialmente um **analisador semântico** sobre JavaScript — ele parseia o código, constrói uma AST, e verifica tipos e regras de consistência sem gerar código nativo.
+
+---
+
+## 6. Geração de Código e Otimização
+
+### 6.1 Representação Intermediária (IR)
+
+Compiladores modernos não geram código de máquina diretamente da AST. Eles usam uma **representação intermediária (IR)** que é mais fácil de otimizar:
+
+```
+AST → IR (independente de máquina) → Otimizações → Código nativo (x86, ARM)
+```
+
+O **LLVM** é o exemplo mais importante: Rust, Swift, Clang (C/C++) e muitas outras linguagens compilam para LLVM IR, que o backend LLVM otimiza e converte para qualquer arquitetura suportada.
+
+### 6.2 Otimizações Comuns
+
+| Otimização | O que faz | Exemplo |
+|------------|-----------|---------|
+| Constant folding | Calcula expressões constantes em compile time | `2 * 3` → `6` |
+| Dead code elimination | Remove código que nunca executa | `if (false) { ... }` removido |
+| Inlining | Substitui chamada de função pelo corpo | `getX()` → acesso direto |
+| Loop unrolling | Repete corpo do loop, reduz overhead de branch | Loop de 4 iterações → 4 blocos |
+| Common subexpression elimination | Reutiliza cálculos já feitos | `a*b + a*b` → `tmp = a*b; tmp + tmp` |
+
+---
+
+## 7. Compilação vs Interpretação vs JIT
+
+### 7.1 Ahead-of-Time (AOT)
+
+Compila todo o código antes da execução. O resultado é um executável nativo.
+
+- **Exemplos:** C (gcc/clang), Rust (rustc), Go (go build)
+- **Vantagens:** performance máxima, sem overhead de runtime
+- **Desvantagens:** ciclo edit-compile-run mais lento, binário específico por plataforma
+
+### 7.2 Interpretação Pura
+
+Executa o código diretamente, sem compilação prévia. Na prática, a maioria dos interpretadores modernos compila para bytecode primeiro.
+
+- **Exemplos:** CPython (compila para bytecode → interpreta), Ruby MRI
+- **Vantagens:** ciclo rápido, portabilidade
+- **Desvantagens:** 10-100x mais lento que código nativo
+
+### 7.3 Just-in-Time (JIT)
+
+Compila código durante a execução, usando informação de runtime para otimizar. É o melhor dos dois mundos.
+
+- **Exemplos:** V8 (JavaScript), JVM HotSpot (Java), .NET RyuJIT (C#)
+- **Vantagens:** performance próxima de AOT, com feedback de runtime
+- **Desvantagens:** warm-up time, uso de memória para compilação
+
+### 7.4 O Pipeline do V8
+
+O V8 (engine do Node.js e Chrome) é o exemplo mais relevante para desenvolvedores web:
+
+```
+JavaScript Source
+    ↓
+[Parser] → AST
+    ↓
+[Ignition] → Bytecode (interpretado rapidamente)
+    ↓  (coleta type feedback durante execução)
+[Sparkplug] → Código baseline (compilação rápida, sem otimizações)
+    ↓  (funções "quentes" detectadas)
+[TurboFan] → Código otimizado (JIT com especulação de tipos)
+    ↓  (se tipos mudarem → deoptimization)
+[Volta ao Ignition/Sparkplug]
+```
+
+**Por que isso importa:** quando você escreve `function add(a, b) { return a + b; }` e sempre chama com números, TurboFan compila para uma instrução de soma de inteiros nativa. Se você depois chamar com strings, ele **deoptimiza** — descarta o código otimizado e volta para o interpretador. É por isso que código monomórfico (tipos consistentes) é mais rápido que código polimórfico.
+
+---
+
+## 8. Na Prática: Construindo um Mini-Interpretador
+
+Combinando lexer + parser + evaluator, temos um interpretador funcional para expressões aritméticas:
+
+```javascript
+function interpret(source) {
+  // Fase 1: Análise léxica
+  const tokens = tokenize(source);
+
+  // Fase 2: Análise sintática
+  const parser = new Parser(tokens);
+  const ast = parser.parseExpression();
+
+  // Fase 3+4+5: Avaliação direta (sem IR)
+  return evaluate(ast);
+}
+
+interpret("3 + 4 * 2");     // 11
+interpret("(3 + 4) * 2");   // 14
+interpret("10 / 2 + 3");    // 8
+```
+
+Este é o mesmo pipeline que linguagens reais usam — a diferença é escala e otimização, não o conceito.
+
+---
+
+## 9. Referências e Aprofundamento
+
+- **"Compilers: Principles, Techniques, and Tools"** (Aho, Lam, Sethi, Ullman) — o "Dragon Book", referência definitiva
+- **"Crafting Interpreters"** (Robert Nystrom) — implementação prática de duas linguagens, disponível gratuitamente online
+- **CS 143 (Stanford)** — Compilers, baseado no Dragon Book
+- **V8 Blog** — detalhes sobre o pipeline de compilação do V8
+- **LLVM Tutorial** — "Implementing a Language with LLVM" passo a passo

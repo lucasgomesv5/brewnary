@@ -1,0 +1,1061 @@
+---
+title: "Caching e Redis"
+description: "Estratégias de caching com Redis (Cache-Aside, Write-Through, Write-Behind), HTTP Caching, CDN, cache stampede e arquitetura multi-level"
+track: "backend"
+order: 18
+section: "Escalabilidade"
+priority: "medium"
+tags: ["caching", "redis", "http-cache", "performance", "etag"]
+prerequisites: ["rest-apis"]
+keyTakeaways:
+  - "Cache-Aside é o padrão mais comum: tenta cache primeiro, se miss busca no banco e salva no cache"
+  - "Invalidação de cache é um dos problemas mais difíceis — use TTL, event-driven invalidation ou versioned keys"
+  - "HTTP Caching com Cache-Control e ETag reduz bandwidth e melhora performance no cliente"
+---
+
+## Por Que Cache Existe: A Física da Latência
+
+Antes de qualquer discussão sobre estratégias, você precisa entender **por que** cache é fundamental.
+A diferença entre camadas de armazenamento não é incremental — é **ordens de magnitude**:
+
+| Operação | Latência | Comparação |
+|---|---|---|
+| Referência L1 cache (CPU) | ~1ns | 1 segundo |
+| Referência L2 cache (CPU) | ~4ns | 4 segundos |
+| Referência memória RAM | ~100ns | 1.5 minuto |
+| Leitura SSD (NVMe) | ~150μs | ~2 dias |
+| Round-trip rede (datacenter) | ~500μs | ~6 dias |
+| Leitura disco HDD | ~10ms | ~4 meses |
+| Round-trip internet (São Paulo → Virginia) | ~150ms | ~5 anos |
+
+Quando você busca um dado no PostgreSQL, o melhor caso é ~1ms (dado em buffer cache do OS).
+O caso realista é 5-50ms. Com Redis na mesma rede, são ~0.2-0.5ms.
+Isso é **10-100x mais rápido**. Multiplique por milhares de requests/segundo e a diferença é brutal.
+
+### Lei de Amdahl Aplicada a Cache
+
+A Lei de Amdahl diz que o speedup máximo de um sistema é limitado pela fração que **não** é melhorada.
+Aplicada a caching:
+
+```
+Speedup = 1 / ((1 - hit_rate) + (hit_rate / speedup_factor))
+```
+
+Se seu cache tem **95% hit rate** e o cache é **50x mais rápido** que o banco:
+
+```
+Speedup = 1 / ((1 - 0.95) + (0.95 / 50))
+         = 1 / (0.05 + 0.019)
+         = 1 / 0.069
+         ≈ 14.5x
+```
+
+Mas se o hit rate cai para **80%**:
+
+```
+Speedup = 1 / ((1 - 0.80) + (0.80 / 50))
+         = 1 / (0.20 + 0.016)
+         ≈ 4.6x
+```
+
+A implicação prática: **hit rate é a métrica mais importante do seu cache.** Abaixo de 80%, o retorno começa a não justificar a complexidade operacional adicionada.
+
+---
+
+## Estratégias de Caching
+
+### Cache-Aside (Lazy Loading)
+
+O padrão mais usado. A aplicação gerencia o cache explicitamente — lê do cache, e em caso de miss, busca da origem e popula o cache.
+
+```typescript
+import Redis from 'ioredis';
+import { Pool } from 'pg';
+
+const redis = new Redis({ host: 'redis-primary', port: 6379 });
+const db = new Pool({ connectionString: process.env.DATABASE_URL });
+
+interface User {
+  id: string;
+  name: string;
+  email: string;
+  plan: string;
+}
+
+async function getUser(id: string): Promise<User | null> {
+  const cacheKey = `user:v1:${id}`;
+
+  // 1. Tenta o cache
+  const cached = await redis.get(cacheKey);
+  if (cached) {
+    return JSON.parse(cached) as User; // Cache HIT
+  }
+
+  // 2. Cache MISS — busca na origem
+  const { rows } = await db.query<User>(
+    'SELECT id, name, email, plan FROM users WHERE id = $1',
+    [id]
+  );
+
+  if (rows.length === 0) {
+    // Cache negativo: evita "cache stampede" em IDs inexistentes
+    await redis.set(cacheKey, JSON.stringify(null), 'EX', 60);
+    return null;
+  }
+
+  // 3. Popula o cache com TTL
+  const user = rows[0];
+  await redis.set(cacheKey, JSON.stringify(user), 'EX', 3600);
+
+  return user;
+}
+```
+
+**Vantagens:** simplicidade, resiliência (se o cache cai, a aplicação ainda funciona), só cacheia dados efetivamente lidos.
+
+**Desvantagens:** cold start lento (primeiro request sempre é miss), dados podem ficar stale até o TTL expirar.
+
+### Read-Through
+
+Semelhante ao cache-aside, mas o **cache** é responsável por buscar da origem em caso de miss.
+A aplicação só fala com o cache, nunca diretamente com o banco.
+
+```typescript
+// Abstração de read-through cache
+class ReadThroughCache<T> {
+  constructor(
+    private redis: Redis,
+    private loader: (key: string) => Promise<T | null>,
+    private ttlSeconds: number,
+    private prefix: string
+  ) {}
+
+  async get(key: string): Promise<T | null> {
+    const cacheKey = `${this.prefix}:${key}`;
+    const cached = await this.redis.get(cacheKey);
+
+    if (cached !== null) {
+      return JSON.parse(cached) as T;
+    }
+
+    // O cache gerencia a busca na origem
+    const value = await this.loader(key);
+    if (value !== null) {
+      await this.redis.set(cacheKey, JSON.stringify(value), 'EX', this.ttlSeconds);
+    }
+    return value;
+  }
+}
+
+// Uso: a aplicação não precisa saber de onde vem o dado
+const userCache = new ReadThroughCache<User>(
+  redis,
+  async (id) => {
+    const { rows } = await db.query('SELECT * FROM users WHERE id = $1', [id]);
+    return rows[0] ?? null;
+  },
+  3600,
+  'user:v1'
+);
+
+const user = await userCache.get('abc-123');
+```
+
+### Write-Through
+
+Toda escrita passa pelo cache **antes** de ir para o banco. Garante que o cache está sempre atualizado, mas adiciona latência na escrita.
+
+```typescript
+async function updateUser(id: string, data: Partial<User>): Promise<User> {
+  // 1. Atualiza no banco
+  const { rows } = await db.query<User>(
+    `UPDATE users SET name = COALESCE($2, name), email = COALESCE($3, email)
+     WHERE id = $1 RETURNING *`,
+    [id, data.name, data.email]
+  );
+  const updated = rows[0];
+
+  // 2. Atualiza o cache imediatamente (write-through)
+  const cacheKey = `user:v1:${id}`;
+  await redis.set(cacheKey, JSON.stringify(updated), 'EX', 3600);
+
+  return updated;
+}
+```
+
+**Trade-off:** write latency aumenta (~2x), mas read consistency é perfeita. Ideal quando a relação leitura/escrita é alta (100:1 ou mais).
+
+### Write-Behind (Write-Back)
+
+A escrita vai para o cache **primeiro** e é propagada para o banco **assincronamente**.
+Latência de escrita mínima, mas com risco de perda de dados se o cache falhar antes do flush.
+
+```typescript
+// Escrita vai para o cache + fila de persistência
+async function updateUserWriteBehind(id: string, data: Partial<User>): Promise<void> {
+  const cacheKey = `user:v1:${id}`;
+
+  // Merge com dados existentes no cache
+  const existing = await redis.get(cacheKey);
+  const merged = { ...JSON.parse(existing || '{}'), ...data };
+
+  // Pipeline: atualiza cache + enfileira para persistência
+  const pipeline = redis.pipeline();
+  pipeline.set(cacheKey, JSON.stringify(merged), 'EX', 3600);
+  pipeline.lpush('write_behind:users', JSON.stringify({ id, data, timestamp: Date.now() }));
+  await pipeline.exec();
+}
+
+// Worker separado: consome a fila e persiste no banco
+async function writeBehindWorker(): Promise<void> {
+  while (true) {
+    const item = await redis.brpop('write_behind:users', 5);
+    if (!item) continue;
+
+    const { id, data } = JSON.parse(item[1]);
+    try {
+      await db.query(
+        'UPDATE users SET name = COALESCE($2, name), email = COALESCE($3, email) WHERE id = $1',
+        [id, data.name, data.email]
+      );
+    } catch (err) {
+      // Re-enfileira em caso de falha (com retry limit)
+      await redis.lpush('write_behind:users:dlq', item[1]);
+    }
+  }
+}
+```
+
+**Risco real:** se o Redis reinicia antes do worker persistir, os dados são perdidos.
+Use **AOF com fsync=always** se adotar esse padrão (mais sobre isso adiante).
+
+---
+
+## Invalidação de Cache
+
+> *"There are only two hard things in Computer Science: cache invalidation and naming things."* — Phil Karlton
+
+### TTL-Based (Time-Based Expiration)
+
+A abordagem mais simples. Você aceita que o dado pode ficar stale por até N segundos.
+
+```typescript
+// TTL curto para dados voláteis (preço, estoque)
+await redis.set('product:price:123', '29.90', 'EX', 30);
+
+// TTL longo para dados estáveis (configurações, catálogo)
+await redis.set('config:feature_flags', JSON.stringify(flags), 'EX', 86400);
+```
+
+**Problema:** TTL curto = muitos cache misses. TTL longo = dados stale por muito tempo.
+
+### Event-Driven Invalidation
+
+Quando o dado muda, um evento invalida o cache explicitamente.
+Funciona bem com arquiteturas de mensageria (Kafka, RabbitMQ, etc.).
+
+```typescript
+// Ao atualizar o usuário, publica evento
+async function updateUser(id: string, data: Partial<User>): Promise<void> {
+  await db.query('UPDATE users SET name = $2 WHERE id = $1', [id, data.name]);
+
+  // Publica evento de invalidação
+  await redis.publish('cache:invalidate', JSON.stringify({
+    pattern: `user:*:${id}`,
+    reason: 'user_updated',
+    timestamp: Date.now()
+  }));
+}
+
+// Subscriber: invalida cache ao receber evento
+const subscriber = new Redis();
+subscriber.subscribe('cache:invalidate');
+subscriber.on('message', async (_channel, message) => {
+  const { pattern } = JSON.parse(message);
+  // SCAN + DEL para patterns (KEYS é O(n) e bloqueia)
+  let cursor = '0';
+  do {
+    const [nextCursor, keys] = await redis.scan(cursor, 'MATCH', pattern, 'COUNT', 100);
+    cursor = nextCursor;
+    if (keys.length > 0) {
+      await redis.del(...keys);
+    }
+  } while (cursor !== '0');
+});
+```
+
+### Versioned Keys
+
+Em vez de invalidar, você muda a versão da chave. Dados antigos expiram naturalmente pelo TTL.
+
+```typescript
+// Versão global por entidade
+async function getUserWithVersion(id: string): Promise<User | null> {
+  // A versão muda quando o dado é atualizado
+  const version = await redis.get(`user:version:${id}`) || '1';
+  const cacheKey = `user:v${version}:${id}`;
+
+  const cached = await redis.get(cacheKey);
+  if (cached) return JSON.parse(cached);
+
+  const user = await fetchUserFromDB(id);
+  if (user) {
+    await redis.set(cacheKey, JSON.stringify(user), 'EX', 3600);
+  }
+  return user;
+}
+
+// Invalidação = incrementar versão (chaves antigas expiram sozinhas)
+async function invalidateUser(id: string): Promise<void> {
+  await redis.incr(`user:version:${id}`);
+}
+```
+
+**Vantagem:** sem race conditions na invalidação. **Desvantagem:** memória temporariamente dobrada durante transição de versão.
+
+---
+
+## Redis Internamente
+
+### Single-Threaded Event Loop
+
+Redis processa comandos em uma **única thread** usando um event loop baseado em `epoll`/`kqueue`.
+Não há locks, não há context switching, não há race conditions internas.
+
+Por que isso funciona? Porque o bottleneck do Redis **nunca** é CPU — é I/O de rede e memória.
+Uma única thread Redis satura facilmente **100k+ ops/segundo** em hardware moderno.
+
+A partir do Redis 6, I/O threading foi adicionado: múltiplas threads para ler/escrever sockets, mas o **processamento de comandos continua single-threaded**. Isso é importante para entender a semântica de atomicidade.
+
+### Estruturas de Dados
+
+Redis não é um simples key-value. Cada tipo tem complexidade e uso ideal:
+
+```bash
+# STRING — O(1) para GET/SET. Ideal para cache simples, contadores, flags.
+SET user:123:name "João" EX 3600
+INCR request_count
+SETEX session:abc "data..." 1800
+
+# LIST — O(1) para push/pop nas extremidades. Ideal para filas, logs recentes.
+LPUSH notifications:user:123 '{"type":"order","id":"456"}'
+LRANGE notifications:user:123 0 9      # últimas 10
+LTRIM notifications:user:123 0 99      # mantém só as 100 mais recentes
+
+# SET — O(1) para add/remove/check. Ideal para membership, tags, deduplicação.
+SADD online_users "user:123" "user:456"
+SISMEMBER online_users "user:123"       # O(1) membership check
+SINTER premium_users online_users       # interseção de conjuntos
+
+# SORTED SET (ZSET) — O(log N). Ideal para rankings, rate limiting, timelines.
+ZADD leaderboard 9500 "player:1" 8700 "player:2" 12000 "player:3"
+ZREVRANGE leaderboard 0 9 WITHSCORES   # top 10
+ZRANGEBYSCORE events 1708000000 1708100000  # range por timestamp
+
+# HASH — O(1) por campo. Ideal para objetos estruturados (mais eficiente em memória que JSON em STRING).
+HSET user:123 name "Maria" email "maria@email.com" plan "premium"
+HGET user:123 plan                      # busca um campo específico
+HINCRBY user:123 login_count 1          # incremento atômico de campo
+
+# STREAM — Log append-only com consumer groups. Ideal para event sourcing, mensageria.
+XADD events * type "order_created" order_id "789"
+XREAD COUNT 10 STREAMS events 0        # lê do início
+XREADGROUP GROUP workers consumer1 COUNT 1 STREAMS events >
+```
+
+---
+
+## Redis Como Cache
+
+### Comandos Essenciais
+
+```typescript
+// SETEX: set + expire atômico (evita race condition de SET + EXPIRE separados)
+await redis.setex('session:abc', 1800, JSON.stringify(sessionData));
+
+// SET com opções (Redis 6.2+)
+// NX = só se não existir, XX = só se já existir, GET = retorna valor anterior
+await redis.set('lock:resource', 'owner123', 'EX', 30, 'NX');
+
+// EXPIRE: define TTL em chave existente
+await redis.expire('user:123', 3600);
+
+// TTL: verifica tempo restante (-1 = sem TTL, -2 = chave não existe)
+const ttl = await redis.ttl('user:123');
+
+// PERSIST: remove TTL (cuidado! dado fica para sempre)
+await redis.persist('important:config');
+```
+
+### Políticas de Eviction
+
+Quando o Redis atinge `maxmemory`, ele precisa decidir o que remover. A política é configurada via `maxmemory-policy`:
+
+| Política | Comportamento |
+|---|---|
+| **noeviction** | Retorna erro em escritas (padrão). Bom para data store. |
+| **allkeys-lru** | Remove a chave menos recentemente usada. **Recomendado para cache.** |
+| **allkeys-lfu** | Remove a chave menos frequentemente usada (Redis 4.0+). Melhor para workloads com hot keys. |
+| **volatile-lru** | LRU apenas entre chaves com TTL definido. |
+| **volatile-lfu** | LFU apenas entre chaves com TTL definido. |
+| **volatile-ttl** | Remove chaves com TTL mais próximo de expirar. |
+| **allkeys-random** | Remoção aleatória. Útil quando todas as chaves têm importância igual. |
+
+```bash
+# redis.conf
+maxmemory 2gb
+maxmemory-policy allkeys-lfu
+
+# LFU tuning (Redis 4.0+)
+lfu-log-factor 10        # fator logarítmico do contador de frequência
+lfu-decay-time 1         # minutos para decaimento do contador
+```
+
+**Na prática:** `allkeys-lfu` é quase sempre melhor que `allkeys-lru` para cache, porque protege hot keys mesmo que não tenham sido acessadas nos últimos segundos. LRU é vulnerável a **cache pollution** — um scan sequencial de chaves frias pode expulsar chaves quentes.
+
+---
+
+## Redis Como Data Store
+
+### Persistência: RDB vs AOF
+
+**RDB (Redis Database):** snapshots periódicos do dataset inteiro.
+
+```bash
+# redis.conf — RDB
+save 900 1       # snapshot se >= 1 chave mudou em 900 segundos
+save 300 10      # snapshot se >= 10 chaves mudaram em 300 segundos
+save 60 10000    # snapshot se >= 10000 chaves mudaram em 60 segundos
+rdbcompression yes
+rdbchecksum yes
+```
+
+**AOF (Append Only File):** log de toda operação de escrita.
+
+```bash
+# redis.conf — AOF
+appendonly yes
+appendfsync everysec   # fsync a cada segundo (bom trade-off)
+# appendfsync always   # fsync a cada escrita (mais seguro, mais lento)
+# appendfsync no       # deixa o OS decidir (mais rápido, menos seguro)
+
+# AOF rewrite: compacta o log periodicamente
+auto-aof-rewrite-percentage 100
+auto-aof-rewrite-min-size 64mb
+```
+
+| Aspecto | RDB | AOF |
+|---|---|---|
+| Perda de dados | Até o último snapshot (minutos) | Até 1 segundo (`everysec`) |
+| Performance | Melhor (fork periódico) | Pior (fsync contínuo) |
+| Tamanho em disco | Menor (compactado) | Maior (log de operações) |
+| Restart time | Rápido | Mais lento (replay do log) |
+
+**Recomendação de produção:** use **ambos**. RDB para backups rápidos e disaster recovery, AOF para durabilidade máxima.
+
+### Replicação (Master-Replica)
+
+```bash
+# No replica (redis.conf)
+replicaof redis-primary 6379
+
+# Leitura distribuída: réplicas para reads, primary para writes
+# IMPORTANTE: replicação é assíncrona por padrão — pode haver lag
+```
+
+```typescript
+import Redis from 'ioredis';
+
+// Configuração com read replicas
+const master = new Redis({ host: 'redis-primary', port: 6379 });
+const replica = new Redis({ host: 'redis-replica-1', port: 6379, readOnly: true });
+
+// Writes vão para o master
+await master.set('key', 'value');
+
+// Reads podem ir para réplicas (eventual consistency)
+const value = await replica.get('key');
+```
+
+### Redis Sentinel
+
+Sentinel monitora instâncias Redis e faz **failover automático** quando o master cai.
+
+```typescript
+// Conexão via Sentinel — failover é transparente para a aplicação
+const redis = new Redis({
+  sentinels: [
+    { host: 'sentinel-1', port: 26379 },
+    { host: 'sentinel-2', port: 26379 },
+    { host: 'sentinel-3', port: 26379 },
+  ],
+  name: 'mymaster', // nome do grupo sentinel
+  sentinelRetryStrategy: (times) => Math.min(times * 100, 3000),
+});
+```
+
+---
+
+## Redis Cluster
+
+Para escalar **além de uma máquina**, Redis Cluster particiona dados em **16384 hash slots**.
+
+Cada chave é mapeada para um slot via `CRC16(key) % 16384`. Cada nó do cluster é responsável por um subconjunto dos slots.
+
+```
+Nó A: slots 0-5460
+Nó B: slots 5461-10922
+Nó C: slots 10923-16383
+```
+
+```typescript
+import Redis from 'ioredis';
+
+const cluster = new Redis.Cluster([
+  { host: 'redis-node-1', port: 6379 },
+  { host: 'redis-node-2', port: 6379 },
+  { host: 'redis-node-3', port: 6379 },
+], {
+  redisOptions: { password: process.env.REDIS_PASSWORD },
+  // Retry em MOVED/ASK redirects (resharding em andamento)
+  retryDelayOnMoved: 100,
+  retryDelayOnFailover: 200,
+  scaleReads: 'slave', // leituras vão para réplicas
+});
+
+// Hash tags: forçar chaves no mesmo slot (necessário para operações multi-key)
+// {user:123}:profile e {user:123}:sessions vão para o MESMO slot
+await cluster.set('{user:123}:profile', JSON.stringify(profile));
+await cluster.set('{user:123}:sessions', JSON.stringify(sessions));
+
+// Agora podemos usar MGET (multi-key exige mesmo slot)
+const [profile, sessions] = await cluster.mget(
+  '{user:123}:profile',
+  '{user:123}:sessions'
+);
+```
+
+**Limitações do Cluster:** operações multi-key só funcionam se todas as chaves estiverem no mesmo slot. Lua scripts também têm essa restrição. `KEYS` e `SCAN` são por nó, não globais.
+
+---
+
+## Padrões Avançados
+
+### Distributed Locking (Redlock)
+
+Lock distribuído para coordenar acesso a recursos compartilhados entre múltiplas instâncias.
+
+```typescript
+import Redlock from 'redlock';
+import Redis from 'ioredis';
+
+// Redlock requer N instâncias independentes (não réplicas)
+const redlock = new Redlock(
+  [new Redis(6379), new Redis(6380), new Redis(6381)],
+  {
+    retryCount: 3,
+    retryDelay: 200,       // ms entre retries
+    retryJitter: 100,      // jitter aleatório para evitar thundering herd
+    automaticExtensionThreshold: 500, // auto-extend antes de expirar
+  }
+);
+
+async function processPayment(orderId: string): Promise<void> {
+  let lock;
+  try {
+    // Adquire lock com TTL de 10 segundos
+    lock = await redlock.acquire([`lock:payment:${orderId}`], 10_000);
+
+    // Seção crítica: apenas uma instância processa o pagamento
+    const order = await getOrder(orderId);
+    if (order.status !== 'pending') return;
+
+    await chargePayment(order);
+    await updateOrderStatus(orderId, 'paid');
+  } catch (err) {
+    if (err instanceof Redlock.LockError) {
+      // Outra instância já está processando — isso é esperado
+      console.log(`Lock não adquirido para order ${orderId}`);
+      return;
+    }
+    throw err;
+  } finally {
+    if (lock) await lock.release();
+  }
+}
+```
+
+### Rate Limiting (Sliding Window com Sorted Sets)
+
+```typescript
+async function slidingWindowRateLimit(
+  userId: string,
+  windowMs: number,
+  maxRequests: number
+): Promise<{ allowed: boolean; remaining: number; retryAfter?: number }> {
+  const key = `ratelimit:${userId}`;
+  const now = Date.now();
+  const windowStart = now - windowMs;
+
+  // Pipeline atômico: remove antigos, adiciona novo, conta, define TTL
+  const pipeline = redis.pipeline();
+  pipeline.zremrangebyscore(key, 0, windowStart);   // remove fora da janela
+  pipeline.zadd(key, now.toString(), `${now}:${Math.random()}`); // adiciona request atual
+  pipeline.zcard(key);                                // conta requests na janela
+  pipeline.pexpire(key, windowMs);                    // TTL = tamanho da janela
+  const results = await pipeline.exec();
+
+  const requestCount = results![2][1] as number;
+  const allowed = requestCount <= maxRequests;
+
+  if (!allowed) {
+    // Calcula quando o request mais antigo sai da janela
+    const oldestInWindow = await redis.zrange(key, 0, 0, 'WITHSCORES');
+    const retryAfter = oldestInWindow.length >= 2
+      ? parseInt(oldestInWindow[1]) + windowMs - now
+      : windowMs;
+
+    return { allowed: false, remaining: 0, retryAfter };
+  }
+
+  return { allowed: true, remaining: maxRequests - requestCount };
+}
+```
+
+### Pub/Sub
+
+```typescript
+// Publisher: notifica eventos em tempo real
+async function onOrderCreated(order: Order): Promise<void> {
+  await redis.publish('orders:created', JSON.stringify({
+    orderId: order.id,
+    userId: order.userId,
+    total: order.total,
+    timestamp: Date.now()
+  }));
+}
+
+// Subscriber: reage a eventos (outro serviço/processo)
+const subscriber = new Redis();
+await subscriber.subscribe('orders:created', 'orders:cancelled');
+subscriber.on('message', (channel, message) => {
+  const event = JSON.parse(message);
+  switch (channel) {
+    case 'orders:created':
+      sendConfirmationEmail(event);
+      updateAnalytics(event);
+      break;
+    case 'orders:cancelled':
+      processRefund(event);
+      break;
+  }
+});
+```
+
+**Atenção:** Pub/Sub do Redis é fire-and-forget. Se o subscriber estava desconectado, mensagens são perdidas. Para mensageria durável, use **Redis Streams** ou um message broker dedicado (Kafka, RabbitMQ).
+
+---
+
+## Cache Stampede (Thundering Herd)
+
+Quando uma chave popular expira, **centenas de requests simultâneos** têm cache miss e todos vão para o banco ao mesmo tempo. O banco sobrecarrega, requests falham, e o cache não é repopulado — loop de morte.
+
+### Solução 1: Probabilistic Early Expiration (XFetch)
+
+Cada request tem uma **probabilidade crescente** de recomputar o valor **antes** do TTL expirar.
+Quanto mais perto da expiração, maior a chance de um request se voluntariar para recomputar.
+
+```typescript
+async function xfetch<T>(
+  key: string,
+  loader: () => Promise<T>,
+  ttlSeconds: number,
+  beta: number = 1.0 // fator de antecipação (maior = recomputa mais cedo)
+): Promise<T> {
+  const raw = await redis.get(key);
+
+  if (raw) {
+    const { value, delta, expiry } = JSON.parse(raw);
+    const now = Date.now() / 1000;
+
+    // Probabilistic early expiration
+    // delta = tempo que levou para computar o valor na última vez
+    // Quanto mais perto da expiração E quanto mais lento o recompute, maior a chance
+    const shouldRecompute = (now - delta * beta * Math.log(Math.random())) >= expiry;
+
+    if (!shouldRecompute) {
+      return value as T;
+    }
+  }
+
+  // Recomputa o valor
+  const start = Date.now();
+  const value = await loader();
+  const delta = (Date.now() - start) / 1000;
+  const expiry = Date.now() / 1000 + ttlSeconds;
+
+  await redis.set(key, JSON.stringify({ value, delta, expiry }), 'EX', ttlSeconds + 60);
+
+  return value;
+}
+```
+
+### Solução 2: Mutex Lock
+
+Apenas um request recomputa; os demais esperam ou recebem valor stale.
+
+```typescript
+async function getWithLock<T>(
+  key: string,
+  loader: () => Promise<T>,
+  ttlSeconds: number
+): Promise<T | null> {
+  const cached = await redis.get(key);
+  if (cached) return JSON.parse(cached);
+
+  const lockKey = `lock:${key}`;
+  // Tenta adquirir o lock (NX = só se não existe)
+  const acquired = await redis.set(lockKey, '1', 'EX', 10, 'NX');
+
+  if (acquired) {
+    try {
+      // Este request recomputa o valor
+      const value = await loader();
+      await redis.set(key, JSON.stringify(value), 'EX', ttlSeconds);
+      return value;
+    } finally {
+      await redis.del(lockKey);
+    }
+  }
+
+  // Não adquiriu o lock — espera e tenta de novo
+  await new Promise((r) => setTimeout(r, 100));
+  const retried = await redis.get(key);
+  return retried ? JSON.parse(retried) : null;
+}
+```
+
+### Solução 3: Stale-While-Revalidate
+
+Retorna o valor stale imediatamente e recomputa em background.
+
+```typescript
+async function staleWhileRevalidate<T>(
+  key: string,
+  loader: () => Promise<T>,
+  freshTtl: number,
+  staleTtl: number
+): Promise<T | null> {
+  const raw = await redis.get(key);
+  if (!raw) {
+    // Cache completamente vazio — busca síncrona
+    const value = await loader();
+    const wrapped = { value, fetchedAt: Date.now() };
+    await redis.set(key, JSON.stringify(wrapped), 'EX', freshTtl + staleTtl);
+    return value;
+  }
+
+  const { value, fetchedAt } = JSON.parse(raw);
+  const age = (Date.now() - fetchedAt) / 1000;
+
+  if (age > freshTtl) {
+    // Dado stale — retorna imediatamente, revalida em background
+    setImmediate(async () => {
+      const fresh = await loader();
+      const wrapped = { value: fresh, fetchedAt: Date.now() };
+      await redis.set(key, JSON.stringify(wrapped), 'EX', freshTtl + staleTtl);
+    });
+  }
+
+  return value;
+}
+```
+
+---
+
+## HTTP Caching
+
+### Cache-Control
+
+O header `Cache-Control` é o mecanismo primário de HTTP caching. Cada diretiva tem semântica precisa:
+
+```typescript
+import express from 'express';
+
+const app = express();
+
+// Recurso público estático — CDN e browser podem cachear
+app.get('/api/v1/products', (req, res) => {
+  res.set('Cache-Control', 'public, max-age=300, s-maxage=600, stale-while-revalidate=60');
+  // public: qualquer cache intermediário pode armazenar
+  // max-age=300: browser cacheia por 5 minutos
+  // s-maxage=600: CDN/proxy cacheia por 10 minutos (sobrescreve max-age para shared caches)
+  // stale-while-revalidate=60: pode servir stale por 60s enquanto revalida em background
+  res.json(products);
+});
+
+// Recurso privado — só o browser do usuário pode cachear
+app.get('/api/v1/me/profile', (req, res) => {
+  res.set('Cache-Control', 'private, max-age=60, must-revalidate');
+  // private: CDNs NÃO podem cachear (dado específico do usuário)
+  // must-revalidate: quando expira, DEVE revalidar antes de usar stale
+  res.json(userProfile);
+});
+
+// Sem cache — revalida SEMPRE (mas pode usar 304 Not Modified)
+app.get('/api/v1/account/balance', (req, res) => {
+  res.set('Cache-Control', 'no-cache');
+  // no-cache NÃO significa "não cacheia" — significa "sempre revalide com o servidor"
+  // O browser armazena, mas checa com If-None-Match/If-Modified-Since antes de usar
+  res.json(balance);
+});
+
+// Realmente sem cache — nada é armazenado
+app.get('/api/v1/auth/token', (req, res) => {
+  res.set('Cache-Control', 'no-store');
+  // no-store: nenhum cache (browser, CDN, proxy) pode armazenar a resposta
+  // Use para dados sensíveis (tokens, dados financeiros)
+  res.json(token);
+});
+```
+
+### ETag e Conditional Requests
+
+```typescript
+import crypto from 'crypto';
+
+app.get('/api/v1/products/:id', (req, res) => {
+  const product = getProduct(req.params.id);
+  if (!product) return res.status(404).json({ error: 'Not found' });
+
+  // ETag: hash do conteúdo (fingerprint)
+  const etag = `"${crypto.createHash('sha256').update(JSON.stringify(product)).digest('hex').substring(0, 16)}"`;
+  res.set('ETag', etag);
+  res.set('Cache-Control', 'private, max-age=0, must-revalidate');
+
+  // Conditional request: If-None-Match
+  if (req.headers['if-none-match'] === etag) {
+    // O cliente já tem a versão atual — economiza bandwidth
+    return res.status(304).end();
+  }
+
+  res.json(product);
+});
+
+// Fluxo completo:
+// 1. GET /api/v1/products/123 → 200 OK + ETag: "abc123" + body
+// 2. GET /api/v1/products/123 + If-None-Match: "abc123" → 304 Not Modified (sem body)
+// 3. Produto atualizado: GET + If-None-Match: "abc123" → 200 OK + ETag: "def456" + novo body
+```
+
+---
+
+## CDN Caching
+
+### Edge vs Origin
+
+```
+Cliente → CDN Edge (São Paulo) → CDN Origin Shield (Virginia) → Seu Servidor
+         ~5ms                     ~150ms                         ~50ms
+
+Com cache no edge: Cliente → CDN Edge → resposta em ~5ms
+```
+
+### Cache Keys e Vary Header
+
+```typescript
+// O Vary header diz ao CDN: "a resposta MUDA dependendo destes headers do request"
+app.get('/api/v1/feed', (req, res) => {
+  res.set('Vary', 'Accept-Language, Accept-Encoding');
+  // CDN armazena variantes separadas:
+  // /api/v1/feed + Accept-Language: pt-BR → variante 1
+  // /api/v1/feed + Accept-Language: en-US → variante 2
+
+  res.set('Cache-Control', 'public, s-maxage=300');
+  res.json(getFeed(req.headers['accept-language']));
+});
+
+// CUIDADO com Vary: Authorization
+// Se você fizer Vary: Authorization, cada token gera uma entrada de cache diferente
+// Isso efetivamente desabilita o CDN cache — use Cache-Control: private em vez disso
+
+// Surrogate-Key: invalidação granular em CDNs como Fastly/Varnish
+app.get('/api/v1/products/:id', (req, res) => {
+  res.set('Surrogate-Key', `product-${req.params.id} products-list`);
+  res.set('Cache-Control', 'public, s-maxage=86400');
+  // Para invalidar: PURGE com Surrogate-Key "product-123"
+  // Isso invalida todas as URLs que têm essa tag, sem precisar saber as URLs
+  res.json(product);
+});
+```
+
+### Purge e Invalidação de CDN
+
+```typescript
+// Exemplo com Fastly API
+async function purgeByTag(tag: string): Promise<void> {
+  await fetch(`https://api.fastly.com/service/${FASTLY_SERVICE_ID}/purge/${tag}`, {
+    method: 'POST',
+    headers: { 'Fastly-Key': FASTLY_API_KEY }
+  });
+}
+
+// Ao atualizar um produto, invalida no CDN e no Redis
+async function updateProduct(id: string, data: Partial<Product>): Promise<void> {
+  await db.query('UPDATE products SET name = $2 WHERE id = $1', [id, data.name]);
+
+  await Promise.all([
+    redis.del(`product:v1:${id}`),           // invalida Redis
+    purgeByTag(`product-${id}`),              // invalida CDN
+    purgeByTag('products-list'),              // invalida listagens
+  ]);
+}
+```
+
+---
+
+## Multi-Level Caching
+
+A arquitetura mais robusta combina múltiplas camadas, cada uma com características diferentes:
+
+```
+L1: In-Process (Map/LRU)  →  ~0.001ms  →  Quente, pequeno, por instância
+L2: Redis                  →  ~0.5ms    →  Compartilhado, médio, distribuído
+L3: CDN Edge               →  ~5ms      →  Global, grande, geográfico
+L4: Origin Server          →  ~50ms     →  Fonte da verdade
+```
+
+```typescript
+import { LRUCache } from 'lru-cache';
+
+// L1: Cache em memória do processo (não compartilhado entre instâncias)
+const l1Cache = new LRUCache<string, unknown>({
+  max: 1000,
+  ttl: 30_000, // 30 segundos (curto — evitar stale entre instâncias)
+});
+
+// L2: Redis (compartilhado entre todas as instâncias)
+const l2Cache = redis;
+
+async function multiLevelGet<T>(
+  key: string,
+  loader: () => Promise<T>,
+  options: { l1Ttl: number; l2Ttl: number }
+): Promise<T> {
+  // L1: check in-process memory
+  const l1 = l1Cache.get(key) as T | undefined;
+  if (l1 !== undefined) return l1;
+
+  // L2: check Redis
+  const l2 = await l2Cache.get(key);
+  if (l2 !== null) {
+    const parsed = JSON.parse(l2) as T;
+    l1Cache.set(key, parsed, { ttl: options.l1Ttl });
+    return parsed;
+  }
+
+  // L3/L4: busca na origem
+  const value = await loader();
+
+  // Popula L2 e L1
+  await l2Cache.set(key, JSON.stringify(value), 'EX', options.l2Ttl / 1000);
+  l1Cache.set(key, value, { ttl: options.l1Ttl });
+
+  return value;
+}
+
+// Invalidação multi-level: precisa limpar TODAS as camadas
+async function multiLevelInvalidate(key: string): Promise<void> {
+  l1Cache.delete(key); // L1 local
+
+  // L1 de OUTRAS instâncias: notifica via pub/sub
+  await redis.publish('cache:invalidate:l1', key);
+
+  // L2
+  await redis.del(key);
+}
+
+// Cada instância escuta invalidações de L1
+const subscriber = new Redis();
+subscriber.subscribe('cache:invalidate:l1');
+subscriber.on('message', (_channel, key) => {
+  l1Cache.delete(key);
+});
+```
+
+**Problema sutil:** com L1 por instância, durante um deploy rolling, instâncias novas têm L1 frio enquanto instâncias antigas têm L1 quente. Isso causa distribuição desigual de carga no Redis. Mitigue com warm-up ou preloading.
+
+---
+
+## Métricas: O Que Monitorar
+
+Sem métricas, cache é um palpite. As quatro métricas fundamentais:
+
+```typescript
+// Middleware de métricas para cache Redis
+class CacheMetrics {
+  private hits = 0;
+  private misses = 0;
+  private evictions = 0;
+  private latencies: number[] = [];
+
+  async get<T>(key: string): Promise<{ value: T | null; hit: boolean }> {
+    const start = performance.now();
+    const raw = await redis.get(key);
+    const latency = performance.now() - start;
+
+    this.latencies.push(latency);
+
+    if (raw !== null) {
+      this.hits++;
+      return { value: JSON.parse(raw), hit: true };
+    }
+
+    this.misses++;
+    return { value: null, hit: false };
+  }
+
+  getStats() {
+    const total = this.hits + this.misses;
+    const sorted = [...this.latencies].sort((a, b) => a - b);
+
+    return {
+      hitRate: total > 0 ? (this.hits / total) * 100 : 0,
+      missRate: total > 0 ? (this.misses / total) * 100 : 0,
+      totalRequests: total,
+      p50Latency: sorted[Math.floor(sorted.length * 0.50)] ?? 0,
+      p95Latency: sorted[Math.floor(sorted.length * 0.95)] ?? 0,
+      p99Latency: sorted[Math.floor(sorted.length * 0.99)] ?? 0,
+    };
+  }
+}
+```
+
+```bash
+# Métricas diretas do Redis (via redis-cli INFO)
+redis-cli INFO stats | grep -E "keyspace_hits|keyspace_misses|evicted_keys"
+
+# keyspace_hits:2847291       → total de cache hits desde o início
+# keyspace_misses:183742      → total de cache misses
+# evicted_keys:0              → chaves removidas por maxmemory (0 é bom)
+
+# Hit rate = hits / (hits + misses) = 2847291 / 3031033 = 93.9%
+
+# Memória
+redis-cli INFO memory | grep -E "used_memory_human|maxmemory_human|mem_fragmentation_ratio"
+
+# used_memory_human:1.2G      → memória usada
+# maxmemory_human:2G          → limite configurado
+# mem_fragmentation_ratio:1.1  → ratio ideal entre 1.0-1.5 (>2.0 = problema)
+```
+
+### Alertas Recomendados
+
+| Métrica | Threshold de alerta | Por quê |
+|---|---|---|
+| Hit rate | < 80% | Cache não está sendo efetivo |
+| p99 latência | > 10ms | Possível saturação ou problema de rede |
+| Eviction rate | > 100/s | `maxmemory` muito baixo ou cache pollution |
+| Memória usada | > 85% de maxmemory | Risco de evictions agressivas |
+| Connected clients | > 80% de maxclients | Risco de connection refused |
+| Replication lag | > 1s | Réplicas servindo dados muito stale |

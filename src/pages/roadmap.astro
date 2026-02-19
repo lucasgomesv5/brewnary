@@ -1,0 +1,136 @@
+---
+import MainLayout from '../layouts/MainLayout.astro';
+import { tracks } from '../lib/tracks';
+---
+
+<MainLayout
+  title="Visão Geral"
+  description="Visão geral da estrutura de conteúdo — fundamentos, backend, frontend, devops, infra e carreira."
+>
+  <div class="mx-auto max-w-4xl px-4 py-12 sm:px-6">
+    <div class="mb-12">
+      <h1 class="mb-3 text-3xl font-bold tracking-tight sm:text-4xl">Visão Geral</h1>
+      <p class="max-w-lg text-sm text-[var(--color-text-muted)]">
+        Estrutura do conteúdo organizada em módulos progressivos. Cada módulo constrói sobre o conhecimento do anterior.
+      </p>
+    </div>
+
+    <div class="space-y-6">
+      {
+        [
+          {
+            n: 1,
+            title: 'Fundamentos de Ciência da Computação',
+            description:
+              'Complexidade algorítmica, estruturas de dados, algoritmos clássicos, redes TCP/IP, sistemas operacionais e design patterns.',
+            tracks: [tracks[0]],
+            topics: [
+              'Notação assintótica (Big O)',
+              'Estruturas de dados (arrays, listas, hash tables, árvores, grafos)',
+              'Algoritmos de busca e ordenação',
+              'Redes e protocolos',
+              'Design patterns fundamentais',
+            ],
+          },
+          {
+            n: 2,
+            title: 'Backend & Frontend',
+            description:
+              'Desenvolvimento de aplicações completas. Backend com Node.js, SQL/NoSQL, APIs. Frontend com DOM, CSS avançado, JavaScript profundo e React.',
+            tracks: [tracks[1], tracks[2]],
+            topics: [
+              'Event loop, streams e clustering',
+              'Modelagem relacional e índices',
+              'REST, autenticação, segurança',
+              'Box model, flexbox, grid',
+              'Closures, prototypes, async/await',
+            ],
+          },
+          {
+            n: 3,
+            title: 'DevOps & Integração',
+            description: 'Ferramentas e práticas de produção. Git avançado, containers, CI/CD, cloud e monitoramento.',
+            tracks: [tracks[3]],
+            topics: [
+              'Git rebase, bisect, branching strategies',
+              'Docker & Docker Compose',
+              'GitHub Actions CI/CD',
+              'AWS fundamentos',
+              'Observabilidade e health checks',
+            ],
+          },
+          {
+            n: 4,
+            title: 'Infraestrutura',
+            description: 'Operações em escala. Containers avançados, orquestração, IaC e cloud deep dive.',
+            tracks: [tracks[4]],
+            topics: [
+              'Docker multi-stage e networking',
+              'Kubernetes deployments e services',
+              'AWS VPC, S3, RDS, Lambda',
+              'Terraform',
+              'CI/CD blue-green e canary',
+            ],
+          },
+          {
+            n: 5,
+            title: 'Inteligência Artificial',
+            description: 'Fundamentos de IA, redes neurais, deep learning, LLMs, agentes de IA e prompt engineering.',
+            tracks: [tracks[5]],
+            topics: [
+              'Fundamentos e história da IA',
+              'Matemática essencial (álgebra linear, cálculo)',
+              'Redes neurais e deep learning',
+              'LLMs, tokenização e fine-tuning',
+              'Agentes de IA e prompt engineering',
+            ],
+          },
+          {
+            n: 6,
+            title: 'Engenharia & Práticas',
+            description:
+              'Princípios de engenharia de software, documentação técnica, entrevistas e aprendizado contínuo.',
+            tracks: [tracks[6]],
+            topics: [
+              'ADRs e RFCs',
+              'Code review',
+              'Princípios SOLID',
+              'System design interviews',
+              'Leitura de código e open source',
+            ],
+          },
+        ].map((item) => (
+          <div class="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-alt)] p-6">
+            <div class="mb-3 flex items-center gap-3">
+              <span class="font-mono text-xs text-[var(--color-text-muted)]">{String(item.n).padStart(2, '0')}</span>
+              <h2 class="text-lg font-bold">{item.title}</h2>
+            </div>
+
+            <p class="mb-4 text-sm text-[var(--color-text-muted)]">{item.description}</p>
+
+            <div class="mb-4 grid grid-cols-1 gap-1.5 sm:grid-cols-2">
+              {item.topics.map((topic) => (
+                <div class="flex items-center gap-2 text-xs text-[var(--color-text-muted)]">
+                  <span class="h-1 w-1 shrink-0 rounded-full bg-[var(--color-border)]" />
+                  {topic}
+                </div>
+              ))}
+            </div>
+
+            <div class="flex gap-2">
+              {item.tracks.map((track) => (
+                <a
+                  href={`/trilha/${track.id}`}
+                  class="inline-flex items-center gap-1.5 rounded border border-[var(--color-border)] px-2.5 py-1 text-xs transition-colors hover:border-[var(--color-text-muted)]"
+                >
+                  <span class="h-1.5 w-1.5 rounded-full" style={`background-color: ${track.color}`} />
+                  {track.shortTitle}
+                </a>
+              ))}
+            </div>
+          </div>
+        ))
+      }
+    </div>
+  </div>
+</MainLayout>

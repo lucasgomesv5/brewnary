@@ -1,0 +1,702 @@
+---
+title: "Especificidade CSS e CSS Moderno"
+description: "Domine a cascade, especificidade, layers, custom properties e técnicas modernas de CSS"
+track: "frontend"
+order: 5
+section: "CSS"
+priority: "high"
+tags: ["css", "especificidade", "seletores", "boas-praticas"]
+prerequisites: ["css-box-model-flexbox"]
+keyTakeaways:
+  - "Especificidade NÃO é base 10 — é uma tupla de categorias independentes"
+  - "Cascade Layers (@layer) dão controle explícito sobre a ordem de prioridade"
+  - ":where() tem especificidade zero, :is() herda a maior do grupo, :has() é relacional"
+---
+
+## A Cascade — Como o Browser Resolve Conflitos
+
+Quando múltiplas regras CSS apontam para o mesmo elemento e propriedade, o browser
+segue um algoritmo preciso para decidir qual regra vence. Essa é **a cascade**.
+
+```
+ORDEM DE RESOLUÇÃO DA CASCADE (da mais fraca à mais forte):
+═══════════════════════════════════════════════════════════
+
+  1. ORIGIN & IMPORTANCE (de onde vem a regra)
+  ────────────────────────────────────────────
+     ① User-agent stylesheet       (estilos padrão do browser)
+     ② User stylesheet             (estilos do usuário, ex: extensões)
+     ③ Author stylesheet           (seu CSS)
+     ④ Author !important           (seu CSS com !important)
+     ⑤ User !important             (extensões com !important)
+     ⑥ User-agent !important       (browser com !important)
+     ⑦ Transitions                 (animações em transição)
+     ⑧ Animations                  (animações @keyframes)
+
+     Nota: !important INVERTE a ordem de prioridade!
+     Author normal < Author !important
+     MAS: Author !important < User !important < UA !important
+
+  2. CASCADE LAYERS (@layer)
+  ────────────────────────────────────────────
+     Dentro do mesmo origin, layers são resolvidos.
+     (detalhado na seção abaixo)
+
+  3. SPECIFICITY (peso do seletor)
+  ────────────────────────────────────────────
+     Dentro da mesma layer e origin, especificidade decide.
+
+  4. SOURCE ORDER (ordem no código)
+  ────────────────────────────────────────────
+     Mesmo origin, layer e especificidade → último declarado vence.
+```
+
+---
+
+## Cálculo de Especificidade — NÃO É Base 10!
+
+A especificidade é uma **tupla de três categorias** (A, B, C). Cada categoria é
+independente — 11 classes **nunca** vencem 1 ID. Isso é um erro comum.
+
+```
+Especificidade = (A, B, C)
+
+  A = número de seletores de ID              (#menu, #nav)
+  B = número de classes, atributos e         (.active, [type="text"],
+      pseudo-classes                          :hover, :nth-child(2))
+  C = número de elementos e                  (div, h1, ::before,
+      pseudo-elementos                        ::after, ::placeholder)
+
+  Combinadores NÃO contam:  >, +, ~, espaço, ||
+  Seletor universal NÃO conta:  *
+  :not() e :is() → contam o seletor INTERNO mais específico
+  :where() → SEMPRE especificidade zero (independente do conteúdo)
+
+EXEMPLOS:
+─────────────────────────────────────────────────────────────
+  Seletor                            (A, B, C)   Especificidade
+  ─────────────────────────────────  ─────────   ──────────────
+  *                                  (0, 0, 0)   zero
+  h1                                 (0, 0, 1)
+  h1 + p                             (0, 0, 2)
+  .nav .link                         (0, 2, 0)
+  .nav .link:hover                   (0, 3, 0)
+  #menu a                            (1, 0, 1)
+  #menu .link                        (1, 1, 0)
+  div#menu .link[href]               (1, 2, 1)
+  style=""  (inline)                  ── inline sempre vence seletores ──
+
+COMPARAÇÃO (categoria por categoria, da esquerda para direita):
+  #menu a           (1, 0, 1)
+  .nav .link:hover  (0, 3, 0)   ← 0 < 1 no A → PERDE
+
+  .a.b.c.d.e.f.g.h.i.j.k   (0, 11, 0)
+  #single                   (1,  0, 0)   ← 11 classes PERDEM para 1 ID!
+
+  Isso prova que NÃO é base 10. Cada categoria é independente.
+```
+
+### !important — Último Recurso
+
+```css
+/*
+  !important escapa da especificidade normal.
+  Vai para uma camada separada na cascade (origin importance).
+
+  Legítimo usar quando:
+  • Override de estilos de terceiros que você não controla
+  • Utility classes (ex: .hidden { display: none !important; })
+  • Estilos de acessibilidade que DEVEM prevalecer
+
+  NUNCA use para:
+  • "Vencer" outro seletor seu (refatore o seletor!)
+  • Resolver conflitos em código que você controla
+*/
+
+/* Se dois !important conflitam, a especificidade NORMAL decide entre eles */
+.nav .link { color: blue !important; }   /* (0, 2, 0) !important */
+#menu a    { color: red !important; }     /* (1, 0, 1) !important ← vence */
+```
+
+---
+
+## Cascade Layers (@layer) — Controle Explícito de Prioridade
+
+Layers adicionam uma **nova camada** na cascade, entre origin e especificidade.
+Permitem definir a **ordem de prioridade** de grupos inteiros de estilos.
+
+```css
+/*
+  ORDEM DAS LAYERS (declarada explicitamente):
+  A primeira @layer declarada tem a MENOR prioridade.
+  A última tem a MAIOR.
+  Estilos SEM layer (unlayered) vencem TODAS as layers!
+*/
+
+/* Declarar ordem (sem estilos — só a prioridade) */
+@layer reset, base, components, utilities;
+
+/* Adicionar estilos a cada layer */
+@layer reset {
+  *, *::before, *::after {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+  }
+}
+
+@layer base {
+  body { font-family: system-ui, sans-serif; line-height: 1.6; }
+  a { color: oklch(55% 0.2 250); }
+}
+
+@layer components {
+  .btn { padding: 8px 16px; border-radius: 4px; }
+  .card { border: 1px solid #e0e0e0; border-radius: 8px; }
+}
+
+@layer utilities {
+  .hidden { display: none; }
+  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; }
+}
+
+/*
+  Prioridade (menor → maior):
+  reset < base < components < utilities < unlayered (estilos sem @layer)
+
+  Consequência: um seletor .btn dentro de @layer components
+  PERDE para qualquer estilo unlayered, MESMO que a especificidade
+  do unlayered seja menor. Layer vence especificidade!
+*/
+```
+
+```
+HIERARQUIA COMPLETA COM LAYERS:
+═════════════════════════════════════════
+
+  Estilos normais (menor → maior prioridade):
+    1. @layer reset           (primeira declarada)
+    2. @layer base
+    3. @layer components
+    4. @layer utilities       (última declarada)
+    5. Unlayered styles       (SEM @layer → maior prioridade normal)
+
+  Estilos !important (INVERTE a ordem!):
+    1. Unlayered !important   (menor prioridade !important)
+    2. @layer utilities !important
+    3. @layer components !important
+    4. @layer base !important
+    5. @layer reset !important (MAIOR prioridade !important)
+
+  A inversão em !important é intencional:
+  resets com !important DEVEM prevalecer sobre tudo.
+```
+
+---
+
+## :where() vs :is() vs :has()
+
+### :where() — Especificidade Zero
+
+```css
+/*
+  :where() aceita uma lista de seletores mas sua
+  especificidade é SEMPRE (0, 0, 0).
+  Ideal para resets e defaults fáceis de sobrescrever.
+*/
+
+/* Especificidade: (0, 0, 1) — apenas o "a" conta */
+:where(.nav, .footer, .sidebar) a {
+  color: blue;
+  text-decoration: none;
+}
+
+/* Qualquer classe simples sobrescreve facilmente: */
+.link-custom { color: red; } /* (0, 1, 0) > (0, 0, 1) → vence */
+```
+
+### :is() — Especificidade do Maior Seletor
+
+```css
+/*
+  :is() aceita uma lista de seletores e adota a especificidade
+  do MAIS ESPECÍFICO seletor na lista.
+*/
+
+/* Especificidade: (1, 0, 1) — #menu é o mais específico */
+:is(.nav, #menu, footer) a {
+  color: blue;
+}
+/* Equivale à especificidade de: #menu a */
+
+/* USE :is() para agrupar seletores sem repetição */
+:is(h1, h2, h3, h4, h5, h6) {
+  font-weight: 700;
+  line-height: 1.2;
+}
+/* Em vez de: h1, h2, h3, h4, h5, h6 { ... } */
+/* Diferença: :is() tolera seletores inválidos na lista */
+```
+
+### :has() — Seletor Relacional (Parent Selector)
+
+```css
+/*
+  :has() seleciona um elemento baseado em seus DESCENDENTES
+  ou IRMÃOS. É o "parent selector" que o CSS esperou 20+ anos.
+*/
+
+/* Card que CONTÉM uma imagem recebe estilo diferente */
+.card:has(img) {
+  grid-template-rows: 200px auto;
+}
+
+/* Card SEM imagem */
+.card:not(:has(img)) {
+  padding-top: 24px;
+}
+
+/* Form label quando o input está focado */
+.form-group:has(input:focus) label {
+  color: oklch(55% 0.2 250);
+  transform: translateY(-4px);
+}
+
+/* Mudar todo o layout quando sidebar está aberta */
+body:has(.sidebar.open) .main-content {
+  margin-left: 260px;
+}
+
+/* Validação visual: campo inválido */
+.field:has(input:invalid) {
+  border-color: oklch(55% 0.25 25);
+}
+.field:has(input:invalid)::after {
+  content: "Campo inválido";
+  color: oklch(55% 0.25 25);
+  font-size: 0.875rem;
+}
+
+/*
+  ⚠️ PERFORMANCE de :has():
+  - O browser avalia :has() de CIMA para BAIXO (ao contrário dos
+    seletores normais que são avaliados da direita para esquerda)
+  - Evite :has() com seletores universais: *:has(> .child) é LENTO
+  - Prefira seletores específicos: .parent:has(> .child)
+  - :has() com :nth-child() complexo pode impactar performance
+*/
+```
+
+---
+
+## Custom Properties (Variáveis CSS)
+
+Custom properties participam da cascade e herdam como qualquer propriedade CSS,
+mas têm comportamentos únicos que as tornam muito poderosas.
+
+```css
+/* Definição: sempre começam com -- */
+:root {
+  --color-primary: oklch(55% 0.2 250);
+  --color-surface: oklch(98% 0.005 250);
+  --spacing-base: 8px;
+  --spacing-md: calc(var(--spacing-base) * 2);   /* 16px */
+  --spacing-lg: calc(var(--spacing-base) * 3);   /* 24px */
+  --radius: 4px;
+  --font-sans: system-ui, -apple-system, sans-serif;
+  --shadow-sm: 0 1px 3px oklch(0% 0 0 / 0.12);
+}
+
+/* Herança: filhos herdam custom properties do pai */
+.dark-theme {
+  --color-primary: oklch(75% 0.15 250);
+  --color-surface: oklch(20% 0.01 250);
+  /* Todos descendentes de .dark-theme usam estes valores */
+}
+
+/* Fallback: var() aceita um segundo argumento */
+.element {
+  color: var(--color-accent, var(--color-primary, blue));
+  /*
+    1. Tenta --color-accent
+    2. Se não existe, tenta --color-primary
+    3. Se não existe, usa blue
+  */
+}
+
+/* calc() com custom properties */
+.responsive-padding {
+  --multiplier: 1;
+  padding: calc(var(--spacing-base) * var(--multiplier));
+}
+@media (min-width: 768px) {
+  .responsive-padding { --multiplier: 2; }
+}
+@media (min-width: 1200px) {
+  .responsive-padding { --multiplier: 3; }
+}
+
+/* Custom properties + animação */
+.animated-box {
+  --hue: 250;
+  background: oklch(55% 0.2 var(--hue));
+  transition: --hue 0.3s; /* Requer @property para animar */
+}
+.animated-box:hover {
+  --hue: 330;
+}
+
+/* @property — tipar custom properties para animação */
+@property --hue {
+  syntax: "<number>";
+  initial-value: 250;
+  inherits: false;
+}
+```
+
+---
+
+## Container Queries — Responsividade Baseada no Componente
+
+Diferente de media queries (baseadas na **viewport**), container queries respondem
+ao tamanho do **container pai**. Isso permite componentes verdadeiramente modulares.
+
+```css
+/* 1. Definir o containment context */
+.card-wrapper {
+  container-type: inline-size; /* Monitora a largura */
+  container-name: card;        /* Nome opcional */
+  /* shorthand: container: card / inline-size; */
+}
+
+/* 2. Estilizar baseado no tamanho do CONTAINER (não da viewport) */
+@container card (min-width: 400px) {
+  .card {
+    display: grid;
+    grid-template-columns: 150px 1fr;
+    gap: 16px;
+  }
+}
+
+@container card (min-width: 600px) {
+  .card {
+    grid-template-columns: 200px 1fr auto;
+  }
+  .card-actions {
+    flex-direction: column;
+  }
+}
+
+/*
+  Container query units (relativas ao container):
+    cqw  → 1% da largura do container
+    cqh  → 1% da altura do container
+    cqi  → 1% do inline size
+    cqb  → 1% do block size
+    cqmin → menor entre cqi e cqb
+    cqmax → maior entre cqi e cqb
+*/
+.card-title {
+  font-size: clamp(1rem, 3cqi, 1.5rem);
+  /* Tamanho fluido baseado na largura do container! */
+}
+
+/*
+  ⚠️ LIMITAÇÕES:
+  • container-type: inline-size exige que o container tenha
+    largura definida (não pode depender do conteúdo para calcular largura)
+  • container-type: size (ambos eixos) é mais restritivo
+  • Não pode consultar o container de um ancestral que não
+    seja o containment context mais próximo com o nome dado
+*/
+```
+
+---
+
+## Metodologias — Escalando CSS em Projetos Grandes
+
+### BEM (Block Element Modifier)
+
+```css
+/*
+  Block:    componente independente (.card)
+  Element:  parte do bloco (.card__title)
+  Modifier: variação (.card--featured)
+
+  Vantagens: especificidade plana (0, 1, 0), nomes previsíveis
+  Desvantagens: nomes longos, verboso
+*/
+.card { }
+.card__header { }
+.card__title { }
+.card__body { }
+.card--featured { }
+.card--featured .card__title { }
+/* Especificidade: sempre (0, 1, 0) ou (0, 2, 0) — previsível */
+```
+
+### ITCSS (Inverted Triangle CSS)
+
+```
+  Estrutura de layers do mais genérico ao mais específico:
+
+       /\     Settings    → variáveis, tokens
+      /  \    Tools       → mixins, funções
+     /    \   Generic     → reset, normalize
+    /      \  Elements    → estilos base (h1, a, p)
+   /        \ Objects     → layouts sem visual (grid, container)
+  /          \Components  → componentes com visual (card, button)
+ /            \Utilities  → helpers (!important ok aqui)
+
+  Vantagens: especificidade cresce gradualmente, sem conflitos
+  Funciona perfeitamente com @layer:
+*/
+@layer settings, tools, generic, elements, objects, components, utilities;
+```
+
+### CUBE CSS (Composition, Utility, Block, Exception)
+
+```css
+/*
+  Composition → layouts (flex, grid containers)
+  Utility     → classes atômicas (.text-center, .mt-4)
+  Block       → componentes (similar a BEM)
+  Exception   → variações via data-attributes
+
+  Exemplo:
+*/
+/* Composition */
+.cluster { display: flex; flex-wrap: wrap; gap: var(--space, 1rem); }
+.stack > * + * { margin-top: var(--space, 1rem); }
+
+/* Utility */
+.text-center { text-align: center; }
+.visually-hidden { /* ... */ }
+
+/* Block */
+.card { /* estilos visuais */ }
+
+/* Exception */
+.card[data-variant="featured"] { /* variação */ }
+```
+
+---
+
+## CSS-in-JS vs Utility-first vs Vanilla — Trade-offs
+
+```
+┌──────────────────┬───────────────┬─────────────────┬───────────────┐
+│                  │ CSS-in-JS     │ Utility-first   │ Vanilla CSS   │
+│                  │ (styled, etc) │ (Tailwind)      │ (modules/BEM) │
+├──────────────────┼───────────────┼─────────────────┼───────────────┤
+│ Bundle size      │ Maior (runtime│ Pequeno (purge  │ Depende da    │
+│                  │ + estilos)    │ remove unused)  │ disciplina    │
+├──────────────────┼───────────────┼─────────────────┼───────────────┤
+│ Runtime cost     │ Alto (gera    │ Zero            │ Zero          │
+│                  │ CSS no JS)    │                 │               │
+├──────────────────┼───────────────┼─────────────────┼───────────────┤
+│ DX (Developer    │ Ótima (co-    │ Ótima (sem sair │ Boa (separação│
+│ Experience)      │ located)      │ do HTML)        │ clara)        │
+├──────────────────┼───────────────┼─────────────────┼───────────────┤
+│ Type safety      │ Boa (props    │ Média (plugins  │ Fraca         │
+│                  │ tipadas)      │ de lint)        │               │
+├──────────────────┼───────────────┼─────────────────┼───────────────┤
+│ SSR              │ Complexo      │ Simples         │ Simples       │
+│                  │ (hydration)   │                 │               │
+├──────────────────┼───────────────┼─────────────────┼───────────────┤
+│ Manutenção       │ Escala bem    │ Escala bem      │ Requer        │
+│                  │ (escopo auto) │ (classes curtas)│ convenções    │
+└──────────────────┴───────────────┴─────────────────┴───────────────┘
+
+Tendência atual (2025+):
+• CSS-in-JS com ZERO RUNTIME ganhando espaço:
+  - Panda CSS, Vanilla Extract, StyleX (Meta)
+  - Geram CSS estático no build — sem custo de runtime
+• Tailwind 4 com engine nova baseada em Rust
+• CSS Modules + @layer para projetos que preferem vanilla
+```
+
+---
+
+## CSS Moderno — Features Essenciais
+
+### Nesting Nativo
+
+```css
+/* Antes (necessitava preprocessador) */
+.nav { }
+.nav .link { }
+.nav .link:hover { }
+
+/* Agora (CSS nativo — suportado em todos browsers modernos) */
+.nav {
+  display: flex;
+  gap: 16px;
+
+  .link {
+    color: var(--color-primary);
+    text-decoration: none;
+
+    &:hover {
+      text-decoration: underline;
+    }
+  }
+
+  /* & é opcional quando começa com seletor simples */
+  .logo {
+    flex: none;
+  }
+
+  /* & é obrigatório para pseudo-classes no elemento atual */
+  &:has(.link:focus-visible) {
+    outline: 2px solid var(--color-primary);
+  }
+}
+```
+
+### color-mix() e oklch()
+
+```css
+/*
+  oklch() — espaço de cor perceptualmente uniforme
+  Formato: oklch(lightness chroma hue / alpha)
+    L: 0% (preto) → 100% (branco)
+    C: 0 (cinza) → ~0.4 (mais saturado)
+    H: 0-360 (matiz: 0=rosa, 90=amarelo, 180=ciano, 270=azul)
+*/
+:root {
+  --brand: oklch(55% 0.2 250);           /* azul vibrante */
+  --brand-light: oklch(85% 0.1 250);     /* mesma matiz, mais claro */
+  --brand-dark: oklch(35% 0.15 250);     /* mesma matiz, mais escuro */
+}
+
+/*
+  color-mix() — misturar cores no CSS puro
+  Ideal para gerar variantes sem hardcodar cada uma
+*/
+:root {
+  --primary: oklch(55% 0.2 250);
+  --primary-hover: color-mix(in oklch, var(--primary), black 20%);
+  --primary-light: color-mix(in oklch, var(--primary), white 40%);
+  --primary-subtle: color-mix(in oklch, var(--primary), transparent 80%);
+  /* 80% transparente → 20% opaco */
+}
+
+.btn-primary {
+  background: var(--primary);
+  &:hover { background: var(--primary-hover); }
+  &:focus-visible {
+    outline: 3px solid var(--primary-subtle);
+    outline-offset: 2px;
+  }
+}
+```
+
+### @scope — Escopo de Estilos
+
+```css
+/*
+  @scope limita onde estilos se aplicam.
+  Define um limite SUPERIOR (root) e opcionalmente INFERIOR (limit).
+*/
+@scope (.card) to (.card-footer) {
+  /* Estilos se aplicam DENTRO de .card, MAS NÃO dentro de .card-footer */
+  p { margin-bottom: 1rem; }
+  a { color: var(--color-primary); }
+}
+
+/* Sem limit — escopo do root para baixo */
+@scope (.dark-section) {
+  a { color: oklch(80% 0.15 250); }
+  p { color: oklch(90% 0.01 250); }
+}
+
+/*
+  Vantagem sobre CSS Modules:
+  • Funciona em CSS puro (sem build tool)
+  • Respeita a cascade normalmente
+  • Pode combinar com @layer
+*/
+```
+
+### View Transitions
+
+```css
+/*
+  View Transitions API — animações suaves entre estados da página.
+  Funciona com SPAs e MPAs (multi-page apps).
+*/
+
+/* Ativar transições entre páginas (MPA) */
+@view-transition {
+  navigation: auto;
+}
+
+/* Definir elementos que devem transicionar */
+.hero-image {
+  view-transition-name: hero;
+}
+.page-title {
+  view-transition-name: title;
+}
+
+/* Customizar a animação */
+::view-transition-old(hero) {
+  animation: fade-out 0.3s ease-out;
+}
+::view-transition-new(hero) {
+  animation: fade-in 0.3s ease-in;
+}
+
+/* Transição com morph (elemento "voa" entre posições) */
+::view-transition-group(hero) {
+  animation-duration: 0.4s;
+  animation-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+}
+
+/* SPA: ativar via JavaScript */
+/*
+  document.startViewTransition(() => {
+    // Atualizar o DOM
+    updateContent();
+  });
+*/
+```
+
+---
+
+## Resumo — Prioridade de Resolução Completa
+
+```
+Quando duas regras conflitam, o browser resolve nesta ordem:
+═══════════════════════════════════════════════════════════
+
+  1. ORIGIN + IMPORTANCE
+     ↓ User-agent < User < Author < Author !important < ...
+
+  2. @scope (proximity)
+     ↓ Escopo mais interno vence
+
+  3. @layer (cascade layer)
+     ↓ Primeira layer < ... < última layer < unlayered
+
+  4. SPECIFICITY
+     ↓ (A, B, C) — inline > ID > class > type
+
+  5. SOURCE ORDER
+     ↓ Último declarado vence
+
+  Se ainda empatar → INHERITED value (herança do pai)
+  Se não herda → INITIAL value (valor padrão da propriedade)
+
+DICAS PRÁTICAS PARA PROJETOS REAIS:
+─────────────────────────────────────
+  • Use @layer para organizar reset < base < components < utilities
+  • Use :where() em resets para especificidade zero
+  • Use custom properties para valores reutilizáveis
+  • Use BEM ou data-attributes para especificidade plana
+  • Reserve !important para utilities e overrides de terceiros
+  • Use container queries para componentes responsivos
+  • Use nesting nativo em vez de preprocessadores (2025+)
+  • Use oklch() para cores perceptualmente uniformes
+```

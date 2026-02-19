@@ -1,0 +1,764 @@
+---
+title: "Arrays"
+description: "Estrutura de dados fundamental: sequência contígua de elementos na memória, layout, alocação, análise amortizada e técnicas avançadas"
+track: "cs"
+order: 7
+section: "Estruturas de Dados"
+priority: "high"
+tags: ["arrays", "estruturas-de-dados", "big-o", "memória", "typed-arrays", "v8"]
+prerequisites: ["linguagem-c"]
+keyTakeaways:
+  - "Arrays são sequências contíguas na memória com acesso O(1) por índice via cálculo base + index × element_size"
+  - "push() é O(1) amortizado — a prova formal usa o método do banqueiro com créditos pré-pagos no resize"
+  - "No V8, arrays têm representações internas distintas (SMI, PACKED_DOUBLE, HOLEY) que afetam drasticamente a performance"
+  - "Typed Arrays (Int32Array, Float64Array) oferecem acesso direto à memória sem boxing, essenciais para computação numérica"
+  - "Técnicas como two pointers, sliding window e prefix sum resolvem problemas em O(n) que ingenuamente seriam O(n²)"
+---
+
+# Arrays
+
+> **Decisão de design:** Escolher a estrutura de dados certa é 80% da solução. O raciocínio não é "que framework uso?" — é "que estrutura de dados modela melhor esse problema?" e "como essa estrutura se comporta no hardware real?"
+
+## 1. Layout na Memória: Por Que O(1) de Verdade
+
+Um array é uma **sequência contígua de bytes** na memória. Não há ponteiros entre elementos, não há indireção — são bytes consecutivos num bloco alocado.
+
+```
+Endereço base: 0x7F00
+
+Memória:  | 10 | 20 | 30 | 40 | 50 |
+Offset:     0    4    8   12   16
+Endereço: 7F00 7F04 7F08 7F0C 7F10
+Índice:     0    1    2    3    4
+```
+
+O acesso a qualquer elemento é uma única operação aritmética:
+
+```
+endereço(i) = base + i × tamanho_do_elemento
+```
+
+Para um array de `int32` (4 bytes), acessar `arr[3]`:
+
+```
+endereço(3) = 0x7F00 + 3 × 4 = 0x7F00 + 12 = 0x7F0C
+```
+
+Isso é **literalmente uma multiplicação e uma soma** — uma instrução `LEA` (Load Effective Address) no x86. Não depende do tamanho do array. É O(1) no sentido mais puro: o hardware calcula o endereço em um ciclo de clock.
+
+### Em C: A Realidade Nua
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <stdint.h>
+
+int main() {
+    int arr[5] = {10, 20, 30, 40, 50};
+
+    // arr[i] é açúcar sintático para *(arr + i)
+    // que por sua vez é: *(baseptr + i * sizeof(int))
+    printf("Base:     %p\n", (void*)arr);
+    printf("&arr[0]:  %p\n", (void*)&arr[0]);
+    printf("&arr[3]:  %p\n", (void*)&arr[3]);
+    printf("Offset:   %ld bytes\n", (char*)&arr[3] - (char*)&arr[0]);
+    // Output: Offset: 12 bytes (3 × 4)
+
+    // Aritmética de ponteiro — equivalente a arr[3]
+    int valor = *(arr + 3); // desloca 3 * sizeof(int) bytes
+    printf("arr[3] = %d\n", valor); // 40
+
+    return 0;
+}
+```
+
+**Implicação crítica:** como os elementos são contíguos, quando a CPU carrega `arr[0]` do RAM para o cache (tipicamente uma cache line de 64 bytes), ela automaticamente traz `arr[1]` até `arr[15]` (para `int32`). Iterar sequencialmente sobre um array é a operação mais cache-friendly que existe.
+
+## 2. Arrays Estáticos vs Dinâmicos
+
+### Array Estático (tamanho fixo em tempo de compilação)
+
+```c
+// Alocado na stack — tamanho precisa ser constante em tempo de compilação
+int stack_arr[1024]; // 4KB na stack, liberado automaticamente
+
+// Alocado no heap — tamanho pode ser dinâmico, mas fixo após alocação
+int *heap_arr = (int*)malloc(1024 * sizeof(int));
+// ...
+free(heap_arr); // liberação manual obrigatória
+```
+
+**Custo:** alocação na stack é O(1) — é literalmente mover o stack pointer. Alocação no heap via `malloc` é mais cara (busca em free lists, possível system call `brk`/`mmap`).
+
+### Array Dinâmico (cresce conforme necessidade)
+
+A maioria das linguagens de alto nível (JavaScript, Python, Java) usa arrays dinâmicos internamente. A ideia central:
+
+1. Aloca um buffer com **capacidade** maior que o **tamanho** atual
+2. Quando o tamanho atinge a capacidade, **realoca** com o dobro do tamanho
+3. Copia todos os elementos para o novo buffer
+4. Libera o buffer antigo
+
+```c
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+typedef struct {
+    int *data;
+    size_t size;     // quantos elementos estão em uso
+    size_t capacity; // quantos cabem antes de precisar realocar
+} DynamicArray;
+
+DynamicArray* da_create(size_t initial_cap) {
+    DynamicArray *da = malloc(sizeof(DynamicArray));
+    da->data = malloc(initial_cap * sizeof(int));
+    da->size = 0;
+    da->capacity = initial_cap;
+    return da;
+}
+
+void da_push(DynamicArray *da, int value) {
+    if (da->size == da->capacity) {
+        da->capacity *= 2; // growth factor de 2×
+        da->data = realloc(da->data, da->capacity * sizeof(int));
+        // Em produção: verificar se realloc retornou NULL
+    }
+    da->data[da->size++] = value;
+}
+
+int da_get(DynamicArray *da, size_t index) {
+    // Em produção: bounds checking
+    return da->data[index];
+}
+
+void da_free(DynamicArray *da) {
+    free(da->data);
+    free(da);
+}
+
+int main() {
+    DynamicArray *arr = da_create(4);
+
+    for (int i = 0; i < 20; i++) {
+        printf("push(%d) — size=%zu, capacity=%zu\n", i, arr->size, arr->capacity);
+        da_push(arr, i);
+    }
+    // Observar: capacity dobra em 4 → 8 → 16 → 32
+
+    da_free(arr);
+    return 0;
+}
+```
+
+### Growth Factor: Por Que 2×?
+
+O fator de crescimento afeta diretamente o tradeoff memória vs performance:
+
+| Fator | Desperdício médio de memória | Frequência de realocação | Usado por                |
+|-------|------------------------------|--------------------------|--------------------------|
+| 1.5×  | ~33%                         | Mais frequente           | C++ `std::vector` (MSVC) |
+| 2×    | ~50%                         | Menos frequente          | Java `ArrayList`, V8     |
+| φ≈1.618| ~38%                        | Intermediário            | Facebook folly::fbvector |
+
+O fator φ (proporção áurea) tem uma propriedade interessante: a soma das capacidades anteriores é sempre **menor** que a próxima capacidade. Isso permite que o alocador reutilize memória previamente liberada, evitando fragmentação.
+
+## 3. Análise Amortizada Formal de push()
+
+### Tabela de Custos
+
+A maioria dos `push()` custa 1 operação (escrever no slot). Mas quando há resize, custa n (copiar n elementos) + 1 (escrever o novo).
+
+```
+Operação:  1  2  3  4  5  6  7  8  9  ...
+Custo:     1  1  1  (1+4)  1  1  1  (1+8)  1  ...
+                    ↑resize              ↑resize
+```
+
+### Prova pelo Método Agregado
+
+Após n operações de `push` partindo de capacidade 1:
+
+- Resizes acontecem nas posições 1, 2, 4, 8, 16, ..., 2^k onde 2^k ≤ n
+- Custo total dos resizes: 1 + 2 + 4 + 8 + ... + 2^k = 2^(k+1) - 1 < 2n
+- Custo total dos writes simples: n
+
+**Custo total ≤ n + 2n = 3n**
+
+Portanto, custo amortizado por operação = 3n / n = **O(1)**.
+
+### Prova pelo Método do Banqueiro (mais intuitiva)
+
+Cada `push()` paga **3 moedas**:
+- 1 moeda para escrever o elemento
+- 2 moedas guardadas como "crédito" no elemento inserido
+
+Quando ocorre resize de capacidade `c` para `2c`:
+- Precisamos copiar `c` elementos
+- Os últimos `c/2` elementos inseridos (desde o último resize) cada um guardou 2 moedas
+- Total de crédito acumulado: `c/2 × 2 = c` moedas — exatamente o que precisamos para copiar
+
+**Invariante:** cada elemento inserido após o último resize tem 2 moedas de crédito. Isso garante que sempre teremos crédito suficiente para o próximo resize.
+
+Logo, `push()` custa **O(1) amortizado** com constante 3.
+
+### Nota sobre pop()
+
+Se implementarmos shrink (reduzir capacidade) quando o array fica muito vazio, precisamos ter cuidado. Shrink quando `size < capacity/2` causa **thrashing** se o usuário alternar push/pop na fronteira. Solução: shrink apenas quando `size < capacity/4`, reduzindo para `capacity/2`. Isso mantém O(1) amortizado para ambas as operações.
+
+## 4. Arrays em JavaScript: O Que o V8 Realmente Faz
+
+JavaScript não tem "arrays de verdade" na especificação — `Array` é um objeto especial com propriedades numéricas. Mas o V8 (e outros engines) otimizam pesadamente.
+
+### Representações Internas no V8
+
+O V8 classifica arrays em **ElementsKind** — a representação interna muda baseada no conteúdo:
+
+```javascript
+// PACKED_SMI_ELEMENTS — inteiros pequenos (Small Integers), mais rápido
+const a = [1, 2, 3, 4, 5];
+
+// PACKED_DOUBLE_ELEMENTS — números de ponto flutuante (unboxed Float64)
+const b = [1.1, 2.2, 3.3];
+
+// PACKED_ELEMENTS — referências a objetos (boxed, mais lento)
+const c = [1, "dois", { tres: 3 }];
+
+// HOLEY_SMI_ELEMENTS — array esparso com "buracos"
+const d = [1, , 3]; // note o elemento faltando no índice 1
+
+// HOLEY_ELEMENTS — o pior caso para performance
+const e = new Array(10000); // array com 10000 holes
+```
+
+### Lattice de Transições (só degrada, nunca melhora)
+
+```
+PACKED_SMI_ELEMENTS → PACKED_DOUBLE_ELEMENTS → PACKED_ELEMENTS
+       ↓                       ↓                      ↓
+HOLEY_SMI_ELEMENTS  → HOLEY_DOUBLE_ELEMENTS  → HOLEY_ELEMENTS
+```
+
+**Uma vez que o array desce no lattice, nunca volta.** Se você colocar um float num array SMI, ele vira DOUBLE para sempre — mesmo que depois remova o float.
+
+```javascript
+// PERIGOSO para performance:
+const arr = [1, 2, 3]; // PACKED_SMI — ótimo
+
+arr.push(1.5);  // Agora é PACKED_DOUBLE — nunca mais será SMI
+arr.pop();       // Removeu o 1.5, mas continua DOUBLE
+
+arr[100] = 4;   // Agora é HOLEY_DOUBLE — criou buracos nos índices 4-99
+// Cada acesso agora verifica se o índice é um hole → mais lento
+```
+
+### Implicações Práticas para Performance
+
+```javascript
+// ❌ RUIM — cria HOLEY array
+const arr = new Array(1000);
+for (let i = 0; i < 1000; i++) {
+    arr[i] = i;
+}
+
+// ✅ BOM — mantém PACKED_SMI
+const arr = [];
+for (let i = 0; i < 1000; i++) {
+    arr.push(i);
+}
+
+// ❌ RUIM — destrói o ElementsKind
+function processArray(arr) {
+    arr.push(undefined); // PACKED → HOLEY (undefined conta como hole em SMI/DOUBLE)
+}
+
+// ❌ RUIM — delete cria hole
+const arr = [1, 2, 3, 4, 5];
+delete arr[2]; // Agora é HOLEY — use splice() em vez disso
+```
+
+### Hidden Classes e Inline Caches
+
+O V8 cria hidden classes (Maps) para arrays. Quando o ElementsKind muda, a hidden class muda, e os **inline caches** nas funções que operam nesse array são invalidados — causando desotimização (deopt).
+
+```javascript
+// Função otimizada pelo TurboFan para PACKED_SMI
+function soma(arr) {
+    let total = 0;
+    for (let i = 0; i < arr.length; i++) {
+        total += arr[i];
+    }
+    return total;
+}
+
+soma([1, 2, 3]); // Compila otimizado para SMI
+soma([1, 2, 3]); // Cache hit — rápido
+
+// Agora passa um array HOLEY — inline cache falha, deopt!
+soma([1, , 3]);  // V8 recompila com código mais lento
+```
+
+## 5. Typed Arrays: Acesso Direto à Memória
+
+Typed Arrays são a ponte entre JavaScript e memória crua. Diferente de `Array`, eles são **buffers de tamanho fixo** com tipos numéricos específicos.
+
+```javascript
+// ArrayBuffer: bloco cru de bytes (como malloc em C)
+const buffer = new ArrayBuffer(16); // 16 bytes
+
+// Typed Array: "view" tipada sobre o buffer
+const int32View = new Int32Array(buffer); // 4 elementos de 4 bytes
+const float64View = new Float64Array(buffer); // 2 elementos de 8 bytes
+
+// Ambos apontam para o MESMO bloco de memória!
+int32View[0] = 42;
+console.log(float64View[0]); // Interpreta os mesmos bytes como Float64
+```
+
+### Tipos Disponíveis
+
+| Tipo            | Bytes | Range                       | Uso típico                    |
+|-----------------|-------|-----------------------------|-------------------------------|
+| `Int8Array`     | 1     | -128 a 127                  | Áudio PCM 8-bit               |
+| `Uint8Array`    | 1     | 0 a 255                     | Pixels RGBA, dados binários   |
+| `Uint8ClampedArray` | 1 | 0 a 255 (clamped)           | Canvas `ImageData`            |
+| `Int16Array`    | 2     | -32768 a 32767              | Áudio PCM 16-bit              |
+| `Int32Array`    | 4     | -2³¹ a 2³¹-1                | Índices, contadores           |
+| `Float32Array`  | 4     | ±3.4×10³⁸                   | WebGL vertices, shaders       |
+| `Float64Array`  | 8     | ±1.8×10³⁰⁸                  | Computação numérica precisa   |
+| `BigInt64Array`  | 8    | -2⁶³ a 2⁶³-1                | Hashes, timestamps de precisão|
+
+### Performance: Typed Array vs Regular Array
+
+```javascript
+const N = 10_000_000;
+
+// Regular Array — cada número é um objeto heap (boxed)
+const regular = new Array(N);
+for (let i = 0; i < N; i++) regular[i] = Math.random();
+
+// Float64Array — valores unboxed diretamente no buffer
+const typed = new Float64Array(N);
+for (let i = 0; i < N; i++) typed[i] = Math.random();
+
+// Benchmark de soma
+function benchSum(arr) {
+    let sum = 0;
+    for (let i = 0; i < arr.length; i++) sum += arr[i];
+    return sum;
+}
+
+console.time("regular");
+benchSum(regular);   // ~15ms (valores boxed, possíveis cache misses)
+console.timeEnd("regular");
+
+console.time("typed");
+benchSum(typed);     // ~5ms (valores contíguos, cache-friendly)
+console.timeEnd("typed");
+```
+
+### Uso Prático: Manipulação de Imagem com Canvas
+
+```javascript
+// Inversão de cores de uma imagem — opera diretamente nos bytes RGBA
+function invertColors(imageData) {
+    const data = imageData.data; // Uint8ClampedArray
+    // data.length = width × height × 4 (RGBA)
+
+    for (let i = 0; i < data.length; i += 4) {
+        data[i]     = 255 - data[i];     // R
+        data[i + 1] = 255 - data[i + 1]; // G
+        data[i + 2] = 255 - data[i + 2]; // B
+        // data[i + 3] é Alpha — não modificar
+    }
+    return imageData;
+}
+```
+
+## 6. Array vs Buffer vs TypedArray em Node.js
+
+```javascript
+// Buffer — subclasse de Uint8Array, otimizado para I/O
+const buf = Buffer.alloc(256); // 256 bytes zerados
+const buf2 = Buffer.from("café", "utf-8"); // 5 bytes (é = 2 bytes em UTF-8)
+
+// Buffer.allocUnsafe() — não zera a memória (mais rápido, mas perigoso)
+// Pode conter dados residuais de outras alocações!
+const unsafeBuf = Buffer.allocUnsafe(256);
+
+// SharedArrayBuffer — memória compartilhada entre threads (Workers)
+const shared = new SharedArrayBuffer(1024);
+const view = new Int32Array(shared);
+
+// Atomics — operações atômicas no SharedArrayBuffer
+Atomics.add(view, 0, 5);           // view[0] += 5 (thread-safe)
+Atomics.compareExchange(view, 0, 5, 10); // CAS: se view[0] === 5, seta 10
+Atomics.wait(view, 0, 0);          // Bloqueia até view[0] !== 0
+Atomics.notify(view, 0, 1);        // Acorda 1 thread esperando
+```
+
+| Característica       | `Array`          | `Buffer`              | `TypedArray`          |
+|----------------------|------------------|-----------------------|-----------------------|
+| Tamanho              | Dinâmico         | Fixo                  | Fixo                  |
+| Tipos de elemento    | Qualquer         | Bytes (Uint8)         | Numérico específico   |
+| Memória              | Heap do V8       | Fora do V8 heap       | ArrayBuffer           |
+| GC pressure          | Alto             | Baixo                 | Baixo                 |
+| Uso principal        | Dados gerais     | I/O, rede, filesystem | Computação numérica   |
+
+## 7. Matrizes (Arrays 2D): Row-Major vs Column-Major
+
+Uma matriz M×N é logicamente 2D, mas na memória é 1D. A ordem de armazenamento importa enormemente para performance.
+
+### Row-Major (C, JavaScript, Python/NumPy default)
+
+Elementos da mesma **linha** são contíguos:
+
+```
+Matriz 3×3:        Memória (row-major):
+| 1  2  3 |        [1][2][3][4][5][6][7][8][9]
+| 4  5  6 |         ←row 0→ ←row 1→ ←row 2→
+| 7  8  9 |
+
+endereço(i, j) = base + (i × num_colunas + j) × element_size
+```
+
+### Column-Major (Fortran, MATLAB, Julia)
+
+Elementos da mesma **coluna** são contíguos:
+
+```
+Matriz 3×3:        Memória (column-major):
+| 1  2  3 |        [1][4][7][2][5][8][3][6][9]
+| 4  5  6 |         ←col0→ ←col1→ ←col2→
+| 7  8  9 |
+
+endereço(i, j) = base + (j × num_linhas + i) × element_size
+```
+
+### Cache Locality: O Impacto Real
+
+```javascript
+const N = 1000;
+const matrix = Array.from({ length: N }, () => new Float64Array(N));
+
+// ✅ Row-major traversal — cache-friendly (JavaScript é row-major)
+function sumRowMajor(mat) {
+    let sum = 0;
+    for (let i = 0; i < N; i++) {       // linha
+        for (let j = 0; j < N; j++) {   // coluna (contígua na memória)
+            sum += mat[i][j];
+        }
+    }
+    return sum;
+}
+
+// ❌ Column-major traversal — cache-hostile
+function sumColMajor(mat) {
+    let sum = 0;
+    for (let j = 0; j < N; j++) {       // coluna
+        for (let i = 0; i < N; i++) {   // linha (pula N×8 bytes por acesso!)
+            sum += mat[i][j];
+        }
+    }
+    return sum;
+}
+
+// sumColMajor é 3-10× mais lento que sumRowMajor em matrizes grandes
+// porque cada acesso mat[i][j] vai para uma cache line diferente
+```
+
+**Por que isso importa:** Uma cache line tem 64 bytes = 8 Float64s. No traversal row-major, cada cache miss carrega 8 elementos úteis. No column-major, cada cache miss carrega 1 elemento útil e 7 que serão evicted antes de serem usados.
+
+Para N=1000 com Float64 (8 bytes por elemento):
+- Row-major: ~125.000 cache misses (1.000.000 / 8)
+- Column-major: ~1.000.000 cache misses (quase todo acesso é miss)
+
+## 8. Sparse Arrays vs Dense Arrays
+
+### Dense Array
+
+Todos os índices de 0 até length-1 existem. O engine armazena como um buffer contíguo C-style.
+
+### Sparse Array
+
+Tem "buracos" — índices sem valor. O engine pode armazenar como hash table (dictionary mode).
+
+```javascript
+// Dense — armazenado como buffer contíguo
+const dense = [1, 2, 3, 4, 5];
+
+// Sparse — armazenado como hash table internamente
+const sparse = [];
+sparse[0] = "a";
+sparse[10000] = "b";
+// V8 não aloca 10001 slots — usa dictionary mode
+
+// Verificando se é sparse
+console.log(0 in sparse);    // true
+console.log(1 in sparse);    // false — hole!
+console.log(10000 in sparse); // true
+
+// Cuidado: forEach() pula holes, for...of não
+sparse.forEach((v, i) => console.log(i, v)); // 0:"a", 10000:"b"
+for (const v of sparse) console.log(v);       // "a", undefined×9999, "b"
+```
+
+### Implicações de Performance
+
+```javascript
+// Dictionary mode é ~10-100× mais lento que packed mode para acesso
+// porque troca O(1) aritmético por O(1) hash lookup (constante muito maior)
+
+// Forçar dense:
+const arr = new Array(10000).fill(0); // Dense — todos os slots preenchidos
+
+// vs
+const arr2 = new Array(10000); // Sparse/holey — não preenche nada
+```
+
+O V8 usa **dois mecanismos de armazenamento** internos:
+- **Fast elements:** buffer contíguo (como C array) — usado para arrays densos
+- **Dictionary elements:** hash table `{index → value}` — usado quando o array é muito esparso (heurística: quando menos de ~50% dos índices estão preenchidos ou o array tem mais de ~64K holes)
+
+## 9. Técnicas Clássicas com Arrays
+
+### 9.1. Two Pointers — O(n) em vez de O(n²)
+
+Usa dois ponteiros que convergem ou divergem para resolver problemas de busca em arrays ordenados.
+
+```typescript
+// Par que soma um target em array ordenado
+// Abordagem ingênua: dois for loops — O(n²)
+// Two pointers: O(n)
+function twoSum(arr: number[], target: number): [number, number] | null {
+    let left = 0;
+    let right = arr.length - 1;
+
+    while (left < right) {
+        const sum = arr[left] + arr[right];
+        if (sum === target) return [left, right];
+        if (sum < target) left++;   // precisa de soma maior
+        else right--;               // precisa de soma menor
+    }
+    return null;
+}
+
+// Invariante: a solução (se existir) está sempre entre left e right
+// A cada iteração, eliminamos ao menos um candidato
+// Portanto: O(n) tempo, O(1) espaço
+```
+
+### 9.2. Sliding Window — Subarrays Contíguos em O(n)
+
+Mantém uma "janela" que desliza sobre o array, evitando recalcular do zero.
+
+```typescript
+// Soma máxima de subarray de tamanho k
+// Ingênuo: para cada posição, soma k elementos — O(n×k)
+// Sliding window: O(n)
+function maxSumSubarray(arr: number[], k: number): number {
+    // Calcular soma da primeira janela
+    let windowSum = 0;
+    for (let i = 0; i < k; i++) {
+        windowSum += arr[i];
+    }
+
+    let maxSum = windowSum;
+
+    // Deslizar: adiciona o próximo, remove o primeiro
+    for (let i = k; i < arr.length; i++) {
+        windowSum += arr[i] - arr[i - k];
+        maxSum = Math.max(maxSum, windowSum);
+    }
+
+    return maxSum;
+}
+
+// Cada elemento é adicionado uma vez e removido uma vez → O(n)
+```
+
+### 9.3. Prefix Sum — Consultas de Range em O(1)
+
+Pré-computa somas acumuladas para responder "soma do índice i ao j" em tempo constante.
+
+```typescript
+// Construção: O(n), Consulta: O(1), Espaço: O(n)
+class PrefixSum {
+    private prefix: number[];
+
+    constructor(arr: number[]) {
+        this.prefix = new Array(arr.length + 1);
+        this.prefix[0] = 0;
+        for (let i = 0; i < arr.length; i++) {
+            this.prefix[i + 1] = this.prefix[i] + arr[i];
+        }
+    }
+
+    // Soma do índice left até right (inclusive)
+    rangeSum(left: number, right: number): number {
+        return this.prefix[right + 1] - this.prefix[left];
+    }
+}
+
+// Exemplo: arr = [3, 1, 4, 1, 5, 9]
+// prefix =      [0, 3, 4, 8, 9, 14, 23]
+// soma(1,4) = prefix[5] - prefix[1] = 14 - 3 = 11
+// Verificação: 1 + 4 + 1 + 5 = 11 ✓
+
+// Variação 2D: prefix sum sobre matriz para consultas de sub-retângulo em O(1)
+```
+
+## 10. Problemas Clássicos
+
+### 10.1. Rotate Array — O(n) tempo, O(1) espaço
+
+Rotacionar array k posições para a direita usando a técnica de **três reversos**.
+
+```typescript
+// [1,2,3,4,5,6,7], k=3 → [5,6,7,1,2,3,4]
+//
+// Intuição: reverter o array inteiro, depois reverter cada metade
+// Reverse all:     [7,6,5,4,3,2,1]
+// Reverse [0,k-1]: [5,6,7,4,3,2,1]
+// Reverse [k,n-1]: [5,6,7,1,2,3,4] ✓
+
+function rotate(arr: number[], k: number): void {
+    const n = arr.length;
+    k = k % n; // k pode ser maior que n
+    if (k === 0) return;
+
+    reverse(arr, 0, n - 1);
+    reverse(arr, 0, k - 1);
+    reverse(arr, k, n - 1);
+}
+
+function reverse(arr: number[], start: number, end: number): void {
+    while (start < end) {
+        [arr[start], arr[end]] = [arr[end], arr[start]];
+        start++;
+        end--;
+    }
+}
+
+// Complexidade: O(n) tempo (cada elemento é movido exatamente 2 vezes)
+// O(1) espaço adicional — in-place
+```
+
+### 10.2. Merge Sorted Arrays — O(n + m)
+
+Merge de dois arrays já ordenados em um terceiro, base do Merge Sort.
+
+```typescript
+function mergeSorted(a: number[], b: number[]): number[] {
+    const result = new Array(a.length + b.length);
+    let i = 0, j = 0, k = 0;
+
+    while (i < a.length && j < b.length) {
+        if (a[i] <= b[j]) {
+            result[k++] = a[i++];
+        } else {
+            result[k++] = b[j++];
+        }
+    }
+
+    // Copiar o restante (apenas um dos loops executará)
+    while (i < a.length) result[k++] = a[i++];
+    while (j < b.length) result[k++] = b[j++];
+
+    return result;
+}
+
+// Cada elemento é comparado e copiado no máximo uma vez
+// Tempo: O(n + m), Espaço: O(n + m) para o resultado
+// Invariante: result[0..k-1] está sempre ordenado
+```
+
+### 10.3. Kadane's Algorithm — Maximum Subarray em O(n)
+
+Encontrar o subarray contíguo com a maior soma. Este é um problema clássico de programação dinâmica disfarçado.
+
+```typescript
+// Definição formal:
+// Dado arr[0..n-1], encontrar max(sum(arr[i..j])) para todo 0 ≤ i ≤ j < n
+//
+// Recorrência:
+// maxEndingHere(i) = max(arr[i], maxEndingHere(i-1) + arr[i])
+// Resposta = max(maxEndingHere(i)) para todo i
+//
+// Intuição: a cada posição, decidimos se é melhor estender o subarray
+// atual ou começar um novo a partir daqui.
+
+function maxSubarray(arr: number[]): {
+    sum: number;
+    start: number;
+    end: number;
+} {
+    let maxSoFar = arr[0];
+    let maxEndingHere = arr[0];
+    let start = 0, end = 0, tempStart = 0;
+
+    for (let i = 1; i < arr.length; i++) {
+        if (arr[i] > maxEndingHere + arr[i]) {
+            // Melhor começar novo subarray aqui
+            maxEndingHere = arr[i];
+            tempStart = i;
+        } else {
+            // Melhor estender o subarray atual
+            maxEndingHere += arr[i];
+        }
+
+        if (maxEndingHere > maxSoFar) {
+            maxSoFar = maxEndingHere;
+            start = tempStart;
+            end = i;
+        }
+    }
+
+    return { sum: maxSoFar, start, end };
+}
+
+// Exemplo: [-2, 1, -3, 4, -1, 2, 1, -5, 4]
+// Resposta: { sum: 6, start: 3, end: 6 } → subarray [4, -1, 2, 1]
+//
+// Tempo: O(n) — uma passada
+// Espaço: O(1) — três variáveis
+// Nota: o algoritmo ingênuo (testar todos os pares i,j) é O(n²)
+// A versão divide-and-conquer é O(n log n)
+```
+
+## 11. Tabela Resumo de Complexidade
+
+```
+Operação               Array Estático    Array Dinâmico    Linked List
+─────────────────────────────────────────────────────────────────────
+Acesso por índice      O(1)              O(1)              O(n)
+Busca por valor        O(n)              O(n)              O(n)
+Inserção no início     O(n)              O(n)              O(1)
+Inserção no fim        N/A (fixo)        O(1) amortizado   O(1)*
+Inserção no meio       O(n)              O(n)              O(1)**
+Remoção no início      O(n)              O(n)              O(1)
+Remoção no fim         O(1)              O(1)              O(n)***
+Remoção no meio        O(n)              O(n)              O(1)**
+─────────────────────────────────────────────────────────────────────
+Cache locality         Excelente         Excelente         Péssimo
+Memória extra          Nenhuma           ~50% overhead     ponteiro/nó
+
+* com tail pointer   ** dado o ponteiro para o nó anterior
+*** O(1) com doubly linked list
+```
+
+## Quando Usar e Quando Não Usar Arrays
+
+**Use arrays quando:**
+- Acesso aleatório por índice é frequente
+- Iteração sequencial é o padrão dominante (cache locality)
+- O tamanho é conhecido ou cresce monotonicamente (append-only)
+- Precisa de memória compacta sem overhead de ponteiros
+
+**Não use arrays quando:**
+- Inserções/remoções no início ou meio são frequentes → use linked list ou deque
+- Precisa de busca por valor em O(1) → use hash table
+- O tamanho flutua drasticamente (cresce e encolhe) → pode desperdiçar memória
+- Elementos têm tamanhos variáveis → use array de ponteiros ou outra estrutura
+
+> **Regra de ouro:** Na dúvida, comece com array. É a estrutura de dados com melhor cache locality, menor overhead de memória, e a mais otimizada pelos engines modernos. Só troque quando o profiling mostrar que outra estrutura resolve um gargalo real.

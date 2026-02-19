@@ -1,0 +1,45 @@
+---
+import { getTrack } from '../../lib/tracks';
+
+interface Props {
+  track: string;
+  lessonTitle?: string;
+}
+
+const { track, lessonTitle } = Astro.props;
+const trackInfo = getTrack(track);
+---
+
+<nav class="flex items-center gap-1.5 text-sm text-[var(--color-text-muted)]" aria-label="Breadcrumb">
+  <a href="/" class="transition-colors hover:text-[var(--color-text)]">Home</a>
+  <svg
+    class="h-3.5 w-3.5"
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    stroke-width="2"
+    stroke-linecap="round"
+    stroke-linejoin="round"><path d="m9 18 6-6-6-6"></path></svg
+  >
+  <a href={`/trilha/${track}`} class="transition-colors hover:text-[var(--color-text)]">
+    {trackInfo?.shortTitle}
+  </a>
+  {
+    lessonTitle && (
+      <>
+        <svg
+          class="h-3.5 w-3.5"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          stroke-width="2"
+          stroke-linecap="round"
+          stroke-linejoin="round"
+        >
+          <path d="m9 18 6-6-6-6" />
+        </svg>
+        <span class="max-w-[200px] truncate">{lessonTitle}</span>
+      </>
+    )
+  }
+</nav>

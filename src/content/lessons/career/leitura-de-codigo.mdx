@@ -1,0 +1,501 @@
+---
+title: "Leitura de Código"
+description: "Estratégias avançadas para ler codebases grandes, fazer code review profunda e usar ferramentas de arqueologia de código"
+track: "career"
+order: 2
+section: "Código e Qualidade"
+priority: "high"
+tags: ["code-review", "leitura", "codebase"]
+prerequisites: []
+keyTakeaways:
+  - "Você vai ler 10x mais código do que escrever — ser bom em ler é mais valioso que ser bom em escrever"
+  - "Para entender uma codebase nova, combine abordagens top-down (arquitetura), bottom-up (módulos) e feature tracing (fluxo de dados)"
+  - "Uma review profunda cobre arquitetura, edge cases, race conditions e tratamento de erro, não apenas syntax e formatação"
+---
+
+## Por Que Leitura de Código É a Habilidade Mais Subestimada
+
+Engenheiros experientes passam **~70% do tempo lendo código** e apenas ~30% escrevendo. Apesar disso, quase nenhum curso, bootcamp ou faculdade ensina leitura de código como disciplina. A capacidade de navegar uma codebase desconhecida de milhões de linhas, entender decisões históricas e identificar riscos em code review é o que separa engenheiros eficazes de engenheiros que apenas "sabem programar".
+
+```
+Tempo gasto por engenheiros experientes:
+┌──────────────────────────────────────────────┐
+│ Lendo código existente          ~35%         │
+│ Code review                     ~20%         │
+│ Debugando/investigando          ~15%         │
+│ Escrevendo código novo          ~15%         │
+│ Reuniões e comunicação          ~10%         │
+│ Documentação                    ~5%          │
+└──────────────────────────────────────────────┘
+```
+
+---
+
+## Estratégias para Ler Codebases Grandes
+
+### 1. Abordagem Top-Down (Arquitetura → Detalhes)
+
+Comece pelo panorama geral e vá refinando. Ideal para **onboarding** em um projeto novo.
+
+```
+Passo 1: Documentação e contexto
+  → README.md, ARCHITECTURE.md, ADRs, wiki
+  → Qual problema este sistema resolve?
+  → Quais são os componentes principais?
+
+Passo 2: Estrutura de diretórios
+  → tree -L 2 -d (visão geral das pastas)
+  → Convenção: src/modules/? src/features/? src/domain/?
+  → Onde ficam os testes? Colocados junto ou em pasta separada?
+
+Passo 3: Dependências externas
+  → package.json / go.mod / Cargo.toml / requirements.txt
+  → Quais frameworks? (Express, NestJS, Fastify, Django)
+  → Quais bancos de dados? (drivers presentes)
+  → Quais serviços externos? (SDKs de AWS, Stripe, SendGrid)
+
+Passo 4: Entrypoint e bootstrap
+  → main.ts, index.ts, app.ts, server.ts
+  → Como o servidor inicia? Quais middlewares são registrados?
+  → Qual é a ordem de inicialização?
+
+Passo 5: Diagrama mental dos componentes
+  → API Gateway → Controllers → Services → Repositories → Database
+  → Quais são os bounded contexts?
+  → Onde estão as fronteiras entre módulos?
+```
+
+### 2. Abordagem Bottom-Up (Módulo → Sistema)
+
+Comece por um módulo específico e expanda. Ideal para **fix de bugs** ou entender uma área específica.
+
+```
+Passo 1: Identifique o módulo-alvo
+  → grep -r "função_que_quebrou" --include="*.ts"
+  → Ou use LSP: "Go to Definition" / "Find All References"
+
+Passo 2: Leia os testes primeiro
+  → Testes são documentação executável
+  → Mostram como o módulo DEVE ser usado
+  → Revelam edge cases que o autor considerou
+
+Passo 3: Leia a interface pública
+  → Exports do módulo, tipos públicos, API surface
+  → Não mergulhe na implementação ainda
+
+Passo 4: Rastreie dependências
+  → O que este módulo importa?
+  → Quem importa este módulo? (Find All References)
+  → Qual é o grafo de dependências?
+
+Passo 5: Mergulhe na implementação
+  → Agora sim, leia a lógica interna
+  → Com contexto dos testes e da interface, faz muito mais sentido
+```
+
+### 3. Feature Tracing (Seguindo o Fluxo de Dados)
+
+Siga uma feature end-to-end. Ideal para entender **como as peças se conectam**.
+
+```
+Exemplo: Rastrear "Criar Pedido" em um e-commerce
+
+1. HTTP Request chega
+   → routes/orders.ts → POST /orders
+   → Middleware de autenticação → JWT validation
+   → Middleware de validação → Zod/Joi schema
+
+2. Controller recebe
+   → OrderController.create(req, res)
+   → Extrai dados do body, chama service
+
+3. Service processa
+   → OrderService.placeOrder(dto)
+   → Valida estoque → InventoryService.checkAvailability()
+   → Calcula preço → PricingService.calculate()
+   → Cria order → OrderRepository.save()
+
+4. Efeitos colaterais
+   → Evento OrderCreated emitido
+   → EmailConsumer envia confirmação
+   → InventoryConsumer reserva estoque
+   → AnalyticsConsumer registra métrica
+
+5. Response retorna
+   → 201 Created com order serializada
+   → Headers de rate limiting atualizados
+```
+
+---
+
+## Ferramentas Essenciais para Leitura de Código
+
+### Ferramentas de Terminal
+
+```bash
+# Busca por padrões em toda a codebase
+rg "OrderService" --type ts -l           # Arquivos que mencionam OrderService
+rg "TODO|FIXME|HACK|XXX" --type ts       # Dívida técnica explícita
+rg "catch\s*\(" --type ts -C 3           # Como erros são tratados?
+
+# Estrutura de diretórios (ignorando node_modules, .git)
+tree -L 3 -d -I "node_modules|.git|dist|coverage"
+
+# Contar linhas por tipo de arquivo (dimensionar a codebase)
+cloc src/ --exclude-dir=node_modules
+
+# Encontrar os arquivos mais modificados (hotspots)
+git log --format=format: --name-only --since="6 months ago" | \
+  sort | uniq -c | sort -rn | head -20
+
+# Encontrar arquivos com mais autores (complexidade organizacional)
+git log --format='%aN' --since="6 months ago" -- src/modules/orders/ | \
+  sort | uniq -c | sort -rn
+```
+
+### LSP e Features de IDE
+
+```
+Funcionalidade          | Atalho (VS Code)      | Quando usar
+------------------------|----------------------|---------------------------
+Go to Definition        | F12                  | Navegar para implementação
+Find All References     | Shift+F12            | Quem usa este símbolo?
+Go to Type Definition   | Ctrl+Shift+F12       | Ver o tipo/interface
+Peek Definition         | Alt+F12              | Ver sem trocar de arquivo
+Call Hierarchy          | Shift+Alt+H          | Quem chama esta função?
+Type Hierarchy          | —                    | Árvore de herança
+Symbol Search           | Ctrl+T               | Buscar por nome de símbolo
+Outline View            | Ctrl+Shift+O         | Estrutura do arquivo atual
+```
+
+### ctags e Navegação Offline
+
+```bash
+# Gerar tags para navegação rápida (funciona em qualquer editor)
+ctags -R --exclude=node_modules --exclude=dist src/
+
+# No Vim: Ctrl+] para ir à definição, Ctrl+T para voltar
+# Universal-ctags suporta TypeScript, Go, Rust, Python, etc.
+```
+
+---
+
+## Arqueologia de Código com Git
+
+### git log — Entendendo a Evolução
+
+```bash
+# História de um arquivo específico (quem mudou, quando, por quê)
+git log --oneline --follow -- src/services/OrderService.ts
+
+# Log com diff (ver O QUE mudou em cada commit)
+git log -p -- src/services/OrderService.ts
+
+# Log com estatísticas (quantas linhas mudaram)
+git log --stat -- src/services/OrderService.ts
+
+# Buscar commits que adicionaram/removeram uma string
+git log -S "calculateDiscount" --oneline
+# "Pickaxe" — encontra quando uma função foi criada ou removida
+
+# Buscar commits com mensagem que menciona um ticket
+git log --grep="JIRA-1234" --oneline
+
+# Visualizar evolução do repositório
+git log --oneline --graph --all --decorate | head -50
+```
+
+### git blame — Quem e Por Quê
+
+```bash
+# Blame completo
+git blame src/services/OrderService.ts
+
+# Blame ignorando mudanças de formatação
+git blame -w src/services/OrderService.ts
+
+# Blame ignorando commits de refatoração (precisa de .git-blame-ignore-revs)
+git blame --ignore-revs-file .git-blame-ignore-revs src/services/OrderService.ts
+
+# Ver o commit completo de uma linha específica
+git blame -L 42,42 src/services/OrderService.ts
+# Copie o hash e faça: git show <hash>
+```
+
+### git bisect — Encontrando Quando Quebrou
+
+```bash
+# Busca binária automatizada para encontrar o commit que introduziu um bug
+git bisect start
+git bisect bad              # Commit atual está com bug
+git bisect good v2.1.0      # Esta versão estava funcionando
+
+# Git vai fazer checkout de commits intermediários
+# Teste cada um e marque:
+git bisect good   # ou
+git bisect bad
+
+# Automatizar com script de teste:
+git bisect run npm test -- --testPathPattern="OrderService"
+```
+
+---
+
+## Entendendo Arquitetura a Partir do Código
+
+### Sinais Arquiteturais
+
+```
+Sinal no código                    | O que revela
+-----------------------------------|----------------------------------
+Muitos imports cruzados entre      | Módulos não estão bem separados
+módulos                            | (acoplamento alto)
+
+Uma pasta com 50+ arquivos         | Módulo God — precisa ser dividido
+
+Arquivo com 1000+ linhas           | Provavelmente viola SRP
+
+Interface com 20+ métodos          | Fat interface — viola ISP
+
+Muitos try/catch genéricos         | Tratamento de erro fraco
+(catch (e) { console.log(e) })     |
+
+Testes que precisam de setup       | Acoplamento alto — DIP violado
+com 50+ linhas                     |
+
+Muitas variáveis globais ou        | Estado compartilhado — race
+singletons mutáveis                | conditions prováveis
+
+Funções com 5+ parâmetros          | Responsabilidades misturadas ou
+                                   | falta de objetos de domínio
+```
+
+### Padrões Arquiteturais Comuns (Reconhecimento)
+
+```
+Estrutura de pastas              | Padrão provável
+---------------------------------|---------------------------
+src/controllers, src/services,   | MVC / Layered Architecture
+src/models, src/routes           |
+
+src/modules/orders,              | Modular Monolith
+src/modules/payments,            | (boa separação por domínio)
+src/modules/users                |
+
+src/domain, src/application,     | Clean Architecture /
+src/infrastructure,              | Hexagonal Architecture
+src/presentation                 |
+
+src/commands, src/queries,       | CQRS
+src/events, src/projections      |
+
+services/order-service,          | Microserviços
+services/payment-service,        | (repos separados ou monorepo)
+services/user-service            |
+```
+
+---
+
+## Lendo Código Open Source: Projetos de Referência
+
+### Por Onde Começar
+
+```
+Projeto     | O que aprender                    | Complexidade
+------------|-----------------------------------|-------------
+Express.js  | Middleware pattern, composição     | Baixa
+Redis       | Estruturas de dados, event loop    | Média
+Node.js     | Libuv, event loop, streams         | Alta
+PostgreSQL  | Query planning, MVCC, WAL          | Muito alta
+Linux       | Subsistemas (scheduler, VFS, net)  | Extrema
+```
+
+### Estratégia para Ler Projetos Open Source
+
+```
+1. Leia o CONTRIBUTING.md e ARCHITECTURE.md (se existirem)
+2. Clone e compile/rode — garanta que funciona antes de ler
+3. Escolha UMA feature para rastrear (feature tracing)
+4. Use git log --oneline | head -100 para entender a atividade recente
+5. Leia os testes da feature escolhida
+6. Siga o fluxo de dados com Go to Definition
+7. Tome notas — mantenha um documento com suas descobertas
+8. Contribua com algo pequeno (doc fix, teste) para solidificar
+```
+
+---
+
+## Code Review Profunda
+
+### O Que Revisar (Além do Óbvio)
+
+```
+Review Superficial:               Review Profunda:
+─────────────────────             ───────────────────────
+□ Syntax e formatação             □ Arquitetura e design
+□ Nomes de variáveis              □ Edge cases e race conditions
+□ "Funciona?"                     □ "E se falhar?"
+□ Linting pass                    □ "Escala para 10x o tráfego atual?"
+                                  □ "Outro dev entende isso em 6 meses?"
+                                  □ "Tem teste para o caminho de erro?"
+                                  □ "A abstração está no nível certo?"
+                                  □ "Isto cria acoplamento indesejado?"
+                                  □ "Há impacto em observabilidade?"
+```
+
+### Checklist de Code Review Avançado
+
+```
+CORREÇÃO
+  □ A mudança resolve o problema descrito no ticket?
+  □ Edge cases estão cobertos? (null, vazio, overflow, unicode)
+  □ Race conditions possíveis em código concorrente?
+  □ Idempotência em operações que podem ser retried?
+
+PERFORMANCE
+  □ Queries N+1? (ORM gerando SELECTs em loop)
+  □ Índices necessários no banco foram criados?
+  □ Caching apropriado? Invalidação correta?
+  □ Complexidade de tempo aceitável para o volume esperado?
+  □ Memory leaks? (event listeners não removidos, closures)
+
+SEGURANÇA
+  □ Input validado e sanitizado?
+  □ SQL injection, XSS, CSRF protegidos?
+  □ Dados sensíveis (PII) logados ou expostos?
+  □ Autenticação/autorização verificadas?
+  □ Rate limiting em endpoints públicos?
+
+RESILIÊNCIA
+  □ Erros tratados graciosamente? (não só console.log)
+  □ Timeouts configurados para chamadas externas?
+  □ Circuit breaker para dependências instáveis?
+  □ Retries com exponential backoff?
+  □ Graceful degradation quando dependência falha?
+
+OPERABILIDADE
+  □ Logs estruturados nos pontos certos?
+  □ Métricas de negócio emitidas?
+  □ Tracing propagado corretamente?
+  □ Health check atualizado se nova dependência?
+  □ Feature flag para rollback sem deploy?
+
+COMPATIBILIDADE
+  □ Migration de banco é backwards compatible?
+  □ API pública mantém backward compatibility?
+  □ Mudanças de schema versionadas?
+  □ Config nova tem valor default seguro?
+
+TESTABILIDADE
+  □ Testes unitários para lógica de negócio?
+  □ Testes de integração para I/O?
+  □ Testes cobrem caminhos de erro?
+  □ Mocks/stubs usados corretamente?
+```
+
+### Como Dar Feedback Construtivo
+
+```
+RUIM (hostil, vago):
+  "Isso está errado."
+  "Refatora tudo."
+  "Não faça assim."
+
+BOM (específico, educativo, com alternativa):
+  "Nit: considere extrair esta lógica para um método privado
+   para melhorar testabilidade. Algo como:
+   `private calculateDiscount(tier: UserTier): number`"
+
+  "Pergunta: este endpoint está sem rate limiting. É intencional?
+   Se for público, pode ser vetor de DDoS."
+
+  "Sugestão (não-bloqueante): este try/catch genérico engole erros
+   silenciosamente. Considere logar com contexto:
+   `logger.error('Failed to process order', { orderId, error })`"
+
+PREFIXOS ÚTEIS:
+  "Nit:" → nitpick, não bloqueia merge
+  "Pergunta:" → genuinamente quer entender
+  "Sugestão:" → melhoria opcional
+  "Blocker:" → precisa ser resolvido antes do merge
+  "FYI:" → informação para o autor, não precisa mudar nada
+```
+
+---
+
+## Cognitive Load Theory Aplicada à Leitura de Código
+
+### Os Três Tipos de Carga Cognitiva
+
+```
+1. Carga Intrínseca (complexidade inerente do problema)
+   → Não pode ser reduzida — é a complexidade do domínio
+   → Exemplo: regras de cálculo tributário brasileiro
+
+2. Carga Extrínseca (complexidade acidental do código)
+   → PODE e DEVE ser reduzida
+   → Nomes ruins, abstrações confusas, indireção excessiva
+   → Exemplo: 7 camadas de abstração para salvar no banco
+
+3. Carga Relevante (effort para construir modelo mental)
+   → Necessária para aprendizado
+   → Exemplo: entender o padrão de eventos do sistema
+```
+
+### Técnicas para Reduzir Carga Cognitiva ao Ler
+
+```
+Técnica                         | Como aplicar
+--------------------------------|------------------------------------
+Chunking                        | Agrupe arquivos por módulo, não
+                                | tente ler tudo de uma vez
+
+Modelo mental incremental       | Desenhe diagrama enquanto lê,
+                                | atualize conforme descobre mais
+
+Rubber duck reading             | Explique em voz alta o que cada
+                                | parte faz — expõe gaps de entendimento
+
+Limitar escopo                  | Foque em UMA feature por vez,
+                                | ignore módulos irrelevantes
+
+Notas como cache externo        | Mantenha um doc com descobertas —
+                                | sua memória de trabalho é limitada
+
+Intervalos                      | A cada 25-30min, pause e consolide
+                                | o que aprendeu (técnica Pomodoro)
+```
+
+---
+
+## Pattern Recognition: Identificando Padrões Rapidamente
+
+Com experiência, você reconhece padrões instantaneamente:
+
+```
+Código que você vê                    | Padrão reconhecido
+--------------------------------------|---------------------------
+array.map().filter().reduce()         | Pipeline de transformação
+new Map() + has/get/set               | Cache/memoização manual
+EventEmitter + on/emit                | Observer/Pub-Sub
+middleware(req, res, next)            | Chain of Responsibility
+retry(fn, { maxAttempts, backoff })   | Retry com backoff
+Promise.allSettled([...])             | Fan-out resiliente
+Symbol.iterator + yield              | Iterator/Generator
+Proxy/Reflect                        | Metaprogramação/AOP
+WeakMap + class instance key          | Private data pattern
+Object.freeze(config)                 | Immutable config
+```
+
+---
+
+## Referências
+
+```
+- "Code Reading: The Open Source Perspective" — Diomidis Spinellis
+- "Working Effectively with Legacy Code" — Michael Feathers
+- "Software Design X-Rays" — Adam Tornhill (análise de hotspots)
+- "Your Code as a Crime Scene" — Adam Tornhill
+- "Cognitive Load Theory" — Sweller, Ayres & Kalyuga
+- "A Philosophy of Software Design" — John Ousterhout
+```

@@ -1,0 +1,15 @@
+---
+import MainLayout from '../../../layouts/MainLayout.astro';
+import QuickSort from '../../../components/react/algorithms/sorting/QuickSort';
+---
+
+<MainLayout title="Quick Sort" description="Visualizador animado do algoritmo Quick Sort passo a passo.">
+  <div class="mx-auto max-w-3xl px-4 py-8 sm:px-6">
+    <div class="mb-6">
+      <a href="/diagramas" class="text-sm text-(--color-text-muted) transition-colors hover:text-(--color-text)"
+        >← Voltar aos diagramas</a
+      >
+    </div>
+    <QuickSort client:visible />
+  </div>
+</MainLayout>

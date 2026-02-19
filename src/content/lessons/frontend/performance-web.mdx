@@ -1,0 +1,781 @@
+---
+title: "Performance Web"
+description: "Core Web Vitals e otimizações práticas para frontend performático"
+track: "frontend"
+order: 19
+section: "Qualidade e Performance"
+priority: "medium"
+tags: ["performance", "core-web-vitals", "code-splitting", "lazy-loading"]
+prerequisites: ["react-internals"]
+keyTakeaways:
+  - "Core Web Vitals: LCP < 2.5s, INP < 200ms, CLS < 0.1 são as métricas chave de performance"
+  - "Code splitting com dynamic import() carrega apenas o código necessário para cada rota"
+  - "O Critical Rendering Path determina o tempo até o primeiro pixel — otimizá-lo é a base de tudo"
+---
+
+## Core Web Vitals — As Métricas que Definem Ranking
+
+O Google usa três métricas coletadas de usuários reais (CrUX — Chrome User Experience Report)
+para determinar a pontuação de experiência de página. Essas métricas vêm do percentil 75 (p75)
+dos seus usuários reais, não de testes sintéticos.
+
+```
+LCP (Largest Contentful Paint)
+  Bom: < 2.5s | Precisa melhorar: 2.5s–4.0s | Ruim: > 4.0s
+
+  O que mede: tempo até o maior elemento visível no viewport ser renderizado.
+  Elementos candidatos: <img>, <video poster>, background-image via url(),
+                        blocos de texto (<h1>, <p>) se forem o maior elemento.
+
+  Como é calculado:
+    1. O browser identifica o maior elemento visível a cada frame.
+    2. Se o maior elemento muda (ex: imagem carrega depois do texto), o LCP é atualizado.
+    3. O LCP para de ser reportado após a primeira interação do usuário (click, tap, keydown).
+    4. O valor final é o timestamp do último candidato a LCP antes da interação.
+
+INP (Interaction to Next Paint) — substituiu o FID em março de 2024
+  Bom: < 200ms | Precisa melhorar: 200ms–500ms | Ruim: > 500ms
+
+  O que mede: latência de TODAS as interações durante a sessão (click, tap, keydown).
+  Diferença do FID: o FID media apenas o delay da PRIMEIRA interação.
+  O INP pega o p98 de todas as interações (ignora outliers extremos).
+
+  Decomposição de uma interação:
+    Input Delay:      tempo entre o evento do SO e o início do event handler
+    Processing Time:  tempo executando os event handlers (seu JS)
+    Presentation Delay: tempo entre o handler terminar e o próximo frame ser pintado
+
+  INP = Input Delay + Processing Time + Presentation Delay
+
+CLS (Cumulative Layout Shift)
+  Bom: < 0.1 | Precisa melhorar: 0.1–0.25 | Ruim: > 0.25
+
+  O que mede: instabilidade visual — quanto os elementos "pulam" na tela.
+  Fórmula: Impact Fraction × Distance Fraction
+    - Impact Fraction: % do viewport afetada pelo shift
+    - Distance Fraction: distância que o elemento se moveu / altura do viewport
+
+  Session Windows: o CLS agrupa shifts em janelas de até 5s com gap máximo de 1s.
+  O valor reportado é a maior session window, não a soma total.
+```
+
+## Critical Rendering Path — O Caminho até o Primeiro Pixel
+
+O browser segue uma sequência determinística para transformar HTML/CSS/JS em pixels:
+
+```
+1. HTML parsing → DOM tree
+2. CSS parsing → CSSOM tree
+3. DOM + CSSOM → Render tree
+4. Layout (reflow) → geometria dos elementos
+5. Paint → pixels nas layers
+6. Composite → GPU compõe as layers no frame final
+```
+
+Recursos críticos são aqueles que bloqueiam a renderização inicial:
+
+```html
+<!-- CSS é render-blocking por padrão -->
+<link rel="stylesheet" href="/styles.css" />
+
+<!-- JS é parser-blocking por padrão (bloqueia construção do DOM) -->
+<script src="/app.js"></script>
+
+<!-- async: baixa em paralelo, executa assim que baixou (não garante ordem) -->
+<script async src="/analytics.js"></script>
+
+<!-- defer: baixa em paralelo, executa após o DOM estar pronto (garante ordem) -->
+<script defer src="/app.js"></script>
+
+<!-- Estratégia: mover CSS crítico inline e carregar o resto async -->
+<style>
+  /* CSS crítico inline — apenas o above-the-fold */
+  .hero { display: flex; min-height: 100vh; }
+  .nav { height: 64px; }
+</style>
+
+<!-- CSS não-crítico carregado de forma assíncrona -->
+<link rel="preload" href="/styles.css" as="style"
+      onload="this.onload=null;this.rel='stylesheet'" />
+<noscript><link rel="stylesheet" href="/styles.css" /></noscript>
+```
+
+### Otimizando o Critical Path Length
+
+```
+Critical Path Length = número de roundtrips sequenciais necessários para renderizar.
+
+Exemplo ruim:
+  HTML (1 RT) → CSS (1 RT) → @import em CSS (1 RT) → font (1 RT) = 4 roundtrips
+
+Exemplo otimizado:
+  HTML com CSS inline (1 RT) → tudo em paralelo com preload = 1-2 roundtrips
+
+Técnicas para reduzir:
+  1. Inline CSS crítico (above the fold)
+  2. Eliminar @import em CSS (usar <link> que paraleliza)
+  3. Preload de recursos críticos
+  4. Usar HTTP/2 ou HTTP/3 (multiplexação, sem head-of-line blocking)
+  5. Comprimir com Brotli (melhor que gzip para texto, ~15-20% menor)
+```
+
+## JavaScript Performance — Code Splitting e Tree Shaking
+
+### Dynamic import() — Divisão de Código sob Demanda
+
+```javascript
+// Bundlers (webpack, Rollup, esbuild) criam chunks separados para cada import()
+// O chunk só é baixado quando a função é chamada.
+
+// Route-based splitting — o mais impactante
+const routes = {
+  '/':        () => import('./pages/Home'),
+  '/admin':   () => import('./pages/Admin'),     // Só baixa se acessar /admin
+  '/reports': () => import('./pages/Reports'),   // Chunk separado
+};
+
+async function navigate(path) {
+  const loader = routes[path];
+  if (!loader) return render404();
+
+  const { default: Page } = await loader();
+  renderPage(Page);
+}
+
+// React.lazy — wrapper para componentes com code splitting
+const AdminPanel = React.lazy(() => import('./AdminPanel'));
+// O webpack gera: AdminPanel.[contenthash].js como chunk separado
+
+// Preload de rota no hover — carrega antes do click
+function NavLink({ to, children }) {
+  const preload = () => routes[to]?.(); // Dispara o import() no hover
+
+  return (
+    <a
+      href={to}
+      onMouseEnter={preload}  // ~200-400ms de vantagem antes do click
+      onFocus={preload}
+      onClick={(e) => { e.preventDefault(); navigate(to); }}
+    >
+      {children}
+    </a>
+  );
+}
+```
+
+### Tree Shaking — Eliminação de Código Morto
+
+```javascript
+// Tree shaking funciona APENAS com ES modules (import/export estáticos)
+// CommonJS (require) NÃO é tree-shakeable — o bundler não sabe o que é usado
+
+// RUIM — importa tudo, bundler não consegue eliminar nada
+import _ from 'lodash';           // ~70kB no bundle
+_.get(obj, 'a.b.c');
+
+// BOM — importa apenas a função usada
+import get from 'lodash/get';     // ~2kB no bundle
+
+// MELHOR — use lodash-es (ES modules nativos, tree-shakeable)
+import { get } from 'lodash-es';  // Bundler inclui apenas o get
+
+// Analisar o bundle para encontrar surpresas:
+// npx webpack-bundle-analyzer stats.json
+// ou: npx vite-bundle-visualizer
+
+// sideEffects no package.json — diz ao bundler que módulos são puros
+// package.json:
+{
+  "sideEffects": false  // Nenhum módulo tem side effects → tree shaking agressivo
+}
+// Ou lista específica:
+{
+  "sideEffects": ["./src/polyfills.js", "*.css"]
+}
+```
+
+## Loading Strategies — Resource Hints
+
+```html
+<!-- dns-prefetch: resolve DNS de origens terceiras (barato, ~0 risco) -->
+<link rel="dns-prefetch" href="https://api.example.com" />
+
+<!-- preconnect: DNS + TCP + TLS handshake antecipado (use para origens críticas) -->
+<!-- CUIDADO: cada preconnect mantém uma conexão aberta — use no máximo 2-4 -->
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://cdn.example.com" crossorigin />
+
+<!-- preload: baixa o recurso com alta prioridade AGORA (mesmo parser ainda não viu) -->
+<!-- Use para: hero image, font crítica, CSS crítico, JS do critical path -->
+<link rel="preload" href="/fonts/Inter-var.woff2" as="font" type="font/woff2" crossorigin />
+<link rel="preload" href="/hero.avif" as="image" />
+
+<!-- prefetch: baixa com prioridade BAIXA, para navegação futura -->
+<!-- Use para: próxima página provável, recursos da rota seguinte -->
+<link rel="prefetch" href="/admin/dashboard.js" />
+
+<!-- modulepreload: como preload mas para ES modules (faz parse + compile também) -->
+<link rel="modulepreload" href="/src/app.js" />
+
+<!-- fetchpriority: controla prioridade dentro da mesma categoria -->
+<img src="/hero.avif" fetchpriority="high" />       <!-- LCP image -->
+<img src="/carousel-3.jpg" fetchpriority="low" />    <!-- Below the fold -->
+
+<!-- Fetch priority para scripts -->
+<script src="/critical.js" fetchpriority="high"></script>
+<script src="/analytics.js" fetchpriority="low"></script>
+```
+
+### Prioridades Internas do Browser (Chrome)
+
+```
+Recurso                    | Prioridade padrão | Notas
+---------------------------|-------------------|----------------------------------
+CSS (head)                 | Highest           | Render-blocking
+Script (head, sync)        | High              | Parser-blocking
+Script (async)             | Low → High        | Low durante download, High ao executar
+Script (defer)             | Low               | Executa após DOMContentLoaded
+Imagem (viewport)          | High              | Se visível no viewport inicial
+Imagem (below fold)        | Low               | Lazy por padrão no Chrome 114+
+Font (preloaded)           | High              | Precisa de crossorigin
+Font (via CSS)             | High              | Mas só descoberta após CSSOM
+Fetch/XHR                  | High              | API calls
+```
+
+## Image Optimization — O Maior Impacto no LCP
+
+```html
+<!-- Formato moderno com fallback -->
+<picture>
+  <!-- AVIF: ~50% menor que JPEG, suporte em Chrome/Firefox/Safari 16.4+ -->
+  <source type="image/avif" srcset="/hero.avif" />
+  <!-- WebP: ~25-35% menor que JPEG, suporte universal -->
+  <source type="image/webp" srcset="/hero.webp" />
+  <!-- Fallback JPEG -->
+  <img src="/hero.jpg" alt="Hero" width="1200" height="600"
+       loading="eager" fetchpriority="high" decoding="async" />
+</picture>
+
+<!-- Responsive images com srcset e sizes -->
+<img
+  srcset="
+    /product-400.avif 400w,
+    /product-800.avif 800w,
+    /product-1200.avif 1200w
+  "
+  sizes="
+    (max-width: 640px) 100vw,
+    (max-width: 1024px) 50vw,
+    33vw
+  "
+  src="/product-800.avif"
+  alt="Produto"
+  width="800" height="600"
+  loading="lazy"
+  decoding="async"
+/>
+<!-- width/height são ESSENCIAIS: o browser calcula o aspect-ratio antes de carregar,
+     prevenindo CLS. CSS: img { max-width: 100%; height: auto; } -->
+```
+
+### LQIP — Low Quality Image Placeholder
+
+```jsx
+// Gerar blur hash no build time (ex: com sharp ou blurhash)
+// O placeholder inline (~200-400 bytes base64) aparece instantaneamente.
+
+function OptimizedImage({ src, blurhash, alt, width, height }) {
+  const [loaded, setLoaded] = useState(false);
+
+  return (
+    <div style={{ position: 'relative', aspectRatio: `${width}/${height}` }}>
+      {/* Placeholder inline — sem request extra */}
+      {!loaded && (
+        <img
+          src={`data:image/svg+xml;base64,${generateBlurSVG(blurhash, width, height)}`}
+          alt=""
+          aria-hidden="true"
+          style={{ position: 'absolute', inset: 0, width: '100%', height: '100%' }}
+        />
+      )}
+      <img
+        src={src}
+        alt={alt}
+        width={width}
+        height={height}
+        loading="lazy"
+        decoding="async"
+        onLoad={() => setLoaded(true)}
+        style={{ opacity: loaded ? 1 : 0, transition: 'opacity 0.3s' }}
+      />
+    </div>
+  );
+}
+
+// CDN image transforms (Cloudflare, Imgix, Cloudinary):
+// https://cdn.example.com/image.jpg?w=800&h=600&fit=cover&format=auto&quality=75
+// format=auto → CDN retorna AVIF/WebP baseado no Accept header do browser
+```
+
+## Font Optimization — Eliminar FOIT e FOUT
+
+```css
+/* font-display controla o comportamento durante o carregamento */
+@font-face {
+  font-family: 'Inter';
+  src: url('/fonts/Inter-var.woff2') format('woff2-variations');
+  font-weight: 100 900;        /* Variable font — um arquivo para todos os pesos */
+  font-display: swap;          /* Mostra fallback imediatamente, troca quando carrega */
+  /* font-display: optional;   Não mostra a font se não carregou em ~100ms
+                                Melhor para performance, pior para brand consistency */
+  unicode-range: U+0000-00FF;  /* Subsetting: só caracteres latin básicos */
+}
+
+/* Preload da font crítica (no <head>) */
+/* <link rel="preload" href="/fonts/Inter-var.woff2" as="font"
+         type="font/woff2" crossorigin /> */
+
+/* Metric override — reduz CLS ao trocar fallback pela font custom */
+@font-face {
+  font-family: 'Inter-fallback';
+  src: local('Arial');
+  ascent-override: 90%;
+  descent-override: 22%;
+  line-gap-override: 0%;
+  size-adjust: 107%;
+}
+
+body {
+  font-family: 'Inter', 'Inter-fallback', system-ui, sans-serif;
+}
+```
+
+```
+Variable fonts vs Static fonts:
+  Inter Regular + Bold + Italic + Bold Italic = 4 arquivos × ~90kB = ~360kB
+  Inter Variable = 1 arquivo × ~290kB (suporta qualquer peso de 100-900)
+
+  Regra: se usa 3+ variações, variable font compensa.
+
+Subsetting com pyftsubset (fonttools):
+  $ pyftsubset Inter.woff2 \
+      --output-file=Inter-latin.woff2 \
+      --flavor=woff2 \
+      --unicodes="U+0000-00FF,U+0131,U+0152-0153,U+02BB-02BC,U+2000-206F"
+  # Redução típica: 290kB → 45kB
+```
+
+## HTTP Caching — Cache Headers e Estratégias
+
+```
+# Cache imutável (assets com hash no nome: app.a1b2c3.js)
+Cache-Control: public, max-age=31536000, immutable
+# O browser NUNCA revalida — confia no hash do filename.
+
+# Cache com revalidação (HTML, API responses)
+Cache-Control: public, max-age=0, must-revalidate
+ETag: "abc123"
+# Browser sempre pergunta ao servidor: "mudou desde ETag abc123?"
+# Se não mudou → 304 Not Modified (sem body, ~200 bytes vs megabytes)
+
+# stale-while-revalidate (melhor UX)
+Cache-Control: public, max-age=60, stale-while-revalidate=3600
+# Serve do cache instantaneamente (mesmo stale), revalida em background.
+# Próximo request pega a versão atualizada.
+
+# Vary header — cache por variante
+Vary: Accept-Encoding, Accept
+# CDN cacheia versões separadas para br/gzip/identity e avif/webp/jpeg
+
+# Padrão para SPAs:
+#   index.html         → no-cache (sempre revalida)
+#   *.js, *.css (hash) → immutable, 1 ano
+#   /api/*              → no-store (nunca cacheia dados sensíveis)
+```
+
+### Service Worker — Cache Programático
+
+```javascript
+// sw.js — estratégia Cache-First para assets, Network-First para API
+const CACHE_NAME = 'v1';
+const STATIC_ASSETS = ['/app.js', '/styles.css', '/offline.html'];
+
+self.addEventListener('install', (event) => {
+  event.waitUntil(
+    caches.open(CACHE_NAME).then((cache) => cache.addAll(STATIC_ASSETS))
+  );
+  self.skipWaiting(); // Ativa imediatamente sem esperar abas fecharem
+});
+
+self.addEventListener('activate', (event) => {
+  // Limpa caches antigos
+  event.waitUntil(
+    caches.keys().then((keys) =>
+      Promise.all(keys.filter((k) => k !== CACHE_NAME).map((k) => caches.delete(k)))
+    )
+  );
+  self.clients.claim(); // Controla todas as abas imediatamente
+});
+
+self.addEventListener('fetch', (event) => {
+  const { request } = event;
+  const url = new URL(request.url);
+
+  // API: Network-First com fallback para cache
+  if (url.pathname.startsWith('/api/')) {
+    event.respondWith(
+      fetch(request)
+        .then((response) => {
+          const clone = response.clone();
+          caches.open(CACHE_NAME).then((cache) => cache.put(request, clone));
+          return response;
+        })
+        .catch(() => caches.match(request))
+    );
+    return;
+  }
+
+  // Assets: Cache-First (stale-while-revalidate manual)
+  event.respondWith(
+    caches.match(request).then((cached) => {
+      const fetchPromise = fetch(request).then((response) => {
+        caches.open(CACHE_NAME).then((cache) => cache.put(request, response.clone()));
+        return response;
+      });
+      return cached || fetchPromise; // Retorna cache se existe, senão espera network
+    })
+  );
+});
+```
+
+## Runtime Performance — Main Thread e Concorrência
+
+```javascript
+// requestAnimationFrame — sincroniza com o refresh rate do monitor (~16.6ms a 60Hz)
+// Use para: animações, atualizações visuais contínuas
+function animateScroll(targetY, duration = 300) {
+  const startY = window.scrollY;
+  const startTime = performance.now();
+
+  function tick(currentTime) {
+    const elapsed = currentTime - startTime;
+    const progress = Math.min(elapsed / duration, 1);
+    // Easing function: ease-out cubic
+    const eased = 1 - Math.pow(1 - progress, 3);
+
+    window.scrollTo(0, startY + (targetY - startY) * eased);
+
+    if (progress < 1) {
+      requestAnimationFrame(tick);
+    }
+  }
+
+  requestAnimationFrame(tick);
+}
+
+// requestIdleCallback — executa quando o browser está ocioso
+// Use para: analytics, pre-fetching, trabalho não-urgente
+// CUIDADO: Safari não suporta nativamente (precisa de polyfill)
+function sendAnalytics(data) {
+  const deadline = { timeout: 2000 }; // Garante execução em até 2s
+
+  requestIdleCallback((idleDeadline) => {
+    // idleDeadline.timeRemaining() → ms restantes no idle period (~50ms max)
+    if (idleDeadline.timeRemaining() > 10 || idleDeadline.didTimeout) {
+      navigator.sendBeacon('/analytics', JSON.stringify(data));
+    }
+  }, deadline);
+}
+
+// Web Workers — processamento pesado fora da main thread
+// worker.js
+self.onmessage = ({ data }) => {
+  // Roda em thread separada — NÃO bloqueia a UI
+  const result = heavyComputation(data); // Ex: parse de CSV grande, crypto, sort
+  self.postMessage(result);
+};
+
+// main.js
+const worker = new Worker(new URL('./worker.js', import.meta.url), { type: 'module' });
+worker.postMessage(largeDataset);
+worker.onmessage = ({ data }) => {
+  updateUI(data); // Volta para main thread com o resultado
+};
+
+// Transferable objects — transfere ownership sem copiar (zero-copy)
+const buffer = new ArrayBuffer(1024 * 1024); // 1MB
+worker.postMessage(buffer, [buffer]);
+// Agora buffer.byteLength === 0 na main thread (foi transferido, não copiado)
+```
+
+### Yielding para a Main Thread — Evitando Long Tasks
+
+```javascript
+// Long Task = qualquer task > 50ms na main thread (bloqueia INP)
+// Técnica: quebrar trabalho pesado com yield points
+
+// Usando scheduler.yield() (Chrome 115+)
+async function processLargeList(items) {
+  for (let i = 0; i < items.length; i++) {
+    processItem(items[i]);
+
+    // A cada 10 items, devolve controle para o browser
+    if (i % 10 === 0 && i > 0) {
+      await scheduler.yield(); // Mantém prioridade na fila de tasks
+    }
+  }
+}
+
+// Fallback para browsers sem scheduler.yield()
+function yieldToMain() {
+  return new Promise((resolve) => {
+    // setTimeout(fn, 0) coloca na task queue → browser pode processar eventos entre tasks
+    setTimeout(resolve, 0);
+  });
+}
+
+// isInputPending — verifica se tem input pendente antes de continuar
+async function processWithInputCheck(items) {
+  for (let i = 0; i < items.length; i++) {
+    processItem(items[i]);
+
+    if (navigator.scheduling?.isInputPending?.()) {
+      await yieldToMain(); // Yield imediato se usuário está interagindo
+    }
+  }
+}
+```
+
+## Memory — Detectar e Prevenir Leaks
+
+```javascript
+// Causas comuns de memory leak em SPAs:
+// 1. Event listeners não removidos
+// 2. Closures que capturam referências grandes
+// 3. Timers (setInterval) não limpos
+// 4. Referências em caches/maps que crescem indefinidamente
+// 5. Detached DOM nodes (nó removido do DOM mas referenciado em JS)
+
+// AbortController — cleanup unificado para listeners e fetch
+function setupFeature(element) {
+  const controller = new AbortController();
+  const { signal } = controller;
+
+  element.addEventListener('click', handleClick, { signal });
+  element.addEventListener('mousemove', handleMove, { signal });
+  window.addEventListener('resize', handleResize, { signal });
+
+  // Um único abort limpa TODOS os listeners
+  return () => controller.abort();
+}
+
+// WeakRef — referência que não impede garbage collection
+const cache = new Map();
+
+function getCachedOrCompute(key, computeFn) {
+  const ref = cache.get(key);
+  if (ref) {
+    const value = ref.deref(); // Retorna undefined se o GC já coletou
+    if (value !== undefined) return value;
+  }
+
+  const value = computeFn();
+  cache.set(key, new WeakRef(value));
+  return value;
+}
+
+// FinalizationRegistry — callback quando objeto é coletado pelo GC
+const registry = new FinalizationRegistry((heldValue) => {
+  cache.delete(heldValue); // Limpa a entrada do cache quando o valor é GC'd
+  console.debug(`Cache entry "${heldValue}" was garbage collected`);
+});
+
+function cacheWithAutoCleanup(key, value) {
+  cache.set(key, new WeakRef(value));
+  registry.register(value, key); // Quando value for GC'd, executa o callback com key
+}
+
+// DevTools: detectar leaks
+// 1. Memory tab → Take Heap Snapshot
+// 2. Performar ação suspeita (navegar, abrir/fechar modal)
+// 3. Take outro snapshot
+// 4. Comparison view → ver objetos que só existem no snapshot 2
+// 5. Procurar por: Detached HTMLElement, EventListener, Closure
+```
+
+## Métricas — Como Cada Uma é Calculada
+
+```
+Métrica   | Tipo        | O que mede                      | Como é calculado
+----------|-------------|----------------------------------|------------------------------------------
+TTFB      | Server      | Tempo até o primeiro byte        | navigationStart → responseStart
+FCP       | Loading     | Primeiro conteúdo pintado        | Primeiro texto/imagem renderizado
+LCP       | Loading     | Maior conteúdo pintado           | Último LCP candidate antes da interação
+FID       | Interação   | Delay da primeira interação      | Tempo entre event e handler start (deprecated)
+INP       | Interação   | Responsividade geral             | p98 de todas as interações na sessão
+TBT       | Interação   | Tempo total bloqueando main      | Soma de (duração - 50ms) para cada Long Task
+TTI       | Interação   | Tempo até interatividade         | FCP + 5s quiet window (sem Long Tasks + ≤2 GETs)
+CLS       | Visual      | Instabilidade do layout          | Max session window de layout shifts
+
+Notas importantes:
+  - FID foi substituído pelo INP em março de 2024.
+  - TTI é instável e NÃO faz parte dos Core Web Vitals.
+  - TBT é a melhor proxy lab para INP (correlação forte).
+  - Use TBT no Lighthouse, INP no CrUX (dados reais).
+```
+
+## Tools — Como e Quando Usar Cada Uma
+
+```
+Lighthouse (lab data):
+  - Chrome DevTools → Lighthouse tab
+  - CLI: npx lighthouse https://example.com --output=json --output=html
+  - Roda em condições simuladas (4x CPU slowdown, 3G/4G throttling)
+  - Bom para: debugging, CI/CD gates, comparações A/B
+
+WebPageTest (lab + real):
+  - webpagetest.org — teste de múltiplas localizações e browsers
+  - Filmstrip view: frame a frame do carregamento
+  - Waterfall: identifica recursos bloqueantes
+  - Bom para: análise detalhada de terceiros, comparação de CDNs
+
+Chrome DevTools Performance tab (lab):
+  - Flame chart: visualiza call stack ao longo do tempo
+  - Long Tasks marcados em vermelho (> 50ms)
+  - Layout Shifts marcados na timeline
+  - Bom para: debugging de jank, identificar Long Tasks específicas
+
+CrUX (campo — dados reais):
+  - BigQuery: `chrome-ux-report.all.YYYYMM`
+  - API: CrUX API com origin ou URL-level data
+  - PageSpeed Insights: combina Lighthouse + CrUX
+  - Bom para: dados reais de produção, decisões de ranking
+```
+
+## Framework-Specific — React Performance
+
+```jsx
+// React.memo — evita re-render quando props não mudam (shallow compare)
+const ExpensiveList = React.memo(function ExpensiveList({ items, onSelect }) {
+  return items.map((item) => (
+    <ListItem key={item.id} item={item} onSelect={onSelect} />
+  ));
+});
+// CUIDADO: se onSelect é () => {} inline, SEMPRE é nova referência → memo inútil
+// Solução: useCallback no parent
+
+// useMemo — memoiza computação derivada
+function Dashboard({ transactions }) {
+  const summary = useMemo(() => {
+    // Só recalcula quando transactions muda
+    return transactions.reduce((acc, tx) => ({
+      total: acc.total + tx.amount,
+      count: acc.count + 1,
+      average: (acc.total + tx.amount) / (acc.count + 1),
+    }), { total: 0, count: 0, average: 0 });
+  }, [transactions]);
+
+  return <SummaryCard data={summary} />;
+}
+
+// Virtualização — renderiza apenas o visível (react-window)
+import { FixedSizeList } from 'react-window';
+
+function VirtualList({ items }) {
+  const Row = ({ index, style }) => (
+    <div style={style}>{items[index].name}</div>
+  );
+
+  // 10.000 items → ~15 DOM nodes (apenas os visíveis no viewport)
+  return (
+    <FixedSizeList
+      height={600}
+      width="100%"
+      itemCount={items.length}
+      itemSize={50}
+    >
+      {Row}
+    </FixedSizeList>
+  );
+}
+
+// Streaming SSR — envia HTML progressivamente (React 18+)
+// server.js
+import { renderToPipeableStream } from 'react-dom/server';
+
+app.get('/', (req, res) => {
+  const { pipe } = renderToPipeableStream(<App />, {
+    bootstrapScripts: ['/client.js'],
+    onShellReady() {
+      res.setHeader('Content-Type', 'text/html');
+      pipe(res);
+      // Shell (layout + Suspense fallbacks) é enviado imediatamente.
+      // Conteúdo dentro de <Suspense> é streamed quando resolve.
+    },
+    onError(error) {
+      console.error(error);
+      res.statusCode = 500;
+    },
+  });
+});
+
+// React Server Components (RSC) — componentes que rodam APENAS no server
+// Benefícios:
+//   1. Zero JS enviado ao client para server components
+//   2. Acesso direto a banco/filesystem no componente
+//   3. Dependências pesadas (marked, highlight.js) ficam no server
+
+// app/page.tsx (Next.js — server component por padrão)
+import { db } from '@/lib/db';
+import { marked } from 'marked'; // NÃO vai para o bundle do client
+
+export default async function BlogPost({ params }) {
+  const post = await db.posts.findUnique({ where: { slug: params.slug } });
+  const html = marked(post.content); // Parse de markdown no server
+
+  return (
+    <article>
+      <h1>{post.title}</h1>
+      <div dangerouslySetInnerHTML={{ __html: html }} />
+      {/* Componente interativo → precisa de "use client" */}
+      <LikeButton postId={post.id} />
+    </article>
+  );
+}
+```
+
+## Checklist de Performance para Produção
+
+```
+Rede e Carregamento:
+  □ Brotli habilitado no servidor/CDN
+  □ HTTP/2 ou HTTP/3 habilitado
+  □ CSS crítico inline, resto async
+  □ JS com defer ou async (nenhum script sync no <head>)
+  □ Resource hints: preconnect (API, CDN), preload (font, hero image)
+  □ Code splitting por rota + preload no hover
+
+Assets:
+  □ Imagens em AVIF/WebP com fallback
+  □ srcset + sizes em todas as imagens responsivas
+  □ width/height em todas as <img> (previne CLS)
+  □ lazy loading em imagens abaixo do fold
+  □ fetchpriority="high" na LCP image
+  □ Fonts: woff2, preload, font-display: swap, subsetting
+
+Cache:
+  □ Assets com content hash: Cache-Control: immutable, 1 ano
+  □ HTML/API: max-age=0, must-revalidate + ETag
+  □ Service worker para offline e stale-while-revalidate
+
+Runtime:
+  □ Nenhuma Long Task > 50ms no critical path
+  □ Virtualização para listas > 100 items
+  □ Web Workers para processamento pesado
+  □ Cleanup de listeners, timers e subscriptions
+
+Monitoramento:
+  □ RUM (Real User Monitoring) com web-vitals lib
+  □ Performance budget no CI (Lighthouse score ≥ 90)
+  □ Alertas para regressão de Core Web Vitals (CrUX)
+```

@@ -1,0 +1,569 @@
+---
+title: "Agentes de IA"
+description: "ReAct, tool use, RAG, tipos de memoria e sistemas multi-agente -- como LLMs deixam de ser chatbots e se tornam agentes autonomos"
+track: "ia"
+order: 7
+section: "LLMs & Aplicacoes"
+priority: "high"
+tags: ["agentes", "react", "tool-use", "rag", "multi-agent"]
+prerequisites: []
+keyTakeaways:
+  - "Um agente de IA e um sistema que usa um LLM como nucleo de raciocinio para perceber o ambiente, planejar acoes e executar tarefas de forma autonoma usando ferramentas externas"
+  - "O pattern ReAct (Reason + Act) alterna entre raciocinio (pensamento estruturado) e acao (chamada de ferramentas) em um loop ate resolver a tarefa -- e o fundamento de agentes modernos"
+  - "RAG (Retrieval-Augmented Generation) conecta LLMs a bases de conhecimento externas via busca vetorial, eliminando alucinacoes e mantendo informacoes atualizadas sem retraining"
+---
+
+# Agentes de IA
+
+Um **agente de IA** e um sistema que usa um LLM como motor de raciocinio para tomar decisoes, executar acoes e interagir com o mundo externo. Diferente de um chatbot que apenas gera texto, um agente pode buscar informacoes, executar codigo, chamar APIs e completar tarefas complexas de forma autonoma.
+
+---
+
+## 1. Anatomia de um Agente
+
+```
+┌────────────────────────────────────────────────────────────┐
+│                     AGENTE DE IA                            │
+│                                                            │
+│  ┌──────────────────────────────────────────────────────┐  │
+│  │  LLM (nucleo de raciocinio)                          │  │
+│  │  - Interpreta instrucoes                             │  │
+│  │  - Planeja acoes                                     │  │
+│  │  - Sintetiza resultados                              │  │
+│  └──────────────────────────────────────────────────────┘  │
+│           │              │              │                   │
+│           ▼              ▼              ▼                   │
+│  ┌──────────────┐ ┌───────────┐ ┌───────────────────┐     │
+│  │  FERRAMENTAS │ │  MEMORIA  │ │  PLANEJAMENTO     │     │
+│  │  - APIs      │ │  - Curta  │ │  - Decomposicao   │     │
+│  │  - Busca     │ │  - Longa  │ │    de tarefas     │     │
+│  │  - Codigo    │ │  - RAG    │ │  - Priorizacao    │     │
+│  │  - Arquivos  │ │           │ │  - Reflexao       │     │
+│  └──────────────┘ └───────────┘ └───────────────────┘     │
+└────────────────────────────────────────────────────────────┘
+```
+
+### Componentes Fundamentais
+
+1. **LLM**: o cerebro do agente. Recebe o estado atual (prompt + historico + resultados de ferramentas) e decide o proximo passo
+2. **Ferramentas (Tools)**: acoes concretas que o agente pode executar (buscar na web, ler arquivo, executar SQL, chamar API)
+3. **Memoria**: informacoes persistentes entre turnos (historico de conversas, documentos relevantes, estado de tarefas)
+4. **Planejamento**: capacidade de decompor tarefas complexas em sub-tarefas e executa-las sequencialmente
+
+---
+
+## 2. O Pattern ReAct (Reason + Act)
+
+ReAct (Yao et al., 2022) e o padrao fundamental para agentes. O LLM alterna entre **raciocinio** (Thought) e **acao** (Action) em um loop.
+
+```
+Loop ReAct:
+
+  Tarefa: "Qual e a populacao do pais onde nasceu o criador do Linux?"
+
+  Thought 1: Preciso descobrir quem criou o Linux.
+  Action 1:  search("criador do Linux")
+  Observation 1: Linus Torvalds criou o Linux em 1991.
+
+  Thought 2: Linus Torvalds nasceu na Finlandia. Preciso da populacao.
+  Action 2:  search("populacao Finlandia 2024")
+  Observation 2: A populacao da Finlandia em 2024 e ~5.6 milhoes.
+
+  Thought 3: Tenho a resposta.
+  Action 3:  finish("A populacao da Finlandia e aproximadamente 5.6 milhoes.")
+```
+
+### Implementacao Simplificada
+
+```python
+import json
+
+SYSTEM_PROMPT = """Voce e um agente que resolve tarefas usando ferramentas.
+
+Para cada passo, responda EXATAMENTE neste formato JSON:
+{
+  "thought": "seu raciocinio sobre o proximo passo",
+  "action": "nome_da_ferramenta",
+  "action_input": "parametro da ferramenta"
+}
+
+Ferramentas disponiveis:
+- search(query): busca informacoes na web
+- calculator(expression): calcula expressoes matematicas
+- finish(answer): retorna a resposta final
+
+Quando tiver a resposta, use a ferramenta "finish"."""
+
+def run_agent(task, llm, tools, max_steps=10):
+    messages = [
+        {"role": "system", "content": SYSTEM_PROMPT},
+        {"role": "user", "content": task}
+    ]
+
+    for step in range(max_steps):
+        # LLM decide o proximo passo
+        response = llm.generate(messages)
+        parsed = json.loads(response)
+
+        print(f"\n--- Passo {step + 1} ---")
+        print(f"Thought: {parsed['thought']}")
+        print(f"Action: {parsed['action']}({parsed['action_input']})")
+
+        # Verificar se e resposta final
+        if parsed["action"] == "finish":
+            return parsed["action_input"]
+
+        # Executar ferramenta
+        tool_fn = tools[parsed["action"]]
+        observation = tool_fn(parsed["action_input"])
+        print(f"Observation: {observation}")
+
+        # Adicionar resultado ao contexto
+        messages.append({"role": "assistant", "content": response})
+        messages.append({"role": "user", "content": f"Observation: {observation}"})
+
+    return "Agente nao conseguiu resolver em {max_steps} passos."
+```
+
+---
+
+## 3. Tool Use / Function Calling
+
+APIs modernas de LLMs (OpenAI, Anthropic, Google) suportam **function calling** nativo: o modelo recebe a definicao das ferramentas disponiveis e retorna chamadas de funcao estruturadas.
+
+### Definicao de Tools
+
+```python
+# Definicao de ferramentas (formato OpenAI)
+tools = [
+    {
+        "type": "function",
+        "function": {
+            "name": "get_weather",
+            "description": "Obter a previsao do tempo para uma cidade",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "city": {
+                        "type": "string",
+                        "description": "Nome da cidade"
+                    },
+                    "unit": {
+                        "type": "string",
+                        "enum": ["celsius", "fahrenheit"],
+                        "description": "Unidade de temperatura"
+                    }
+                },
+                "required": ["city"]
+            }
+        }
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "search_database",
+            "description": "Buscar informacoes no banco de dados de produtos",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "query": {"type": "string"},
+                    "limit": {"type": "integer", "default": 10}
+                },
+                "required": ["query"]
+            }
+        }
+    }
+]
+```
+
+### Fluxo de Function Calling
+
+```
+1. Usuario: "Como esta o tempo em Sao Paulo?"
+
+2. LLM recebe o prompt + definicoes de tools
+   LLM responde: {
+     "tool_calls": [{
+       "function": {
+         "name": "get_weather",
+         "arguments": "{\"city\": \"Sao Paulo\", \"unit\": \"celsius\"}"
+       }
+     }]
+   }
+
+3. Aplicacao executa: get_weather("Sao Paulo", "celsius")
+   Resultado: {"temp": 28, "condition": "parcialmente nublado"}
+
+4. Resultado enviado de volta ao LLM como mensagem de tool
+
+5. LLM gera resposta natural:
+   "Em Sao Paulo esta 28°C com ceu parcialmente nublado."
+```
+
+```python
+# Exemplo com a API da Anthropic (Claude)
+import anthropic
+
+client = anthropic.Anthropic()
+
+response = client.messages.create(
+    model="claude-sonnet-4-20250514",
+    max_tokens=1024,
+    tools=[
+        {
+            "name": "get_weather",
+            "description": "Obter previsao do tempo",
+            "input_schema": {
+                "type": "object",
+                "properties": {
+                    "city": {"type": "string", "description": "Cidade"}
+                },
+                "required": ["city"]
+            }
+        }
+    ],
+    messages=[
+        {"role": "user", "content": "Como esta o tempo em Curitiba?"}
+    ]
+)
+
+# O modelo retorna um bloco tool_use indicando
+# que quer chamar get_weather(city="Curitiba")
+for block in response.content:
+    if block.type == "tool_use":
+        print(f"Tool: {block.name}")
+        print(f"Input: {block.input}")
+```
+
+---
+
+## 4. RAG (Retrieval-Augmented Generation)
+
+RAG conecta LLMs a bases de conhecimento externas, resolvendo dois problemas fundamentais:
+1. **Alucinacao**: o modelo inventa informacoes que nao existem
+2. **Conhecimento desatualizado**: o modelo so sabe o que viu no treinamento
+
+### Arquitetura RAG
+
+```
+┌──────────────────────────────────────────────────────────┐
+│                     PIPELINE RAG                          │
+│                                                          │
+│  INDEXACAO (offline):                                    │
+│  ┌─────────┐   ┌──────────┐   ┌────────────────────┐    │
+│  │Documentos│──→│ Chunking │──→│ Embedding Model    │    │
+│  │(PDF, web,│   │(512-1024 │   │(text → vetor)     │    │
+│  │ DB, etc) │   │ tokens)  │   │                    │    │
+│  └─────────┘   └──────────┘   └────────┬───────────┘    │
+│                                         │                │
+│                                         ▼                │
+│                                ┌──────────────────┐      │
+│                                │  Vector Database │      │
+│                                │  (Pinecone,      │      │
+│                                │   pgvector,      │      │
+│                                │   Chroma, etc.)  │      │
+│                                └────────┬─────────┘      │
+│                                         │                │
+│  QUERY (online):                        │                │
+│  ┌──────────┐   ┌──────────┐           │                │
+│  │  Query   │──→│ Embedding│──→ Busca ─┘                │
+│  │ usuario  │   │ da query │   vetorial                  │
+│  └──────────┘   └──────────┘     │                       │
+│                                   ▼                      │
+│                          ┌──────────────────┐            │
+│                          │ Top-K documentos │            │
+│                          │ mais relevantes  │            │
+│                          └────────┬─────────┘            │
+│                                   │                      │
+│                                   ▼                      │
+│  ┌──────────────────────────────────────────────────┐    │
+│  │  Prompt = System + Contexto(docs) + Query        │    │
+│  │                                                  │    │
+│  │  "Com base nos seguintes documentos:             │    │
+│  │   [doc1] [doc2] [doc3]                           │    │
+│  │   Responda: {query do usuario}"                  │    │
+│  └──────────────────────┬───────────────────────────┘    │
+│                          │                               │
+│                          ▼                               │
+│                    ┌──────────┐                          │
+│                    │   LLM    │──→ Resposta              │
+│                    └──────────┘   fundamentada           │
+└──────────────────────────────────────────────────────────┘
+```
+
+### Implementacao Simplificada
+
+```python
+import numpy as np
+
+class SimpleRAG:
+    def __init__(self, embedding_model, llm):
+        self.embedding_model = embedding_model
+        self.llm = llm
+        self.documents = []
+        self.embeddings = []
+
+    def add_documents(self, docs):
+        """Indexar documentos."""
+        for doc in docs:
+            chunks = self._chunk(doc, chunk_size=512)
+            for chunk in chunks:
+                embedding = self.embedding_model.encode(chunk)
+                self.documents.append(chunk)
+                self.embeddings.append(embedding)
+
+        self.embeddings = np.array(self.embeddings)
+
+    def _chunk(self, text, chunk_size=512):
+        """Dividir texto em chunks com overlap."""
+        words = text.split()
+        chunks = []
+        for i in range(0, len(words), chunk_size - 50):  # 50 words overlap
+            chunk = " ".join(words[i:i + chunk_size])
+            chunks.append(chunk)
+        return chunks
+
+    def query(self, question, top_k=3):
+        """Buscar documentos relevantes e gerar resposta."""
+        # 1. Embedding da query
+        query_embedding = self.embedding_model.encode(question)
+
+        # 2. Busca por similaridade (cosine similarity)
+        similarities = self.embeddings @ query_embedding
+        similarities /= (
+            np.linalg.norm(self.embeddings, axis=1) *
+            np.linalg.norm(query_embedding)
+        )
+
+        # 3. Top-K documentos mais relevantes
+        top_indices = np.argsort(similarities)[-top_k:][::-1]
+        relevant_docs = [self.documents[i] for i in top_indices]
+
+        # 4. Construir prompt com contexto
+        context = "\n\n---\n\n".join(relevant_docs)
+        prompt = f"""Com base nos seguintes documentos, responda a pergunta.
+Se a informacao nao estiver nos documentos, diga que nao sabe.
+
+DOCUMENTOS:
+{context}
+
+PERGUNTA: {question}
+
+RESPOSTA:"""
+
+        # 5. Gerar resposta com o LLM
+        return self.llm.generate(prompt)
+```
+
+### Estrategias de Chunking
+
+```
+┌─────────────────────┬──────────────────────────────────────┐
+│ Estrategia          │ Descricao                            │
+├─────────────────────┼──────────────────────────────────────┤
+│ Fixed-size          │ Dividir a cada N tokens              │
+│                     │ Simples, mas pode cortar frases      │
+├─────────────────────┼──────────────────────────────────────┤
+│ Sentence-based      │ Dividir por sentencas/paragrafos     │
+│                     │ Preserva semantica, tamanho variavel │
+├─────────────────────┼──────────────────────────────────────┤
+│ Recursive           │ Tentar dividir por paragrafo, depois │
+│                     │ sentenca, depois caractere           │
+├─────────────────────┼──────────────────────────────────────┤
+│ Semantic chunking   │ Usar embeddings para detectar        │
+│                     │ mudancas de topico e dividir ali     │
+├─────────────────────┼──────────────────────────────────────┤
+│ Overlap             │ Adicionar sobreposicao entre chunks  │
+│                     │ para nao perder contexto nas bordas  │
+│                     │ (tipicamente 10-20% de overlap)      │
+└─────────────────────┴──────────────────────────────────────┘
+```
+
+---
+
+## 5. Tipos de Memoria
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    MEMORIA DO AGENTE                         │
+│                                                             │
+│  ┌──────────────────────────────────────────────────────┐   │
+│  │  CURTA DURACAO (Working Memory)                      │   │
+│  │  - Contexto da conversa atual                        │   │
+│  │  - Historico de mensagens no prompt                  │   │
+│  │  - Limitado pela context window do modelo            │   │
+│  │  - Gerenciado via sliding window ou sumarizacao      │   │
+│  └──────────────────────────────────────────────────────┘   │
+│                                                             │
+│  ┌──────────────────────────────────────────────────────┐   │
+│  │  LONGA DURACAO (Long-Term Memory)                    │   │
+│  │  - Informacoes persistentes entre sessoes            │   │
+│  │  - Implementada via vector database (RAG)            │   │
+│  │  - Preferencias do usuario, fatos aprendidos         │   │
+│  │  - Key-value store para dados estruturados           │   │
+│  └──────────────────────────────────────────────────────┘   │
+│                                                             │
+│  ┌──────────────────────────────────────────────────────┐   │
+│  │  EPISODICA (Episodic Memory)                         │   │
+│  │  - Registros de acoes passadas e seus resultados     │   │
+│  │  - "Da ultima vez que fiz X, deu Y"                  │   │
+│  │  - Permite ao agente aprender com erros              │   │
+│  │  - Implementada como logs + retrieval                │   │
+│  └──────────────────────────────────────────────────────┘   │
+│                                                             │
+│  ┌──────────────────────────────────────────────────────┐   │
+│  │  PROCEDURAL (Procedural Memory)                      │   │
+│  │  - Como fazer tarefas especificas                    │   │
+│  │  - Instrucoes no system prompt                       │   │
+│  │  - Pesos do modelo (conhecimento implicito)          │   │
+│  │  - Exemplos few-shot carregados dinamicamente        │   │
+│  └──────────────────────────────────────────────────────┘   │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Gerenciamento de Contexto
+
+```python
+class ConversationMemory:
+    def __init__(self, max_tokens=4000):
+        self.messages = []
+        self.max_tokens = max_tokens
+
+    def add(self, role, content):
+        self.messages.append({"role": role, "content": content})
+        self._trim()
+
+    def _trim(self):
+        """Manter historico dentro do limite de tokens."""
+        total = sum(len(m["content"]) // 4 for m in self.messages)
+
+        while total > self.max_tokens and len(self.messages) > 2:
+            # Remover mensagens antigas (manter system + ultima user)
+            removed = self.messages.pop(1)
+            total -= len(removed["content"]) // 4
+
+    def get_context(self):
+        return self.messages
+```
+
+---
+
+## 6. Sistemas Multi-Agente
+
+Em vez de um unico agente fazendo tudo, multiplos agentes especializados colaboram para resolver tarefas complexas.
+
+```
+Exemplo: Sistema de desenvolvimento de software
+
+  ┌──────────────┐
+  │  Orquestrador│
+  │  (Planner)   │
+  └──────┬───────┘
+         │
+    ┌────┼────────────────────────┐
+    │    │                        │
+    ▼    ▼                        ▼
+┌────────┐  ┌────────────┐  ┌──────────┐
+│Pesquisador│  │ Programador │  │ Revisor  │
+│          │  │            │  │          │
+│Busca docs│  │Escreve     │  │Revisa    │
+│e specs   │  │codigo      │  │qualidade │
+│          │  │            │  │e testes  │
+└────────┘  └────────────┘  └──────────┘
+
+Fluxo:
+1. Orquestrador recebe tarefa: "Criar endpoint de autenticacao"
+2. Pesquisador busca documentacao relevante e melhores praticas
+3. Programador escreve o codigo com base no contexto
+4. Revisor analisa e sugere melhorias
+5. Programador corrige
+6. Orquestrador valida e entrega
+```
+
+### Padroes de Comunicacao
+
+```
+┌───────────────────┬──────────────────────────────────────┐
+│ Padrao            │ Descricao                            │
+├───────────────────┼──────────────────────────────────────┤
+│ Sequencial        │ A → B → C → D                        │
+│ (pipeline)        │ Cada agente passa resultado ao proximo│
+├───────────────────┼──────────────────────────────────────┤
+│ Hierarquico       │ Orquestrador delega para agentes     │
+│                   │ especializados e consolida resultados │
+├───────────────────┼──────────────────────────────────────┤
+│ Debate            │ Agentes discutem e chegam a consenso  │
+│                   │ Melhora qualidade via adversarial     │
+├───────────────────┼──────────────────────────────────────┤
+│ Broadcast         │ Mesma tarefa para multiplos agentes,  │
+│                   │ melhor resultado selecionado          │
+└───────────────────┴──────────────────────────────────────┘
+```
+
+---
+
+## 7. Frameworks de Agentes
+
+```
+┌──────────────────┬───────────────────────────────────────┐
+│ Framework        │ Descricao                             │
+├──────────────────┼───────────────────────────────────────┤
+│ LangChain        │ Framework Python/JS para chains e     │
+│                  │ agentes. Ecossistema amplo, muitas    │
+│                  │ integracoes. Pode ser verboso.        │
+├──────────────────┼───────────────────────────────────────┤
+│ LlamaIndex       │ Focado em RAG e indexacao de dados.   │
+│                  │ Excelente para conectar LLMs a        │
+│                  │ dados privados.                       │
+├──────────────────┼───────────────────────────────────────┤
+│ CrewAI           │ Framework para sistemas multi-agente. │
+│                  │ Define roles, goals e backstory para  │
+│                  │ cada agente.                          │
+├──────────────────┼───────────────────────────────────────┤
+│ AutoGen          │ Framework da Microsoft para conversas │
+│                  │ multi-agente. Agentes colaboram via   │
+│                  │ chat.                                 │
+├──────────────────┼───────────────────────────────────────┤
+│ Vercel AI SDK    │ SDK TypeScript/Node.js para           │
+│                  │ streaming, tool use e agentes.        │
+│                  │ Excelente DX para web devs.           │
+├──────────────────┼───────────────────────────────────────┤
+│ Anthropic Agent  │ SDK oficial da Anthropic para agentes │
+│  SDK             │ com Claude. Tool use nativo.          │
+└──────────────────┴───────────────────────────────────────┘
+```
+
+---
+
+## 8. Desafios e Consideracoes
+
+```
+Confiabilidade:
+  - Agentes podem entrar em loops infinitos
+  - Ferramentas podem falhar silenciosamente
+  - LLMs podem alucinar sobre resultados de ferramentas
+  Mitigacao: limitar max_steps, validar saidas, human-in-the-loop
+
+Seguranca:
+  - Prompt injection via dados externos (RAG poisoning)
+  - Agentes com acesso a ferramentas perigosas (shell, DB)
+  - Exfiltracao de dados via tool calls maliciosos
+  Mitigacao: sandboxing, principio do menor privilegio, auditoria
+
+Custo:
+  - Agentes fazem MUITAS chamadas ao LLM (1 tarefa = 5-20 chamadas)
+  - Cada chamada inclui todo o contexto acumulado
+  Mitigacao: caching, modelos menores para sub-tarefas, limites
+
+Latencia:
+  - Cada passo do loop requer uma chamada ao LLM (~1-5s)
+  - Tarefas de 10 passos = 10-50 segundos
+  Mitigacao: paralelizar acoes independentes, streaming, pre-fetching
+
+Avaliacao:
+  - Como medir se um agente e "bom"?
+  - Benchmarks: SWE-bench (coding), GAIA (general AI assistant)
+  - Metricas: taxa de sucesso, custo por tarefa, latencia
+```
+
+Agentes de IA representam a fronteira atual da aplicacao pratica de LLMs. A combinacao de raciocinio (LLM) + acao (ferramentas) + conhecimento (RAG) + persistencia (memoria) cria sistemas capazes de resolver tarefas que nenhum componente individual conseguiria sozinho. Nas proximas licoes, exploramos como otimizar a comunicacao com LLMs (prompt engineering) e como construir aplicacoes completas.

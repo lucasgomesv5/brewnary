@@ -1,0 +1,104 @@
+---
+import MainLayout from '../layouts/MainLayout.astro';
+import BookCard from '../components/cards/BookCard.astro';
+import { getCollection } from 'astro:content';
+
+const allBooks = await getCollection('books');
+const books = allBooks.sort((a, b) => a.data.order - b.data.order);
+
+const essential = books.filter((b) => b.data.priority === 'essential');
+const recommended = books.filter((b) => b.data.priority === 'recommended');
+---
+
+<MainLayout title="Livros" description="Curadoria de livros fundamentais em Engenharia de Software.">
+  <div class="mx-auto max-w-5xl px-4 py-12 sm:px-6">
+    <div class="mb-10">
+      <h1 class="mb-3 text-3xl font-bold tracking-tight sm:text-4xl">Livros</h1>
+      <p class="max-w-lg text-sm text-[var(--color-text-muted)]">
+        Curadoria de livros fundamentais. Organizados por relevância.
+      </p>
+    </div>
+
+    {
+      essential.length > 0 && (
+        <section class="mb-10">
+          <h2 class="mb-4 text-lg font-bold">Fundamentais</h2>
+          <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {essential.map((book) => (
+              <BookCard
+                title={book.data.title}
+                author={book.data.author}
+                description={book.data.description}
+                category={book.data.category}
+                priority={book.data.priority}
+                coverColor={book.data.coverColor}
+              />
+            ))}
+          </div>
+        </section>
+      )
+    }
+
+    {
+      recommended.length > 0 && (
+        <section class="mb-10">
+          <h2 class="mb-4 text-lg font-bold">Recomendados</h2>
+          <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            {recommended.map((book) => (
+              <BookCard
+                title={book.data.title}
+                author={book.data.author}
+                description={book.data.description}
+                category={book.data.category}
+                priority={book.data.priority}
+                coverColor={book.data.coverColor}
+              />
+            ))}
+          </div>
+        </section>
+      )
+    }
+
+    <section class="mt-14">
+      <div class="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-alt)] p-6">
+        <h2 class="mb-4 text-lg font-bold">Como ler livros técnicos</h2>
+        <div class="grid grid-cols-1 gap-4 text-sm sm:grid-cols-2">
+          <div class="space-y-3">
+            <div>
+              <p class="text-xs font-medium">1. Não leia linearmente</p>
+              <p class="text-xs text-[var(--color-text-muted)]">
+                Identifique capítulos relevantes no índice. Pule o que não faz sentido ainda.
+              </p>
+            </div>
+            <div>
+              <p class="text-xs font-medium">2. Implemente enquanto lê</p>
+              <p class="text-xs text-[var(--color-text-muted)]">
+                Leu sobre binary search? Implemente. Leu sobre observer pattern? Refatore.
+              </p>
+            </div>
+            <div>
+              <p class="text-xs font-medium">3. Anote com suas palavras</p>
+              <p class="text-xs text-[var(--color-text-muted)]">
+                1-2 frases por capítulo. Use ferramentas como Obsidian para notas interligadas.
+              </p>
+            </div>
+          </div>
+          <div class="space-y-3">
+            <div>
+              <p class="text-xs font-medium">4. Releia após ganhar experiência</p>
+              <p class="text-xs text-[var(--color-text-muted)]">
+                DDIA na primeira leitura: "interessante". DDIA na releitura: "agora entendo o cache failure".
+              </p>
+            </div>
+            <div>
+              <p class="text-xs font-medium">5. Discuta com outros</p>
+              <p class="text-xs text-[var(--color-text-muted)]">
+                Book clubs no trabalho. Ensinar é a melhor forma de consolidar conhecimento.
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+  </div>
+</MainLayout>

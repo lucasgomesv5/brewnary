@@ -1,0 +1,839 @@
+---
+title: "IA na Pratica"
+description: "APIs de LLMs, SDKs, vector databases, embedding search, frameworks e construcao de uma aplicacao RAG completa em Node.js"
+track: "ia"
+order: 9
+section: "LLMs & Aplicacoes"
+priority: "high"
+tags: ["api", "openai", "anthropic", "vector-database", "langchain", "pratica"]
+prerequisites: []
+keyTakeaways:
+  - "APIs de LLMs (OpenAI, Anthropic) seguem um padrao comum: enviar mensagens com roles (system/user/assistant), receber completions com controle de temperature/max_tokens e streaming via Server-Sent Events"
+  - "Vector databases (pgvector, Pinecone, Chroma) armazenam embeddings e permitem busca por similaridade semantica em O(log n) -- sao o backbone de qualquer aplicacao RAG"
+  - "Construir uma aplicacao RAG envolve um pipeline de indexacao (documentos → chunks → embeddings → vector DB) e um pipeline de query (pergunta → embedding → busca vetorial → contexto + LLM → resposta)"
+---
+
+# IA na Pratica
+
+Esta licao conecta toda a teoria das licoes anteriores a implementacoes concretas. Vamos usar APIs reais, construir pipelines de dados e criar uma aplicacao RAG funcional.
+
+---
+
+## 1. APIs de LLMs
+
+### OpenAI API
+
+```javascript
+// npm install openai
+import OpenAI from 'openai';
+
+const openai = new OpenAI({
+  apiKey: process.env.OPENAI_API_KEY, // nunca hardcode!
+});
+
+// Chamada basica
+async function chat(userMessage) {
+  const response = await openai.chat.completions.create({
+    model: 'gpt-4-turbo',
+    messages: [
+      {
+        role: 'system',
+        content: 'Voce e um assistente tecnico especializado em Node.js.'
+      },
+      {
+        role: 'user',
+        content: userMessage
+      }
+    ],
+    temperature: 0.7,    // 0 = deterministico, 1 = criativo
+    max_tokens: 1000,    // limite de tokens na resposta
+    top_p: 0.9,          // nucleus sampling
+  });
+
+  return response.choices[0].message.content;
+}
+
+// Streaming (para respostas em tempo real)
+async function chatStream(userMessage) {
+  const stream = await openai.chat.completions.create({
+    model: 'gpt-4-turbo',
+    messages: [
+      { role: 'user', content: userMessage }
+    ],
+    stream: true,
+  });
+
+  for await (const chunk of stream) {
+    const content = chunk.choices[0]?.delta?.content || '';
+    process.stdout.write(content); // imprimir token por token
+  }
+}
+```
+
+### Anthropic API (Claude)
+
+```javascript
+// npm install @anthropic-ai/sdk
+import Anthropic from '@anthropic-ai/sdk';
+
+const anthropic = new Anthropic({
+  apiKey: process.env.ANTHROPIC_API_KEY,
+});
+
+async function chatClaude(userMessage) {
+  const response = await anthropic.messages.create({
+    model: 'claude-sonnet-4-20250514',
+    max_tokens: 1024,
+    system: 'Voce e um assistente tecnico especializado em Node.js.',
+    messages: [
+      {
+        role: 'user',
+        content: userMessage
+      }
+    ],
+  });
+
+  return response.content[0].text;
+}
+
+// Streaming com Claude
+async function chatClaudeStream(userMessage) {
+  const stream = anthropic.messages.stream({
+    model: 'claude-sonnet-4-20250514',
+    max_tokens: 1024,
+    messages: [
+      { role: 'user', content: userMessage }
+    ],
+  });
+
+  for await (const event of stream) {
+    if (event.type === 'content_block_delta') {
+      process.stdout.write(event.delta.text);
+    }
+  }
+}
+```
+
+### Comparacao de APIs
+
+```
+┌──────────────────┬──────────────────┬──────────────────┐
+│                  │ OpenAI           │ Anthropic        │
+├──────────────────┼──────────────────┼──────────────────┤
+│ Modelos          │ GPT-4, GPT-4o   │ Claude 4 Opus,   │
+│                  │ GPT-4 Turbo     │ Claude 4 Sonnet  │
+├──────────────────┼──────────────────┼──────────────────┤
+│ Formato msgs     │ messages[]       │ messages[]       │
+│                  │ (system no array)│ (system separado)│
+├──────────────────┼──────────────────┼──────────────────┤
+│ Streaming        │ SSE via stream   │ SSE via stream   │
+├──────────────────┼──────────────────┼──────────────────┤
+│ Tool use         │ functions/tools  │ tools[] nativo   │
+├──────────────────┼──────────────────┼──────────────────┤
+│ Max context      │ 128k tokens      │ 200k tokens      │
+├──────────────────┼──────────────────┼──────────────────┤
+│ Preco (input)    │ ~$2.50-10/1M tok │ ~$3-15/1M tok    │
+│ Preco (output)   │ ~$10-30/1M tok   │ ~$15-75/1M tok   │
+└──────────────────┴──────────────────┴──────────────────┘
+```
+
+---
+
+## 2. Embeddings
+
+Embeddings convertem texto em vetores numericos que capturam significado semantico. Textos similares geram vetores proximos no espaco vetorial.
+
+```javascript
+// Gerar embeddings com OpenAI
+async function getEmbedding(text) {
+  const response = await openai.embeddings.create({
+    model: 'text-embedding-3-small', // 1536 dimensoes, barato
+    input: text,
+  });
+
+  return response.data[0].embedding; // array de 1536 floats
+}
+
+// Calcular similaridade de cosseno
+function cosineSimilarity(a, b) {
+  let dotProduct = 0;
+  let normA = 0;
+  let normB = 0;
+
+  for (let i = 0; i < a.length; i++) {
+    dotProduct += a[i] * b[i];
+    normA += a[i] * a[i];
+    normB += b[i] * b[i];
+  }
+
+  return dotProduct / (Math.sqrt(normA) * Math.sqrt(normB));
+}
+
+// Exemplo: busca semantica simples
+async function semanticSearch(query, documents) {
+  const queryEmbedding = await getEmbedding(query);
+
+  const results = await Promise.all(
+    documents.map(async (doc) => ({
+      text: doc,
+      embedding: await getEmbedding(doc),
+    }))
+  );
+
+  return results
+    .map(doc => ({
+      text: doc.text,
+      score: cosineSimilarity(queryEmbedding, doc.embedding),
+    }))
+    .sort((a, b) => b.score - a.score);
+}
+
+// Uso
+const docs = [
+  'Como configurar Docker com Node.js',
+  'Receita de bolo de chocolate',
+  'Deploy de aplicacoes Node.js em producao',
+  'Dicas de jardinagem para iniciantes',
+];
+
+const results = await semanticSearch('como fazer deploy', docs);
+// results[0]: "Deploy de aplicacoes Node.js em producao" (score: 0.89)
+// results[1]: "Como configurar Docker com Node.js" (score: 0.72)
+```
+
+### Modelos de Embedding
+
+```
+┌────────────────────────────┬───────────┬──────────┬──────────┐
+│ Modelo                     │ Dimensoes │ Preco    │ Qualidade│
+├────────────────────────────┼───────────┼──────────┼──────────┤
+│ text-embedding-3-small     │ 1536      │ $0.02/1M │ Boa      │
+│ (OpenAI)                   │           │          │          │
+├────────────────────────────┼───────────┼──────────┼──────────┤
+│ text-embedding-3-large     │ 3072      │ $0.13/1M │ Excelente│
+│ (OpenAI)                   │           │          │          │
+├────────────────────────────┼───────────┼──────────┼──────────┤
+│ voyage-3                   │ 1024      │ $0.06/1M │ Excelente│
+│ (Voyage AI)                │           │          │          │
+├────────────────────────────┼───────────┼──────────┼──────────┤
+│ all-MiniLM-L6-v2           │ 384       │ Gratuito │ Boa      │
+│ (open-source, local)       │           │ (local)  │          │
+├────────────────────────────┼───────────┼──────────┼──────────┤
+│ nomic-embed-text           │ 768       │ Gratuito │ Boa      │
+│ (open-source, local)       │           │ (local)  │          │
+└────────────────────────────┴───────────┴──────────┴──────────┘
+```
+
+---
+
+## 3. Vector Databases
+
+Vector databases sao bancos otimizados para armazenar e buscar vetores (embeddings) por similaridade.
+
+### pgvector (PostgreSQL)
+
+A opcao mais pragmatica para a maioria dos projetos: usa o PostgreSQL que voce provavelmente ja tem.
+
+```sql
+-- Instalar extensao
+CREATE EXTENSION vector;
+
+-- Criar tabela com coluna de embedding
+CREATE TABLE documents (
+  id SERIAL PRIMARY KEY,
+  content TEXT NOT NULL,
+  metadata JSONB DEFAULT '{}',
+  embedding vector(1536)  -- dimensao do modelo de embedding
+);
+
+-- Criar indice para busca rapida (HNSW)
+CREATE INDEX ON documents
+  USING hnsw (embedding vector_cosine_ops)
+  WITH (m = 16, ef_construction = 64);
+
+-- Inserir documento
+INSERT INTO documents (content, embedding)
+VALUES (
+  'Como configurar Docker com Node.js',
+  '[0.023, -0.045, 0.078, ...]'::vector
+);
+
+-- Buscar os 5 documentos mais similares
+SELECT content, metadata,
+       1 - (embedding <=> $1::vector) AS similarity
+FROM documents
+ORDER BY embedding <=> $1::vector
+LIMIT 5;
+
+-- O operador <=> calcula distancia de cosseno
+-- Menor distancia = maior similaridade
+```
+
+```javascript
+// pgvector com Node.js
+import pg from 'pg';
+import pgvector from 'pgvector/pg';
+
+const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
+await pgvector.registerTypes(pool);
+
+async function indexDocument(content, embedding) {
+  await pool.query(
+    'INSERT INTO documents (content, embedding) VALUES ($1, $2)',
+    [content, pgvector.toSql(embedding)]
+  );
+}
+
+async function searchSimilar(queryEmbedding, limit = 5) {
+  const result = await pool.query(
+    `SELECT content, metadata,
+            1 - (embedding <=> $1::vector) AS similarity
+     FROM documents
+     ORDER BY embedding <=> $1::vector
+     LIMIT $2`,
+    [pgvector.toSql(queryEmbedding), limit]
+  );
+
+  return result.rows;
+}
+```
+
+### Pinecone (Managed Service)
+
+```javascript
+// npm install @pinecone-database/pinecone
+import { Pinecone } from '@pinecone-database/pinecone';
+
+const pinecone = new Pinecone({
+  apiKey: process.env.PINECONE_API_KEY,
+});
+
+const index = pinecone.Index('my-documents');
+
+// Inserir (upsert)
+await index.upsert([
+  {
+    id: 'doc-001',
+    values: embedding, // array de floats
+    metadata: {
+      source: 'docs/setup.md',
+      title: 'Setup Guide',
+    },
+  },
+]);
+
+// Buscar
+const results = await index.query({
+  vector: queryEmbedding,
+  topK: 5,
+  includeMetadata: true,
+});
+```
+
+### Comparacao de Vector Databases
+
+```
+┌──────────────┬──────────────┬──────────────┬───────────────┐
+│              │ pgvector     │ Pinecone     │ Chroma        │
+├──────────────┼──────────────┼──────────────┼───────────────┤
+│ Tipo         │ Extensao PG  │ Managed SaaS │ Open-source   │
+├──────────────┼──────────────┼──────────────┼───────────────┤
+│ Quando usar  │ Ja usa PG,   │ Escala       │ Prototipacao, │
+│              │ <10M vetores │ massiva,     │ dev local,    │
+│              │              │ serverless   │ <100k vetores │
+├──────────────┼──────────────┼──────────────┼───────────────┤
+│ Preco        │ Gratis       │ Pago         │ Gratis        │
+│              │ (self-hosted)│ ($70+/mes)   │ (self-hosted) │
+├──────────────┼──────────────┼──────────────┼───────────────┤
+│ Filtros      │ SQL completo │ Metadata     │ Metadata      │
+│ metadata     │              │ filters      │ filters       │
+├──────────────┼──────────────┼──────────────┼───────────────┤
+│ Algoritmo    │ IVFFlat,     │ Proprietario │ HNSW          │
+│              │ HNSW         │              │               │
+└──────────────┴──────────────┴──────────────┴───────────────┘
+```
+
+---
+
+## 4. Frameworks: LangChain e LlamaIndex
+
+### Vercel AI SDK (Recomendado para Web Devs)
+
+```javascript
+// npm install ai @ai-sdk/openai
+import { generateText, streamText } from 'ai';
+import { openai } from '@ai-sdk/openai';
+
+// Geracao simples
+const { text } = await generateText({
+  model: openai('gpt-4-turbo'),
+  prompt: 'Explique event loop do Node.js em 3 frases.',
+});
+
+// Streaming
+const result = streamText({
+  model: openai('gpt-4-turbo'),
+  messages: [
+    { role: 'user', content: 'Como funciona o V8?' }
+  ],
+});
+
+for await (const chunk of result.textStream) {
+  process.stdout.write(chunk);
+}
+
+// Tool use com Vercel AI SDK
+import { tool } from 'ai';
+import { z } from 'zod';
+
+const result = await generateText({
+  model: openai('gpt-4-turbo'),
+  tools: {
+    weather: tool({
+      description: 'Obter previsao do tempo',
+      parameters: z.object({
+        city: z.string().describe('Nome da cidade'),
+      }),
+      execute: async ({ city }) => {
+        // chamada real a API de clima
+        return { temp: 25, condition: 'ensolarado' };
+      },
+    }),
+  },
+  prompt: 'Como esta o tempo em Sao Paulo?',
+});
+```
+
+### LangChain (JavaScript)
+
+```javascript
+// npm install langchain @langchain/openai
+import { ChatOpenAI } from '@langchain/openai';
+import { ChatPromptTemplate } from '@langchain/core/prompts';
+import { StringOutputParser } from '@langchain/core/output_parsers';
+
+const model = new ChatOpenAI({
+  modelName: 'gpt-4-turbo',
+  temperature: 0,
+});
+
+// Chain simples
+const prompt = ChatPromptTemplate.fromMessages([
+  ['system', 'Voce e um assistente tecnico que responde em {language}.'],
+  ['human', '{question}'],
+]);
+
+const chain = prompt.pipe(model).pipe(new StringOutputParser());
+
+const result = await chain.invoke({
+  language: 'portugues',
+  question: 'O que e uma closure em JavaScript?',
+});
+```
+
+---
+
+## 5. Construindo uma Aplicacao RAG Completa
+
+Vamos juntar tudo: embeddings + pgvector + LLM para construir um sistema de perguntas e respostas sobre documentacao.
+
+```javascript
+// rag-app.js — Aplicacao RAG completa em Node.js
+import OpenAI from 'openai';
+import pg from 'pg';
+import pgvector from 'pgvector/pg';
+import { readFileSync, readdirSync } from 'fs';
+import { join } from 'path';
+
+// Configuracao
+const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL });
+
+// 1. SETUP: Criar tabela
+async function setup() {
+  await pool.query('CREATE EXTENSION IF NOT EXISTS vector');
+  await pool.query(`
+    CREATE TABLE IF NOT EXISTS doc_chunks (
+      id SERIAL PRIMARY KEY,
+      content TEXT NOT NULL,
+      source VARCHAR(500),
+      chunk_index INTEGER,
+      embedding vector(1536),
+      created_at TIMESTAMP DEFAULT NOW()
+    )
+  `);
+  await pool.query(`
+    CREATE INDEX IF NOT EXISTS doc_chunks_embedding_idx
+    ON doc_chunks USING hnsw (embedding vector_cosine_ops)
+  `);
+  await pgvector.registerTypes(pool);
+}
+
+// 2. CHUNKING: Dividir texto em pedacos
+function chunkText(text, maxChunkSize = 500, overlap = 50) {
+  const sentences = text.split(/[.!?]\s+/);
+  const chunks = [];
+  let currentChunk = '';
+
+  for (const sentence of sentences) {
+    if ((currentChunk + sentence).split(/\s+/).length > maxChunkSize) {
+      if (currentChunk) chunks.push(currentChunk.trim());
+      // Overlap: manter ultimas palavras do chunk anterior
+      const words = currentChunk.split(/\s+/);
+      currentChunk = words.slice(-overlap).join(' ') + ' ' + sentence;
+    } else {
+      currentChunk += (currentChunk ? '. ' : '') + sentence;
+    }
+  }
+
+  if (currentChunk) chunks.push(currentChunk.trim());
+  return chunks;
+}
+
+// 3. EMBEDDING: Gerar embeddings com batch
+async function getEmbeddings(texts) {
+  const response = await openai.embeddings.create({
+    model: 'text-embedding-3-small',
+    input: texts,
+  });
+  return response.data.map(d => d.embedding);
+}
+
+// 4. INDEXACAO: Processar e indexar documentos
+async function indexDocuments(docsDir) {
+  const files = readdirSync(docsDir).filter(f => f.endsWith('.md'));
+  console.log(`Indexando ${files.length} arquivos...`);
+
+  for (const file of files) {
+    const content = readFileSync(join(docsDir, file), 'utf-8');
+    const chunks = chunkText(content);
+    console.log(`  ${file}: ${chunks.length} chunks`);
+
+    // Batch embeddings (max 2048 por chamada)
+    const batchSize = 100;
+    for (let i = 0; i < chunks.length; i += batchSize) {
+      const batch = chunks.slice(i, i + batchSize);
+      const embeddings = await getEmbeddings(batch);
+
+      // Inserir no banco
+      for (let j = 0; j < batch.length; j++) {
+        await pool.query(
+          `INSERT INTO doc_chunks (content, source, chunk_index, embedding)
+           VALUES ($1, $2, $3, $4)`,
+          [batch[j], file, i + j, pgvector.toSql(embeddings[j])]
+        );
+      }
+    }
+  }
+
+  console.log('Indexacao concluida.');
+}
+
+// 5. BUSCA: Encontrar chunks relevantes
+async function searchRelevant(query, topK = 5) {
+  const [queryEmbedding] = await getEmbeddings([query]);
+
+  const result = await pool.query(
+    `SELECT content, source, chunk_index,
+            1 - (embedding <=> $1::vector) AS similarity
+     FROM doc_chunks
+     ORDER BY embedding <=> $1::vector
+     LIMIT $2`,
+    [pgvector.toSql(queryEmbedding), topK]
+  );
+
+  return result.rows;
+}
+
+// 6. QUERY: Pipeline RAG completo
+async function askQuestion(question) {
+  // Buscar documentos relevantes
+  const relevantDocs = await searchRelevant(question, 5);
+
+  // Verificar se ha resultados relevantes
+  if (relevantDocs.length === 0 || relevantDocs[0].similarity < 0.3) {
+    return {
+      answer: 'Nao encontrei informacoes relevantes na documentacao.',
+      sources: [],
+    };
+  }
+
+  // Construir contexto
+  const context = relevantDocs
+    .map((doc, i) => `[${i + 1}] (${doc.source}):\n${doc.content}`)
+    .join('\n\n---\n\n');
+
+  // Gerar resposta
+  const response = await openai.chat.completions.create({
+    model: 'gpt-4-turbo',
+    temperature: 0,
+    messages: [
+      {
+        role: 'system',
+        content: `Voce e um assistente que responde perguntas com base na documentacao fornecida.
+
+REGRAS:
+- Responda APENAS com base no contexto fornecido
+- Cite as fontes usando [N] ao fazer afirmacoes
+- Se a informacao nao estiver no contexto, diga claramente
+- Responda em portugues brasileiro`
+      },
+      {
+        role: 'user',
+        content: `CONTEXTO:\n${context}\n\nPERGUNTA: ${question}`
+      }
+    ],
+  });
+
+  return {
+    answer: response.choices[0].message.content,
+    sources: relevantDocs.map(d => ({
+      source: d.source,
+      similarity: d.similarity.toFixed(3),
+      preview: d.content.substring(0, 100) + '...',
+    })),
+    tokens: {
+      input: response.usage.prompt_tokens,
+      output: response.usage.completion_tokens,
+    },
+  };
+}
+
+// 7. USO
+async function main() {
+  await setup();
+
+  // Indexar (rodar uma vez)
+  // await indexDocuments('./docs');
+
+  // Perguntar
+  const result = await askQuestion('Como configurar autenticacao JWT?');
+  console.log('\nResposta:', result.answer);
+  console.log('\nFontes:', result.sources);
+  console.log('\nTokens:', result.tokens);
+
+  await pool.end();
+}
+
+main().catch(console.error);
+```
+
+---
+
+## 6. Gestao de Custos
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│                ESTRATEGIAS DE REDUCAO DE CUSTO                │
+├──────────────────────────────────────────────────────────────┤
+│                                                              │
+│  1. CACHING                                                  │
+│     - Cache de respostas para queries identicas             │
+│     - Cache semantico (queries similares → mesma resposta)   │
+│     - TTL baseado no tipo de conteudo                       │
+│                                                              │
+│  2. MODELO ADEQUADO                                         │
+│     - Tarefas simples → gpt-4o-mini / claude-3-haiku        │
+│     - Tarefas complexas → gpt-4 / claude-opus               │
+│     - Roteamento automatico baseado na complexidade          │
+│                                                              │
+│  3. PROMPT OPTIMIZATION                                     │
+│     - Minimizar tokens no system prompt                     │
+│     - Comprimir contexto (sumarizar documentos longos)       │
+│     - Limitar max_tokens quando possivel                     │
+│                                                              │
+│  4. BATCHING                                                │
+│     - Agrupar requisicoes para embeddings (1 call vs N)      │
+│     - Processar documentos em batch offline                  │
+│                                                              │
+│  5. MONITORAMENTO                                           │
+│     - Rastrear custo por feature/endpoint                    │
+│     - Alertas para spikes de uso                            │
+│     - Dashboards de custo por usuario/time                  │
+│                                                              │
+└──────────────────────────────────────────────────────────────┘
+```
+
+```javascript
+// Cache semantico simples
+class SemanticCache {
+  constructor(similarityThreshold = 0.95) {
+    this.cache = []; // Em producao, usar Redis ou vector DB
+    this.threshold = similarityThreshold;
+  }
+
+  async get(query, getEmbeddingFn) {
+    const queryEmb = await getEmbeddingFn(query);
+
+    for (const entry of this.cache) {
+      const similarity = cosineSimilarity(queryEmb, entry.embedding);
+      if (similarity >= this.threshold) {
+        console.log(`Cache hit (similarity: ${similarity.toFixed(3)})`);
+        return entry.response;
+      }
+    }
+
+    return null; // cache miss
+  }
+
+  async set(query, response, getEmbeddingFn) {
+    const embedding = await getEmbeddingFn(query);
+    this.cache.push({ query, embedding, response, timestamp: Date.now() });
+  }
+}
+```
+
+---
+
+## 7. Rate Limiting e Resiliencia
+
+```javascript
+// Rate limiter com exponential backoff
+import pRetry from 'p-retry';
+
+async function callLLMWithRetry(fn) {
+  return pRetry(fn, {
+    retries: 3,
+    onFailedAttempt: (error) => {
+      if (error.status === 429) {
+        // Rate limited — esperar o tempo indicado
+        const retryAfter = error.headers?.['retry-after'] || 60;
+        console.log(`Rate limited. Retry em ${retryAfter}s...`);
+      }
+      console.log(
+        `Tentativa ${error.attemptNumber} falhou. ` +
+        `${error.retriesLeft} tentativas restantes.`
+      );
+    },
+    minTimeout: 1000,  // 1 segundo
+    factor: 2,          // exponential: 1s, 2s, 4s
+  });
+}
+
+// Uso
+const response = await callLLMWithRetry(() =>
+  openai.chat.completions.create({
+    model: 'gpt-4-turbo',
+    messages: [{ role: 'user', content: 'Ola' }],
+  })
+);
+```
+
+---
+
+## 8. Avaliacao (Evals)
+
+Avaliar aplicacoes de IA e tao importante quanto desenvolve-las.
+
+```javascript
+// Framework basico de avaliacao
+async function evaluateRAG(testCases, ragFunction) {
+  const results = [];
+
+  for (const testCase of testCases) {
+    const startTime = Date.now();
+    const response = await ragFunction(testCase.question);
+    const latency = Date.now() - startTime;
+
+    // Metricas
+    const evaluation = {
+      question: testCase.question,
+      latency,
+      hasAnswer: response.answer !== null,
+      sourcesUsed: response.sources.length,
+    };
+
+    // Avaliar corretude com LLM-as-judge
+    if (testCase.expectedAnswer) {
+      const judgeResponse = await openai.chat.completions.create({
+        model: 'gpt-4-turbo',
+        temperature: 0,
+        messages: [{
+          role: 'user',
+          content: `Compare a resposta gerada com a resposta esperada.
+Retorne APENAS um JSON: {"correct": true/false, "explanation": "..."}
+
+Pergunta: ${testCase.question}
+Resposta esperada: ${testCase.expectedAnswer}
+Resposta gerada: ${response.answer}`
+        }],
+      });
+
+      const judge = JSON.parse(judgeResponse.choices[0].message.content);
+      evaluation.correct = judge.correct;
+      evaluation.explanation = judge.explanation;
+    }
+
+    results.push(evaluation);
+  }
+
+  // Sumarizar
+  const correct = results.filter(r => r.correct).length;
+  const avgLatency = results.reduce((s, r) => s + r.latency, 0) / results.length;
+
+  return {
+    totalTests: results.length,
+    accuracy: (correct / results.length * 100).toFixed(1) + '%',
+    avgLatencyMs: avgLatency.toFixed(0),
+    details: results,
+  };
+}
+
+// Test suite
+const testCases = [
+  {
+    question: 'Como configurar JWT no Express?',
+    expectedAnswer: 'Use a biblioteca jsonwebtoken para gerar e verificar tokens...',
+  },
+  {
+    question: 'Qual a porta padrao do PostgreSQL?',
+    expectedAnswer: '5432',
+  },
+];
+
+const evalResults = await evaluateRAG(testCases, askQuestion);
+console.log(evalResults);
+```
+
+---
+
+## 9. Checklist de Producao
+
+```
+PRE-LANCAMENTO:
+  [ ] API keys em environment variables (nunca no codigo)
+  [ ] Rate limiting implementado (por usuario e global)
+  [ ] Retry com exponential backoff para chamadas a LLM
+  [ ] Limites de max_tokens e custo por requisicao
+  [ ] Input sanitization (prevenir prompt injection)
+  [ ] Logging estruturado (prompt, response, latencia, custo)
+  [ ] Error handling para timeouts e falhas de API
+  [ ] Cache de embeddings e respostas
+
+MONITORAMENTO:
+  [ ] Custo por dia/semana/mes
+  [ ] Latencia p50, p95, p99
+  [ ] Taxa de erro (API failures, parse failures)
+  [ ] Qualidade das respostas (sampling + avaliacao)
+  [ ] Uso de tokens por endpoint/feature
+
+SEGURANCA:
+  [ ] Prompt injection defenses
+  [ ] Rate limiting por usuario
+  [ ] Nao expor system prompts ao usuario
+  [ ] Filtrar/validar output antes de exibir
+  [ ] Audit log de todas as interacoes
+
+OTIMIZACAO:
+  [ ] Modelo mais barato para tarefas simples
+  [ ] Batch processing para embeddings
+  [ ] Semantic cache para queries repetidas
+  [ ] Chunking otimizado com overlap
+  [ ] Indice HNSW/IVFFlat tunado para volume de dados
+```
+
+---
+
+## Resumo
+
+Construir aplicacoes de IA em producao envolve muito mais do que chamar uma API. O pipeline completo inclui: escolher o modelo e provider corretos, projetar o sistema de embeddings e busca vetorial, implementar RAG com chunking inteligente, adicionar caching e rate limiting, monitorar custos e qualidade e manter guardrails de seguranca. Os fundamentos cobertos nesta trilha -- desde a matematica de vetores ate prompt engineering -- convergem aqui na construcao de sistemas reais. A IA deixou de ser um topico academico: e uma ferramenta de engenharia de software que requer as mesmas disciplinas de qualquer sistema em producao.

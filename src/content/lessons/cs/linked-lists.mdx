@@ -1,0 +1,933 @@
+---
+title: "Linked Lists (Listas Ligadas)"
+description: "Estrutura de dados com alocação não-contígua onde cada nó aponta para o próximo — análise formal de operações, sentinel nodes, Floyd's cycle detection, LRU Cache e Skip Lists"
+track: "cs"
+order: 8
+section: "Estruturas de Dados"
+priority: "high"
+tags: ["linked-list", "estruturas-de-dados", "ponteiros", "nós", "cache", "skip-list"]
+prerequisites: ["arrays"]
+keyTakeaways:
+  - "Linked Lists não são contíguas na memória: cada nó aponta para o próximo, resultando em cache misses frequentes"
+  - "Inserção no head é O(1) vs O(n) em arrays; porém acesso aleatório é O(n) vs O(1)"
+  - "Doubly Linked List + HashMap é a base da LRU Cache — uma das estruturas mais cobradas em entrevistas"
+  - "Skip Lists são estruturas probabilísticas sobre linked lists que alcançam O(log n) em busca, inserção e remoção"
+---
+
+# Linked Lists (Listas Ligadas)
+
+## 1. Modelo Mental e Fundamentos
+
+Uma **linked list** é uma estrutura de dados onde cada elemento (chamado **nó**) contém um valor e um **ponteiro** (referência) para o próximo nó na sequência. Diferente de arrays, os nós **não ocupam posições contíguas na memória** — cada nó é alocado independentemente no heap, e a coesão da estrutura depende exclusivamente dos ponteiros.
+
+```
+Memória (array — contígua):
+┌────┬────┬────┬────┐
+│ 10 │ 20 │ 30 │ 40 │   endereços 0x100, 0x104, 0x108, 0x10C
+└────┴────┴────┴────┘
+
+Memória (linked list — fragmentada):
+0x200: [10 | 0x5A0] ──→ 0x5A0: [20 | 0x340] ──→ 0x340: [30 | 0x7F0] ──→ 0x7F0: [40 | null]
+```
+
+Essa característica tem consequências profundas em termos de **cache locality**. CPUs modernas carregam dados em **cache lines** (tipicamente 64 bytes). Quando você itera sobre um array, os elementos adjacentes já estão no cache (spatial locality). Em uma linked list, cada `node.next` pode estar em uma página de memória completamente diferente, causando **cache misses** constantes. Na prática, isso significa que uma linked list pode ser **10-50x mais lenta** que um array para iteração sequencial, mesmo com a mesma complexidade assintótica O(n).
+
+### Quando usar Linked Lists
+
+| Critério | Array / `ArrayList` | Linked List |
+|---|---|---|
+| Acesso por índice | **O(1)** | O(n) |
+| Inserção no início | O(n) (shift) | **O(1)** |
+| Inserção no fim | O(1) amortizado | O(1) com ponteiro `tail` |
+| Inserção no meio (dado o nó) | O(n) (shift) | **O(1)** |
+| Remoção (dado o nó) | O(n) (shift) | **O(1)** (doubly) |
+| Cache locality | **Excelente** | Péssima |
+| Memory overhead | Baixo | Alto (ponteiros extras) |
+
+**Regra prática:** use linked lists quando há inserções/remoções frequentes em posições arbitrárias e você já possui referência ao nó (e.g., LRU Cache). Para a maioria dos outros casos, arrays são superiores na prática.
+
+---
+
+## 2. Singly Linked List — Implementação Completa
+
+Uma singly linked list é a forma mais simples: cada nó possui `value` e `next`. Vamos implementar uma versão robusta com TypeScript generics.
+
+```typescript
+class SinglyNode<T> {
+  constructor(
+    public value: T,
+    public next: SinglyNode<T> | null = null
+  ) {}
+}
+
+class SinglyLinkedList<T> {
+  private head: SinglyNode<T> | null = null;
+  private _size: number = 0;
+
+  get size(): number {
+    return this._size;
+  }
+
+  /**
+   * Inserção no início — O(1)
+   * Apenas redireciona o ponteiro head.
+   */
+  prepend(value: T): void {
+    this.head = new SinglyNode(value, this.head);
+    this._size++;
+  }
+
+  /**
+   * Inserção no fim — O(n)
+   * Precisa percorrer até o último nó.
+   * (Com ponteiro tail seria O(1), mas simplificamos aqui.)
+   */
+  append(value: T): void {
+    const node = new SinglyNode(value);
+    if (!this.head) {
+      this.head = node;
+    } else {
+      let current = this.head;
+      while (current.next) {
+        current = current.next;
+      }
+      current.next = node;
+    }
+    this._size++;
+  }
+
+  /**
+   * Inserção em posição arbitrária — O(n)
+   * Precisa percorrer até a posição anterior.
+   */
+  insertAt(index: number, value: T): void {
+    if (index < 0 || index > this._size) {
+      throw new RangeError(`Índice ${index} fora do intervalo [0, ${this._size}]`);
+    }
+    if (index === 0) {
+      this.prepend(value);
+      return;
+    }
+    let current = this.head!;
+    for (let i = 0; i < index - 1; i++) {
+      current = current.next!;
+    }
+    current.next = new SinglyNode(value, current.next);
+    this._size++;
+  }
+
+  /**
+   * Remoção por valor — O(n)
+   * Percorre buscando o nó com o valor e ajusta os ponteiros.
+   */
+  remove(value: T): boolean {
+    if (!this.head) return false;
+
+    if (this.head.value === value) {
+      this.head = this.head.next;
+      this._size--;
+      return true;
+    }
+
+    let current = this.head;
+    while (current.next) {
+      if (current.next.value === value) {
+        current.next = current.next.next;
+        this._size--;
+        return true;
+      }
+      current = current.next;
+    }
+    return false;
+  }
+
+  /**
+   * Busca — O(n)
+   * Pior caso percorre todos os nós.
+   */
+  find(value: T): SinglyNode<T> | null {
+    let current = this.head;
+    while (current) {
+      if (current.value === value) return current;
+      current = current.next;
+    }
+    return null;
+  }
+
+  /**
+   * Reversão in-place — O(n) tempo, O(1) espaço
+   * Técnica dos três ponteiros: prev, current, next.
+   */
+  reverse(): void {
+    let prev: SinglyNode<T> | null = null;
+    let current = this.head;
+    while (current) {
+      const next = current.next;
+      current.next = prev;
+      prev = current;
+      current = next;
+    }
+    this.head = prev;
+  }
+
+  toArray(): T[] {
+    const result: T[] = [];
+    let current = this.head;
+    while (current) {
+      result.push(current.value);
+      current = current.next;
+    }
+    return result;
+  }
+
+  toString(): string {
+    return this.toArray().join(" → ") + " → null";
+  }
+}
+
+// Uso:
+const list = new SinglyLinkedList<number>();
+list.prepend(30);
+list.prepend(20);
+list.prepend(10);
+console.log(list.toString()); // 10 → 20 → 30 → null
+list.reverse();
+console.log(list.toString()); // 30 → 20 → 10 → null
+```
+
+### Análise Formal de Complexidade
+
+| Operação | Tempo (pior caso) | Espaço |
+|---|---|---|
+| `prepend` | **O(1)** | O(1) |
+| `append` (sem tail) | O(n) | O(1) |
+| `append` (com tail) | **O(1)** | O(1) |
+| `insertAt(i)` | O(i) ⊆ O(n) | O(1) |
+| `remove(value)` | O(n) | O(1) |
+| `find(value)` | O(n) | O(1) |
+| `reverse` | O(n) | O(1) |
+
+---
+
+## 3. Doubly Linked List
+
+A **doubly linked list** adiciona um ponteiro `prev` a cada nó, permitindo travessia bidirecional. A vantagem crítica: **dado um ponteiro direto para o nó, a remoção é O(1)** — não é necessário percorrer a lista para encontrar o nó anterior.
+
+```typescript
+class DoublyNode<T> {
+  constructor(
+    public value: T,
+    public prev: DoublyNode<T> | null = null,
+    public next: DoublyNode<T> | null = null
+  ) {}
+}
+
+class DoublyLinkedList<T> {
+  private head: DoublyNode<T> | null = null;
+  private tail: DoublyNode<T> | null = null;
+  private _size: number = 0;
+
+  get size(): number {
+    return this._size;
+  }
+
+  prepend(value: T): DoublyNode<T> {
+    const node = new DoublyNode(value, null, this.head);
+    if (this.head) {
+      this.head.prev = node;
+    } else {
+      this.tail = node;
+    }
+    this.head = node;
+    this._size++;
+    return node;
+  }
+
+  append(value: T): DoublyNode<T> {
+    const node = new DoublyNode(value, this.tail, null);
+    if (this.tail) {
+      this.tail.next = node;
+    } else {
+      this.head = node;
+    }
+    this.tail = node;
+    this._size++;
+    return node;
+  }
+
+  /**
+   * Remoção dado o nó — O(1)
+   * Esta é a operação que justifica doubly linked lists.
+   * Não precisa percorrer para encontrar o anterior.
+   */
+  removeNode(node: DoublyNode<T>): T {
+    if (node.prev) {
+      node.prev.next = node.next;
+    } else {
+      this.head = node.next;
+    }
+    if (node.next) {
+      node.next.prev = node.prev;
+    } else {
+      this.tail = node.prev;
+    }
+    node.prev = null;
+    node.next = null;
+    this._size--;
+    return node.value;
+  }
+
+  /**
+   * Move nó existente para o início — O(1)
+   * Essencial para LRU Cache.
+   */
+  moveToFront(node: DoublyNode<T>): void {
+    if (node === this.head) return;
+    this.removeNode(node);
+    node.next = this.head;
+    node.prev = null;
+    if (this.head) this.head.prev = node;
+    this.head = node;
+    if (!this.tail) this.tail = node;
+    this._size++;
+  }
+
+  removeLast(): T | null {
+    if (!this.tail) return null;
+    return this.removeNode(this.tail);
+  }
+
+  peekFirst(): T | null {
+    return this.head?.value ?? null;
+  }
+
+  peekLast(): T | null {
+    return this.tail?.value ?? null;
+  }
+
+  toArray(): T[] {
+    const result: T[] = [];
+    let current = this.head;
+    while (current) {
+      result.push(current.value);
+      current = current.next;
+    }
+    return result;
+  }
+}
+```
+
+### Memory Overhead
+
+Cada nó de uma doubly linked list carrega **dois ponteiros** (`prev` e `next`). Em uma arquitetura de 64 bits, cada ponteiro ocupa 8 bytes. Considerando o overhead do objeto em JavaScript (tipicamente ~32-64 bytes por objeto no V8, incluindo hidden class e propriedades), o overhead por nó é substancial.
+
+Para armazenar `n` inteiros de 32 bits:
+- **Array:** `4n` bytes (compacto, contíguo)
+- **Singly Linked List:** `~64n` bytes (objeto + value + next + overhead V8)
+- **Doubly Linked List:** `~72n` bytes (objeto + value + prev + next + overhead V8)
+
+Isso é um **overhead de 16-18x** comparado a um array tipado (`Int32Array`). Em linguagens como C, o overhead é menor mas ainda significativo: `12n` bytes para singly (4 value + 8 next) vs `4n` para array.
+
+---
+
+## 4. Sentinel Nodes (Dummy Head/Tail)
+
+Uma técnica elegante para **eliminar edge cases** em operações de linked list é o uso de **sentinel nodes** (nós sentinela). São nós "fantasma" que não contêm dados reais, mas simplificam a lógica de inserção e remoção.
+
+Sem sentinelas, toda operação precisa tratar casos especiais:
+- Lista vazia (`head === null`)
+- Inserção/remoção no início (atualizar `head`)
+- Inserção/remoção no fim (atualizar `tail`)
+
+Com sentinelas, **sempre** existem nós antes e depois de qualquer posição válida.
+
+```typescript
+class SentinelDoublyLinkedList<T> {
+  private sentinel: DoublyNode<T>;
+  private _size: number = 0;
+
+  constructor() {
+    // Sentinel aponta para si mesmo — lista "vazia" circular
+    this.sentinel = new DoublyNode(null as unknown as T);
+    this.sentinel.prev = this.sentinel;
+    this.sentinel.next = this.sentinel;
+  }
+
+  get size(): number {
+    return this._size;
+  }
+
+  private insertAfter(node: DoublyNode<T>, value: T): DoublyNode<T> {
+    const newNode = new DoublyNode(value, node, node.next);
+    node.next!.prev = newNode;
+    node.next = newNode;
+    this._size++;
+    return newNode;
+  }
+
+  // Nenhum if/else para head === null — o sentinel sempre existe
+  prepend(value: T): DoublyNode<T> {
+    return this.insertAfter(this.sentinel, value);
+  }
+
+  append(value: T): DoublyNode<T> {
+    return this.insertAfter(this.sentinel.prev!, value);
+  }
+
+  removeNode(node: DoublyNode<T>): T {
+    if (node === this.sentinel) throw new Error("Não é possível remover o sentinel");
+    node.prev!.next = node.next;
+    node.next!.prev = node.prev;
+    this._size--;
+    return node.value;
+  }
+
+  isEmpty(): boolean {
+    return this.sentinel.next === this.sentinel;
+  }
+
+  first(): DoublyNode<T> | null {
+    return this.isEmpty() ? null : this.sentinel.next;
+  }
+
+  last(): DoublyNode<T> | null {
+    return this.isEmpty() ? null : this.sentinel.prev;
+  }
+}
+```
+
+Note como `insertAfter` e `removeNode` **não possuem nenhum condicional** para tratar head/tail. O código é mais limpo, menos propenso a bugs, e marginalmente mais performático (menos branch predictions erradas).
+
+---
+
+## 5. Circular Linked List
+
+Em uma **circular linked list**, o último nó aponta de volta para o primeiro, formando um ciclo. Pode ser singly ou doubly circular.
+
+```
+Singly Circular:
+┌──→ [10] → [20] → [30] → [40] ──┐
+│                                  │
+└──────────────────────────────────┘
+
+Doubly Circular (com sentinel) é exatamente o que implementamos acima.
+```
+
+### Aplicações Práticas
+
+**1. Round-Robin Scheduling:**
+Sistemas operacionais usam circular linked lists para agendar processos. Cada processo recebe um quantum de tempo, e o scheduler itera ciclicamente pela lista:
+
+```typescript
+class RoundRobinScheduler<T> {
+  private current: SinglyNode<T> | null = null;
+
+  addProcess(process: T): void {
+    const node = new SinglyNode(process);
+    if (!this.current) {
+      node.next = node; // aponta para si mesmo
+      this.current = node;
+    } else {
+      node.next = this.current.next;
+      this.current.next = node;
+    }
+  }
+
+  nextProcess(): T | null {
+    if (!this.current) return null;
+    this.current = this.current.next!;
+    return this.current.value;
+  }
+
+  removeCurrentProcess(): T | null {
+    if (!this.current) return null;
+    if (this.current.next === this.current) {
+      // Último processo
+      const value = this.current.value;
+      this.current = null;
+      return value;
+    }
+    const toRemove = this.current;
+    let prev = this.current;
+    while (prev.next !== toRemove) {
+      prev = prev.next!;
+    }
+    prev.next = toRemove.next;
+    this.current = prev.next!;
+    return toRemove.value;
+  }
+}
+```
+
+**2. Buffer Circular:** usado em sistemas de streaming e I/O para manter os últimos N elementos processados.
+
+**3. Josephus Problem:** problema clássico de eliminação circular — dado N pessoas em círculo e contagem de K, quem sobrevive? Resolução direta com circular linked list em O(nK).
+
+---
+
+## 6. Técnicas Clássicas de Entrevista
+
+### 6.1 Floyd's Cycle Detection (Tortoise and Hare)
+
+O algoritmo de **Floyd** usa dois ponteiros — `slow` (avança 1 nó) e `fast` (avança 2 nós). Se existe um ciclo, eles **obrigatoriamente se encontram**. Se `fast` chega em `null`, não há ciclo.
+
+**Prova de corretude:** Suponha que o ciclo tem comprimento `C` e começa na posição `λ`. Quando `slow` entra no ciclo (após `λ` passos), `fast` já está `λ` passos à frente dentro do ciclo. A cada iteração, a distância relativa entre eles diminui em 1 (fast ganha 1, mas slow avança 1). Portanto, eles se encontram em no máximo `C` iterações adicionais. Complexidade total: **O(λ + C) = O(n)** tempo, **O(1)** espaço.
+
+```typescript
+function hasCycle<T>(head: SinglyNode<T> | null): boolean {
+  let slow = head;
+  let fast = head;
+
+  while (fast?.next) {
+    slow = slow!.next;
+    fast = fast.next.next;
+    if (slow === fast) return true;
+  }
+  return false;
+}
+
+/**
+ * Encontra o INÍCIO do ciclo.
+ * Após detectar o encontro, reseta slow para head.
+ * Ambos avançam 1 passo por vez — se encontram no início do ciclo.
+ *
+ * Prova: No ponto de encontro, slow percorreu λ + a passos,
+ * fast percorreu λ + a + kC passos (k voltas completas).
+ * Como fast = 2 * slow: λ + a + kC = 2(λ + a) → kC = λ + a → λ = kC - a.
+ * Logo, avançar λ passos a partir do encontro (posição a dentro do ciclo)
+ * equivale a kC - a + a = kC passos, retornando ao início do ciclo.
+ */
+function findCycleStart<T>(head: SinglyNode<T> | null): SinglyNode<T> | null {
+  let slow = head;
+  let fast = head;
+
+  while (fast?.next) {
+    slow = slow!.next;
+    fast = fast.next.next;
+    if (slow === fast) {
+      // Encontrou o ciclo — agora encontra o início
+      slow = head;
+      while (slow !== fast) {
+        slow = slow!.next;
+        fast = fast!.next;
+      }
+      return slow;
+    }
+  }
+  return null; // sem ciclo
+}
+```
+
+### 6.2 Merge Two Sorted Lists
+
+Problema clássico: dadas duas listas ordenadas, produzir uma lista ordenada mesclada. Análogo ao merge do **Merge Sort**. Complexidade: **O(n + m)** tempo, **O(1)** espaço (reutilizando nós existentes).
+
+```typescript
+function mergeSorted<T>(
+  l1: SinglyNode<T> | null,
+  l2: SinglyNode<T> | null,
+  compare: (a: T, b: T) => number = (a, b) => (a as any) - (b as any)
+): SinglyNode<T> | null {
+  // Sentinel para evitar edge cases
+  const dummy = new SinglyNode<T>(null as unknown as T);
+  let tail = dummy;
+
+  while (l1 && l2) {
+    if (compare(l1.value, l2.value) <= 0) {
+      tail.next = l1;
+      l1 = l1.next;
+    } else {
+      tail.next = l2;
+      l2 = l2.next;
+    }
+    tail = tail.next;
+  }
+  tail.next = l1 ?? l2;
+
+  return dummy.next;
+}
+```
+
+### 6.3 Reverse in Groups (K-Group Reversal)
+
+Reverse a cada K nós — uma variação frequente em entrevistas (LeetCode 25). Complexidade: **O(n)** tempo, **O(1)** espaço.
+
+```typescript
+function reverseKGroup<T>(
+  head: SinglyNode<T> | null,
+  k: number
+): SinglyNode<T> | null {
+  if (!head || k <= 1) return head;
+
+  // Verificar se há pelo menos k nós restantes
+  let count = 0;
+  let current: SinglyNode<T> | null = head;
+  while (current && count < k) {
+    current = current.next;
+    count++;
+  }
+  if (count < k) return head; // menos que k nós — não inverte
+
+  // Inverter os primeiros k nós
+  let prev: SinglyNode<T> | null = null;
+  current = head;
+  for (let i = 0; i < k; i++) {
+    const next = current!.next;
+    current!.next = prev;
+    prev = current;
+    current = next;
+  }
+
+  // head agora é o último do grupo invertido
+  // Recursivamente processa o restante e conecta
+  head.next = reverseKGroup(current, k);
+
+  return prev; // novo head do grupo
+}
+```
+
+> **Nota:** A versão recursiva usa O(n/k) espaço na call stack. Para O(1) espaço verdadeiro, use uma versão iterativa com ponteiros auxiliares.
+
+---
+
+## 7. LRU Cache — HashMap + Doubly Linked List
+
+A **LRU Cache** (Least Recently Used) é provavelmente a aplicação mais importante de doubly linked lists. A ideia: manter no máximo `capacity` itens; ao atingir o limite, remover o item **menos recentemente usado**.
+
+A estrutura combina:
+- **HashMap** → acesso O(1) por chave
+- **Doubly Linked List** → manutenção de ordem de uso, remoção/movimentação O(1)
+
+```typescript
+class LRUCache<K, V> {
+  private capacity: number;
+  private map: Map<K, DoublyNode<{ key: K; value: V }>>;
+  private list: SentinelDoublyLinkedList<{ key: K; value: V }>;
+
+  constructor(capacity: number) {
+    if (capacity <= 0) throw new Error("Capacidade deve ser > 0");
+    this.capacity = capacity;
+    this.map = new Map();
+    this.list = new SentinelDoublyLinkedList();
+  }
+
+  /**
+   * GET — O(1)
+   * 1. Busca no HashMap
+   * 2. Move o nó para o início (mais recente)
+   */
+  get(key: K): V | undefined {
+    const node = this.map.get(key);
+    if (!node) return undefined;
+
+    // Move para o início — agora é o "mais recentemente usado"
+    this.list.removeNode(node);
+    const newNode = this.list.prepend(node.value);
+    this.map.set(key, newNode);
+
+    return node.value.value;
+  }
+
+  /**
+   * PUT — O(1)
+   * 1. Se já existe, atualiza e move para o início
+   * 2. Se não existe, insere no início
+   * 3. Se excedeu capacidade, remove o último (LRU)
+   */
+  put(key: K, value: V): void {
+    if (this.map.has(key)) {
+      const existing = this.map.get(key)!;
+      this.list.removeNode(existing);
+    }
+
+    const node = this.list.prepend({ key, value });
+    this.map.set(key, node);
+
+    if (this.map.size > this.capacity) {
+      const lastNode = this.list.last();
+      if (lastNode) {
+        this.list.removeNode(lastNode);
+        this.map.delete(lastNode.value.key);
+      }
+    }
+  }
+
+  get size(): number {
+    return this.map.size;
+  }
+}
+
+// Uso:
+const cache = new LRUCache<string, number>(3);
+cache.put("a", 1);
+cache.put("b", 2);
+cache.put("c", 3);
+cache.get("a");     // 1 — "a" agora é o mais recente
+cache.put("d", 4);  // "b" é removido (LRU)
+cache.get("b");     // undefined — foi evicted
+```
+
+### Onde LRU Cache é usada na prática
+
+- **Caches de CPU** (L1/L2/L3 usam variações de LRU)
+- **Page replacement** em sistemas operacionais
+- **Caches de banco de dados** (buffer pool)
+- **CDNs** para cache de conteúdo
+- **Redis** usa uma aproximação de LRU (`allkeys-lru`)
+
+---
+
+## 8. Outros Usos Reais de Linked Lists
+
+### 8.1 Undo/Redo Stacks
+
+Editores de texto frequentemente modelam o histórico de ações como uma doubly linked list. O ponteiro `current` aponta para a ação atual. **Undo** move para `prev`, **redo** move para `next`. Ao fazer uma nova ação após undo, descartam-se todos os nós após `current` (branch é perdido).
+
+### 8.2 FAT (File Allocation Table)
+
+O sistema de arquivos **FAT** (FAT12, FAT16, FAT32) é essencialmente uma singly linked list implementada como array. Cada entrada na tabela FAT contém o índice do próximo cluster do arquivo. O diretório armazena apenas o cluster inicial — o resto é seguido pela cadeia de ponteiros na tabela.
+
+```
+Arquivo "report.pdf" começa no cluster 5:
+FAT[5] = 12 → FAT[12] = 13 → FAT[13] = 27 → FAT[27] = EOF
+```
+
+### 8.3 Memory Allocators
+
+Alocadores de memória como `malloc` em C frequentemente mantêm uma **free list** — uma linked list de blocos de memória livres. Quando você faz `free()`, o bloco é adicionado à free list. Quando faz `malloc()`, percorre a free list buscando um bloco adequado (first-fit, best-fit, etc.).
+
+---
+
+## 9. XOR Linked List — Curiosidade Avançada
+
+Uma **XOR Linked List** é uma variação que armazena **apenas um ponteiro por nó** (em vez de dois em doubly), mas permite travessia bidirecional. O truque: cada nó armazena `prev XOR next`.
+
+```
+Dado: A ↔ B ↔ C ↔ D
+
+Nó B armazena: addr(A) XOR addr(C)
+Nó C armazena: addr(B) XOR addr(D)
+
+Para ir de B para C (sabendo que viemos de A):
+  next = stored_value XOR addr(prev)
+       = (addr(A) XOR addr(C)) XOR addr(A)
+       = addr(C)  ✓
+```
+
+Isso funciona porque `X XOR X = 0` e `X XOR 0 = X`.
+
+**Na prática:** XOR linked lists são uma curiosidade acadêmica. Não funcionam em linguagens com garbage collector (o GC não reconhece o ponteiro XOR como referência válida) e são impossíveis em JavaScript/TypeScript. São relevantes apenas em C/C++ para sistemas com memória extremamente limitada (embedded systems).
+
+---
+
+## 10. Skip List — Busca O(log n) sobre Linked Lists
+
+Uma **Skip List** é uma estrutura de dados probabilística que estende uma sorted linked list com múltiplos "níveis" de atalhos, alcançando **O(log n)** em busca, inserção e remoção — com expectativa probabilística, não determinística como em árvores balanceadas.
+
+### Estrutura
+
+```
+Nível 3:  HEAD ─────────────────────────────────────→ 50 ──────────────→ NIL
+Nível 2:  HEAD ──────────→ 20 ──────────────────────→ 50 ──────────────→ NIL
+Nível 1:  HEAD ──→ 10 ──→ 20 ──→ 30 ──→ 40 ──→ 50 ──→ 60 ──→ 70 ──→ NIL
+```
+
+Cada elemento existe no nível 1 (a lista base). Para cada nível acima, o elemento é **promovido com probabilidade p** (tipicamente p = 0.5). Isso cria uma hierarquia onde o nível superior funciona como "índice" para o inferior.
+
+### Análise Probabilística
+
+Com probabilidade de promoção `p = 1/2`:
+- **Nível esperado de um nó:** `1 / (1 - p) = 2`
+- **Número esperado de níveis:** `O(log n)`
+- **Espaço esperado:** `O(n)` (cada nó extra usa `n/2 + n/4 + ... = n` ponteiros no total)
+- **Busca esperada:** `O(log n)` — em cada nível, pula ~2 elementos em média
+
+### Implementação
+
+```typescript
+const MAX_LEVEL = 32;
+const PROBABILITY = 0.5;
+
+class SkipNode<K, V> {
+  forward: (SkipNode<K, V> | null)[];
+
+  constructor(
+    public key: K,
+    public value: V,
+    level: number
+  ) {
+    this.forward = new Array(level + 1).fill(null);
+  }
+}
+
+class SkipList<K extends number | string, V> {
+  private head: SkipNode<K, V>;
+  private level: number = 0;
+  private _size: number = 0;
+
+  constructor() {
+    this.head = new SkipNode<K, V>(null as unknown as K, null as unknown as V, MAX_LEVEL);
+  }
+
+  get size(): number {
+    return this._size;
+  }
+
+  private randomLevel(): number {
+    let lvl = 0;
+    while (Math.random() < PROBABILITY && lvl < MAX_LEVEL) {
+      lvl++;
+    }
+    return lvl;
+  }
+
+  /**
+   * Busca — O(log n) esperado
+   * Começa do nível mais alto e desce quando o próximo é maior que a chave.
+   */
+  search(key: K): V | undefined {
+    let current = this.head;
+    for (let i = this.level; i >= 0; i--) {
+      while (current.forward[i] && current.forward[i]!.key < key) {
+        current = current.forward[i]!;
+      }
+    }
+    current = current.forward[0]!;
+    if (current && current.key === key) {
+      return current.value;
+    }
+    return undefined;
+  }
+
+  /**
+   * Inserção — O(log n) esperado
+   * 1. Encontra a posição em cada nível (array update[])
+   * 2. Gera nível aleatório para o novo nó
+   * 3. Insere em todos os níveis até o nível gerado
+   */
+  insert(key: K, value: V): void {
+    const update: SkipNode<K, V>[] = new Array(MAX_LEVEL + 1);
+    let current = this.head;
+
+    for (let i = this.level; i >= 0; i--) {
+      while (current.forward[i] && current.forward[i]!.key < key) {
+        current = current.forward[i]!;
+      }
+      update[i] = current;
+    }
+
+    current = current.forward[0]!;
+
+    // Atualiza valor se chave já existe
+    if (current && current.key === key) {
+      current.value = value;
+      return;
+    }
+
+    const newLevel = this.randomLevel();
+
+    if (newLevel > this.level) {
+      for (let i = this.level + 1; i <= newLevel; i++) {
+        update[i] = this.head;
+      }
+      this.level = newLevel;
+    }
+
+    const newNode = new SkipNode(key, value, newLevel);
+
+    for (let i = 0; i <= newLevel; i++) {
+      newNode.forward[i] = update[i].forward[i];
+      update[i].forward[i] = newNode;
+    }
+
+    this._size++;
+  }
+
+  /**
+   * Remoção — O(log n) esperado
+   */
+  delete(key: K): boolean {
+    const update: SkipNode<K, V>[] = new Array(MAX_LEVEL + 1);
+    let current = this.head;
+
+    for (let i = this.level; i >= 0; i--) {
+      while (current.forward[i] && current.forward[i]!.key < key) {
+        current = current.forward[i]!;
+      }
+      update[i] = current;
+    }
+
+    current = current.forward[0]!;
+
+    if (!current || current.key !== key) return false;
+
+    for (let i = 0; i <= this.level; i++) {
+      if (update[i].forward[i] !== current) break;
+      update[i].forward[i] = current.forward[i];
+    }
+
+    while (this.level > 0 && !this.head.forward[this.level]) {
+      this.level--;
+    }
+
+    this._size--;
+    return true;
+  }
+}
+
+// Uso:
+const skipList = new SkipList<number, string>();
+skipList.insert(10, "dez");
+skipList.insert(20, "vinte");
+skipList.insert(5, "cinco");
+skipList.insert(15, "quinze");
+console.log(skipList.search(15)); // "quinze"
+console.log(skipList.search(99)); // undefined
+skipList.delete(10);
+console.log(skipList.search(10)); // undefined
+```
+
+### Skip List vs Árvores Balanceadas
+
+| Critério | Skip List | AVL / Red-Black Tree |
+|---|---|---|
+| Busca | O(log n) esperado | O(log n) worst-case |
+| Inserção | O(log n) esperado | O(log n) worst-case |
+| Implementação | **Mais simples** | Rotações complexas |
+| Concorrência | **Lock-free possível** | Difícil |
+| Espaço | ~2n ponteiros (esperado) | 2n ponteiros + metadata |
+| Determinismo | Probabilístico | **Determinístico** |
+
+**Redis usa Skip Lists** como estrutura primária para sorted sets (`ZSET`). A escolha se deu pela simplicidade de implementação, facilidade de range queries, e possibilidade de operações concorrentes — conforme explicado pelo próprio Salvatore Sanfilippo (antirez).
+
+---
+
+## 11. Resumo Comparativo
+
+```
+┌──────────────────────┬───────────┬───────────┬───────────┬──────────────┐
+│ Operação             │ Singly LL │ Doubly LL │ Array     │ Skip List    │
+├──────────────────────┼───────────┼───────────┼───────────┼──────────────┤
+│ Acesso por índice    │ O(n)      │ O(n)      │ O(1)      │ O(log n)*    │
+│ Busca por valor      │ O(n)      │ O(n)      │ O(n)      │ O(log n)*    │
+│ Insert head          │ O(1)      │ O(1)      │ O(n)      │ N/A          │
+│ Insert tail          │ O(n)†     │ O(1)      │ O(1)‡     │ N/A          │
+│ Insert sorted        │ O(n)      │ O(n)      │ O(n)      │ O(log n)*    │
+│ Delete dado nó       │ O(n)§     │ O(1)      │ O(n)      │ O(log n)*    │
+│ Cache locality       │ Ruim      │ Ruim      │ Excelente │ Ruim         │
+│ Memory overhead      │ Médio     │ Alto      │ Baixo     │ ~2x Singly   │
+└──────────────────────┴───────────┴───────────┴───────────┴──────────────┘
+
+† O(1) com ponteiro tail   ‡ Amortizado   § O(1) se tiver referência ao anterior
+* Esperado (probabilístico)
+```
+
+### Escolha pragmática
+
+1. **Precisa de acesso aleatório?** → Array.
+2. **Precisa de inserção/remoção O(1) dado o nó?** → Doubly Linked List.
+3. **Precisa de busca O(log n) com implementação simples?** → Skip List.
+4. **Precisa de LRU/LFU Cache?** → HashMap + Doubly Linked List.
+5. **Maioria dos outros casos?** → Array. A cache locality geralmente domina a análise assintótica em dados reais.
+
+> **Princípio fundamental:** complexidade assintótica é um guia, não um veredito. Na prática, constantes importam — e o principal "constante oculto" das linked lists é o custo de cache misses. Meça, profile, e só então decida.

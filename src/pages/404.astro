@@ -1,0 +1,28 @@
+---
+import MainLayout from '../layouts/MainLayout.astro';
+---
+
+<MainLayout title="404">
+  <div class="mx-auto max-w-md px-4 py-24 text-center">
+    <p class="mb-4 font-mono text-sm text-[var(--color-text-muted)]">segmentation fault (core dumped)</p>
+    <h1 class="mb-4 text-5xl font-bold tracking-tighter">404</h1>
+    <p class="mb-8 text-sm text-[var(--color-text-muted)]">
+      Ponteiro para <code class="text-[var(--color-accent)]">NULL</code>. Esta página não existe.
+    </p>
+    <a
+      href="/"
+      class="inline-flex items-center gap-2 rounded-lg border border-[var(--color-border)] px-4 py-2 text-sm transition-colors hover:border-[var(--color-text-muted)]"
+    >
+      <svg
+        class="h-4 w-4"
+        viewBox="0 0 24 24"
+        fill="none"
+        stroke="currentColor"
+        stroke-width="2"
+        stroke-linecap="round"
+        stroke-linejoin="round"><path d="m12 19-7-7 7-7"></path><path d="M19 12H5"></path></svg
+      >
+      Voltar
+    </a>
+  </div>
+</MainLayout>

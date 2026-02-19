@@ -1,0 +1,664 @@
+---
+title: "HTML Semântico e Acessibilidade"
+description: "Aprenda a usar HTML semântico e técnicas de acessibilidade essenciais para construir interfaces robustas"
+track: "frontend"
+order: 2
+section: "Fundamentos Web"
+priority: "high"
+tags: ["html", "semântica", "acessibilidade", "a11y", "aria"]
+prerequisites: []
+keyTakeaways:
+  - "HTML semântico dá significado ao conteúdo para screen readers e SEO"
+  - "Sempre use alt text em imagens, labels em formulários e textos descritivos em botões"
+  - "Use ARIA apenas quando HTML semântico não é suficiente"
+---
+
+## Por que semântica importa
+
+O HTML semântico é a base de toda aplicação web bem construída. Quando você usa `<div>` e `<span>` para tudo, o navegador, os screen readers e os motores de busca não conseguem inferir **nenhum significado** sobre o conteúdo. Isso afeta três pilares fundamentais:
+
+1. **Acessibilidade**: screen readers dependem da árvore de acessibilidade (accessibility tree), que é derivada diretamente da semântica do HTML. Um `<nav>` é anunciado como "navegação", um `<button>` recebe foco e responde ao teclado automaticamente.
+2. **SEO**: o Googlebot usa a estrutura semântica para entender hierarquia de conteúdo, relevância e relação entre seções.
+3. **Manutenibilidade**: código semântico é autodocumentado. `<article>` comunica intenção de forma que `<div class="article">` jamais conseguirá.
+
+```html
+<!-- "Div soup" — zero significado para screen readers e SEO -->
+<div class="header">
+  <div class="nav">
+    <div class="link" onclick="goHome()">Home</div>
+  </div>
+</div>
+<div class="content">
+  <div class="title">Meu Post</div>
+  <div class="text">Lorem ipsum...</div>
+</div>
+
+<!-- HTML semântico — significado claro para todos os consumidores -->
+<header>
+  <nav aria-label="Navegação principal">
+    <a href="/">Home</a>
+  </nav>
+</header>
+<main>
+  <article>
+    <h1>Meu Post</h1>
+    <p>Lorem ipsum...</p>
+  </article>
+</main>
+```
+
+A diferença não é cosmética. O primeiro bloco gera uma accessibility tree completamente plana e sem landmarks. O segundo gera landmarks (`banner`, `navigation`, `main`, `article`) que permitem ao usuário de screen reader navegar por regiões da página com atalhos de teclado.
+
+---
+
+## Elementos semânticos: quando usar cada um
+
+Cada elemento semântico tem um papel específico na especificação HTML. Usá-los incorretamente é tão ruim quanto não usá-los.
+
+```html
+<header>
+  <!-- Cabeçalho da página OU de uma seção/article.
+       Gera o landmark "banner" APENAS quando é filho direto de <body>. -->
+  <h1>Título do site</h1>
+  <nav aria-label="Navegação principal">
+    <ul>
+      <li><a href="/sobre">Sobre</a></li>
+      <li><a href="/contato">Contato</a></li>
+    </ul>
+  </nav>
+</header>
+
+<main>
+  <!-- Conteúdo principal. DEVE ser único na página (apenas 1 <main>).
+       Gera o landmark "main". -->
+
+  <article>
+    <!-- Conteúdo autossuficiente e redistribuível.
+         Pergunta-chave: faz sentido sindicar este conteúdo isoladamente?
+         Exemplos: post de blog, comentário, card de produto, tweet. -->
+    <header>
+      <h2>Título do Artigo</h2>
+      <time datetime="2025-03-15">15 de março de 2025</time>
+    </header>
+
+    <section aria-labelledby="intro-heading">
+      <!-- Seção temática DENTRO de um artigo ou página.
+           Sempre deve ter um heading (h2-h6).
+           Sem heading, considere se <div> não seria mais adequado. -->
+      <h3 id="intro-heading">Introdução</h3>
+      <p>Conteúdo da introdução...</p>
+    </section>
+
+    <section aria-labelledby="conclusao-heading">
+      <h3 id="conclusao-heading">Conclusão</h3>
+      <p>Conteúdo da conclusão...</p>
+    </section>
+  </article>
+
+  <aside aria-label="Artigos relacionados">
+    <!-- Conteúdo tangencialmente relacionado ao conteúdo principal.
+         Gera o landmark "complementary".
+         Exemplos: sidebar, links relacionados, glossário. -->
+    <h2>Artigos Relacionados</h2>
+    <ul>
+      <li><a href="/post-2">Outro artigo</a></li>
+    </ul>
+  </aside>
+</main>
+
+<footer>
+  <!-- Rodapé. Gera o landmark "contentinfo" quando filho direto de <body>. -->
+  <p>&copy; 2025 Minha Empresa</p>
+</footer>
+```
+
+---
+
+## Hierarquia de headings e document outline
+
+A hierarquia de headings (`h1`-`h6`) define a estrutura do documento. O algoritmo de outline usa essa hierarquia para gerar um índice navegável.
+
+```html
+<!-- Hierarquia correta -->
+<h1>Título da Página</h1>           <!-- Nível 1 — único por página -->
+  <h2>Seção Principal</h2>          <!-- Nível 2 -->
+    <h3>Sub-seção</h3>              <!-- Nível 3 -->
+    <h3>Outra sub-seção</h3>        <!-- Nível 3 -->
+  <h2>Outra Seção Principal</h2>    <!-- Nível 2 -->
+    <h3>Sub-seção</h3>              <!-- Nível 3 -->
+      <h4>Detalhe</h4>              <!-- Nível 4 -->
+
+<!-- NUNCA pule níveis: h1 → h3 (sem h2) quebra a hierarquia.
+     Screen readers usam a lista de headings como índice para navegação rápida. -->
+```
+
+Os **landmarks ARIA** permitem navegação por regiões da página. Elementos semânticos já mapeiam para landmarks implicitamente:
+
+```javascript
+// Mapeamento de elementos semânticos para landmarks ARIA
+const landmarkMapping = {
+  '<header> (filho de body)':  'role="banner"',
+  '<nav>':                     'role="navigation"',
+  '<main>':                    'role="main"',
+  '<aside>':                   'role="complementary"',
+  '<footer> (filho de body)':  'role="contentinfo"',
+  '<section> com aria-label':  'role="region"',
+  '<form> com aria-label':     'role="form"',
+};
+
+// NUNCA adicione role redundante a elementos que já têm role implícito:
+// <nav role="navigation"> — REDUNDANTE e desnecessário
+// <main role="main">      — REDUNDANTE e desnecessário
+```
+
+---
+
+## Formulários: tipos de input, validação e semântica
+
+Formulários são uma das áreas onde HTML semântico tem maior impacto prático. Tipos de input corretos ativam teclados específicos em mobile, validação nativa e autopreenchimento do navegador.
+
+```html
+<form novalidate aria-labelledby="form-title">
+  <!-- novalidate: desativa validação nativa do browser para usar
+       validação customizada via JS, mas mantém os atributos
+       de validação para acessibilidade. -->
+
+  <h2 id="form-title">Cadastro de Usuário</h2>
+
+  <!-- type="email" → teclado com @ em mobile, validação nativa -->
+  <div>
+    <label for="user-email">E-mail</label>
+    <input
+      id="user-email"
+      type="email"
+      name="email"
+      required
+      autocomplete="email"
+      aria-describedby="email-hint email-error"
+      pattern="[a-z0-9._%+-]+@[a-z0-9.-]+\.[a-z]{2,}$"
+    >
+    <span id="email-hint">Usaremos seu e-mail apenas para login</span>
+    <span id="email-error" role="alert" aria-live="assertive"></span>
+  </div>
+
+  <!-- type="tel" → teclado numérico em mobile -->
+  <div>
+    <label for="user-phone">Telefone</label>
+    <input
+      id="user-phone"
+      type="tel"
+      name="phone"
+      autocomplete="tel"
+      pattern="\(\d{2}\)\s?\d{4,5}-\d{4}"
+      placeholder="(11) 99999-9999"
+    >
+  </div>
+
+  <!-- type="url" → teclado com .com em mobile -->
+  <div>
+    <label for="user-website">Website</label>
+    <input id="user-website" type="url" name="website" autocomplete="url">
+  </div>
+
+  <!-- type="date" → date picker nativo (sem JS!) -->
+  <div>
+    <label for="user-birth">Data de nascimento</label>
+    <input
+      id="user-birth"
+      type="date"
+      name="birthdate"
+      min="1900-01-01"
+      max="2010-12-31"
+      autocomplete="bday"
+    >
+  </div>
+
+  <!-- Fieldset + legend para agrupar radio buttons / checkboxes -->
+  <fieldset>
+    <legend>Preferência de contato</legend>
+    <label><input type="radio" name="contact" value="email"> E-mail</label>
+    <label><input type="radio" name="contact" value="phone"> Telefone</label>
+  </fieldset>
+
+  <button type="submit">Cadastrar</button>
+  <!-- NUNCA use <div onclick> como botão. <button> tem:
+       - Foco via Tab
+       - Ativação via Enter e Space
+       - role="button" implícito
+       - Submissão de formulário nativa -->
+</form>
+```
+
+```javascript
+// Validação customizada com Constraint Validation API
+const form = document.querySelector('form');
+const emailInput = document.querySelector('#user-email');
+const emailError = document.querySelector('#email-error');
+
+emailInput.addEventListener('invalid', (e) => {
+  e.preventDefault(); // Impede tooltip nativo
+  if (emailInput.validity.valueMissing) {
+    emailError.textContent = 'O e-mail é obrigatório.';
+  } else if (emailInput.validity.typeMismatch) {
+    emailError.textContent = 'Formato de e-mail inválido.';
+  } else if (emailInput.validity.patternMismatch) {
+    emailError.textContent = 'Use um e-mail corporativo válido.';
+  }
+});
+
+emailInput.addEventListener('input', () => {
+  emailError.textContent = ''; // Limpa erro ao digitar
+  emailInput.setCustomValidity(''); // Reseta validação customizada
+});
+
+form.addEventListener('submit', (e) => {
+  if (!form.checkValidity()) {
+    e.preventDefault();
+    // Foca o primeiro campo inválido
+    const firstInvalid = form.querySelector(':invalid');
+    firstInvalid?.focus();
+  }
+});
+```
+
+---
+
+## Acessibilidade (a11y): ARIA roles, states e properties
+
+A regra de ouro da ARIA é: **não use ARIA se HTML semântico resolve o problema**. ARIA não adiciona comportamento — apenas metadados para a accessibility tree.
+
+```html
+<!-- As 5 regras de ARIA (W3C) -->
+<!--
+  1. Se puder usar HTML nativo, use. Não adicione ARIA desnecessário.
+  2. Não mude a semântica nativa (ex: <h2 role="tab"> é incorreto).
+  3. Toda ARIA interativa deve funcionar com teclado.
+  4. Não use role="presentation" ou aria-hidden="true" em elementos focáveis.
+  5. Elementos interativos devem ter nomes acessíveis.
+-->
+
+<!-- role="alert" — anuncia mudanças imediatamente (assertive) -->
+<div role="alert">Erro: campo obrigatório não preenchido.</div>
+
+<!-- aria-live="polite" — anuncia quando o screen reader estiver ocioso -->
+<div aria-live="polite" aria-atomic="true">
+  3 resultados encontrados.
+</div>
+
+<!-- aria-expanded — estado de componentes expansíveis -->
+<button
+  aria-expanded="false"
+  aria-controls="menu-dropdown"
+  id="menu-button"
+>
+  Menu
+</button>
+<ul id="menu-dropdown" role="menu" aria-labelledby="menu-button" hidden>
+  <li role="menuitem"><a href="/perfil">Perfil</a></li>
+  <li role="menuitem"><a href="/config">Configurações</a></li>
+  <li role="menuitem"><button>Sair</button></li>
+</ul>
+```
+
+```javascript
+// Toggle de menu acessível
+const button = document.querySelector('#menu-button');
+const menu = document.querySelector('#menu-dropdown');
+
+button.addEventListener('click', () => {
+  const isExpanded = button.getAttribute('aria-expanded') === 'true';
+  button.setAttribute('aria-expanded', String(!isExpanded));
+  menu.hidden = isExpanded;
+
+  if (!isExpanded) {
+    // Foca o primeiro item do menu ao abrir
+    menu.querySelector('[role="menuitem"]')?.focus();
+  }
+});
+
+// Navegação por teclado dentro do menu
+menu.addEventListener('keydown', (e) => {
+  const items = [...menu.querySelectorAll('[role="menuitem"]')];
+  const currentIndex = items.indexOf(document.activeElement);
+
+  switch (e.key) {
+    case 'ArrowDown':
+      e.preventDefault();
+      items[(currentIndex + 1) % items.length]?.focus();
+      break;
+    case 'ArrowUp':
+      e.preventDefault();
+      items[(currentIndex - 1 + items.length) % items.length]?.focus();
+      break;
+    case 'Escape':
+      button.setAttribute('aria-expanded', 'false');
+      menu.hidden = true;
+      button.focus(); // Retorna o foco ao botão que abriu o menu
+      break;
+  }
+});
+```
+
+---
+
+## WAI-ARIA: quando usar e quando NÃO usar
+
+```javascript
+// ERRADO — adicionar ARIA onde HTML nativo já resolve
+// <div role="button" tabindex="0" onclick="submit()">Enviar</div>
+// CERTO — usar o elemento nativo
+// <button type="submit">Enviar</button>
+
+// ARIA é necessária quando não existe elemento HTML nativo equivalente:
+
+// 1. Tabs (não existe <tab> nativo)
+const tabsHTML = `
+<div role="tablist" aria-label="Configurações">
+  <button role="tab" aria-selected="true" aria-controls="panel-geral"
+          id="tab-geral">Geral</button>
+  <button role="tab" aria-selected="false" aria-controls="panel-avancado"
+          id="tab-avancado" tabindex="-1">Avançado</button>
+</div>
+<div role="tabpanel" id="panel-geral" aria-labelledby="tab-geral">
+  Conteúdo geral...
+</div>
+<div role="tabpanel" id="panel-avancado" aria-labelledby="tab-avancado"
+     hidden>
+  Conteúdo avançado...
+</div>
+`;
+
+// 2. Combobox / autocomplete (não existe nativo completo)
+const comboboxHTML = `
+<label for="search-input">Buscar cidade</label>
+<div role="combobox" aria-expanded="false" aria-haspopup="listbox">
+  <input id="search-input" type="text"
+         aria-autocomplete="list"
+         aria-controls="search-listbox">
+  <ul id="search-listbox" role="listbox" hidden>
+    <li role="option" id="opt-1">São Paulo</li>
+    <li role="option" id="opt-2">Rio de Janeiro</li>
+  </ul>
+</div>
+`;
+
+// 3. Tree view (não existe <tree> nativo)
+// 4. Toolbar (agrupamento de ações)
+// 5. Dialog modal customizado (prefer <dialog> nativo quando possível!)
+```
+
+---
+
+## SEO técnico: meta tags, Open Graph e structured data
+
+```html
+<head>
+  <!-- Meta tags essenciais -->
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Guia de HTML Semântico — Brewnary</title>
+  <meta name="description"
+        content="Aprenda HTML semântico, acessibilidade e SEO técnico.
+                 Guia completo para desenvolvedores.">
+
+  <!-- Canonical URL — evita conteúdo duplicado -->
+  <link rel="canonical" href="https://brewnary.dev/lessons/html-semantico">
+
+  <!-- Open Graph — controle como a página aparece ao ser compartilhada -->
+  <meta property="og:title" content="Guia de HTML Semântico">
+  <meta property="og:description" content="HTML semântico, a11y e SEO técnico.">
+  <meta property="og:image" content="https://brewnary.dev/og/html-semantico.png">
+  <meta property="og:url" content="https://brewnary.dev/lessons/html-semantico">
+  <meta property="og:type" content="article">
+
+  <!-- Twitter Card -->
+  <meta name="twitter:card" content="summary_large_image">
+  <meta name="twitter:title" content="Guia de HTML Semântico">
+
+  <!-- JSON-LD Structured Data — rich snippets no Google -->
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "TechArticle",
+    "headline": "Guia de HTML Semântico e Acessibilidade",
+    "description": "Aprenda HTML semântico, ARIA e SEO técnico.",
+    "author": {
+      "@type": "Person",
+      "name": "Brewnary"
+    },
+    "datePublished": "2025-03-15",
+    "proficiencyLevel": "Expert"
+  }
+  </script>
+
+  <!-- Preconnect — estabelece conexão antecipada com origens externas -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://cdn.brewnary.dev" crossorigin>
+
+  <!-- Preload — carrega recursos críticos antecipadamente -->
+  <link rel="preload" href="/fonts/inter.woff2" as="font" type="font/woff2"
+        crossorigin>
+  <link rel="preload" href="/css/critical.css" as="style">
+
+  <!-- Prefetch — baixa recursos que serão usados na próxima navegação -->
+  <link rel="prefetch" href="/lessons/event-delegation">
+</head>
+```
+
+---
+
+## Performance: lazy loading, imagens responsivas e resource hints
+
+```html
+<!-- Lazy loading nativo — adia carregamento de imagens fora da viewport -->
+<img
+  src="foto-equipe.jpg"
+  alt="Equipe de desenvolvimento em reunião"
+  loading="lazy"
+  decoding="async"
+  width="800"
+  height="600"
+>
+<!-- IMPORTANTE: NUNCA use loading="lazy" em imagens above-the-fold (LCP).
+     O atributo width/height previne layout shift (CLS). -->
+
+<!-- Imagens responsivas com srcset e sizes -->
+<img
+  src="hero-800.jpg"
+  srcset="
+    hero-400.jpg   400w,
+    hero-800.jpg   800w,
+    hero-1200.jpg 1200w,
+    hero-1600.jpg 1600w
+  "
+  sizes="
+    (max-width: 600px) 100vw,
+    (max-width: 1200px) 50vw,
+    33vw
+  "
+  alt="Banner principal do site"
+  loading="eager"
+  fetchpriority="high"
+>
+<!-- O navegador escolhe a imagem mais adequada baseado em:
+     1. Largura da viewport
+     2. Densidade de pixels (devicePixelRatio)
+     3. O valor computado de sizes -->
+
+<!-- <picture> para art direction — imagens diferentes por breakpoint -->
+<picture>
+  <source media="(max-width: 768px)" srcset="hero-mobile.webp" type="image/webp">
+  <source media="(max-width: 768px)" srcset="hero-mobile.jpg">
+  <source srcset="hero-desktop.webp" type="image/webp">
+  <img src="hero-desktop.jpg" alt="Hero banner" width="1600" height="900">
+</picture>
+```
+
+```javascript
+// fetchpriority API — controle granular de prioridade de recursos
+// "high"  → recursos críticos (LCP image, fontes do título)
+// "low"   → recursos não críticos (imagens below-the-fold, analytics)
+// "auto"  → o navegador decide (padrão)
+
+// Preload programático via JavaScript
+function preloadRoute(href) {
+  const link = document.createElement('link');
+  link.rel = 'prefetch';
+  link.href = href;
+  document.head.appendChild(link);
+}
+
+// Prefetch na intenção do usuário (hover em link)
+document.querySelectorAll('a[data-prefetch]').forEach(anchor => {
+  anchor.addEventListener('mouseenter', () => {
+    preloadRoute(anchor.href);
+  }, { once: true }); // once: true — prefetch apenas na primeira vez
+});
+```
+
+---
+
+## Web Components: custom elements, Shadow DOM e slots
+
+Web Components são a forma nativa da web de criar componentes encapsulados e reutilizáveis, sem dependência de frameworks.
+
+```javascript
+// Definição de um Custom Element
+class AlertBanner extends HTMLElement {
+  // Propriedades observadas — disparam attributeChangedCallback
+  static get observedAttributes() {
+    return ['type', 'dismissible'];
+  }
+
+  constructor() {
+    super();
+    // Shadow DOM encapsula estilos e markup
+    this.attachShadow({ mode: 'open' });
+  }
+
+  connectedCallback() {
+    // Chamado quando o elemento é inserido no DOM
+    this.render();
+  }
+
+  attributeChangedCallback(name, oldValue, newValue) {
+    // Chamado quando um atributo observado muda
+    if (oldValue !== newValue) {
+      this.render();
+    }
+  }
+
+  disconnectedCallback() {
+    // Chamado quando o elemento é removido — limpeza de listeners
+    this.shadowRoot
+      .querySelector('.close')
+      ?.removeEventListener('click', this._handleClose);
+  }
+
+  render() {
+    const type = this.getAttribute('type') || 'info';
+    const dismissible = this.hasAttribute('dismissible');
+
+    this.shadowRoot.innerHTML = `
+      <style>
+        /* Estilos encapsulados — NÃO vazam para fora do Shadow DOM */
+        :host {
+          display: block;
+          padding: 1rem;
+          border-radius: 8px;
+          font-family: system-ui, sans-serif;
+        }
+        :host([type="error"]) { background: #fee2e2; color: #991b1b; }
+        :host([type="success"]) { background: #dcfce7; color: #166534; }
+        :host([type="info"]) { background: #dbeafe; color: #1e40af; }
+
+        /* ::slotted() estiliza conteúdo projetado via <slot> */
+        ::slotted(a) { color: inherit; font-weight: bold; }
+
+        .close {
+          float: right;
+          background: none;
+          border: none;
+          font-size: 1.2rem;
+          cursor: pointer;
+          color: inherit;
+        }
+      </style>
+      ${dismissible ? '<button class="close" aria-label="Fechar">&times;</button>' : ''}
+      <slot name="icon"></slot>
+      <slot></slot>
+    `;
+
+    if (dismissible) {
+      this._handleClose = () => {
+        this.dispatchEvent(new CustomEvent('dismiss', { bubbles: true }));
+        this.remove();
+      };
+      this.shadowRoot
+        .querySelector('.close')
+        .addEventListener('click', this._handleClose);
+    }
+  }
+}
+
+// Registro do elemento — o nome DEVE conter um hífen
+customElements.define('alert-banner', AlertBanner);
+```
+
+```html
+<!-- Uso do Web Component -->
+<alert-banner type="error" dismissible>
+  <span slot="icon">&#9888;</span>
+  Falha ao salvar. <a href="/suporte">Entre em contato</a>.
+</alert-banner>
+
+<alert-banner type="success">
+  Cadastro realizado com sucesso!
+</alert-banner>
+```
+
+```javascript
+// Template e slots — abordagem mais performática
+const template = document.createElement('template');
+template.innerHTML = `
+  <style>
+    :host { display: flex; align-items: center; gap: 0.5rem; }
+    .avatar { width: 40px; height: 40px; border-radius: 50%; }
+  </style>
+  <img class="avatar" part="avatar">
+  <div>
+    <slot name="name"></slot>
+    <slot name="role"></slot>
+  </div>
+`;
+
+class UserCard extends HTMLElement {
+  static get observedAttributes() { return ['avatar-src']; }
+
+  constructor() {
+    super();
+    // cloneNode(true) é mais rápido que innerHTML para templates reutilizados
+    const shadow = this.attachShadow({ mode: 'open' });
+    shadow.appendChild(template.content.cloneNode(true));
+  }
+
+  attributeChangedCallback(name, _, newValue) {
+    if (name === 'avatar-src') {
+      this.shadowRoot.querySelector('.avatar').src = newValue;
+    }
+  }
+}
+
+customElements.define('user-card', UserCard);
+
+// Uso:
+// <user-card avatar-src="/avatars/lucas.jpg">
+//   <span slot="name">Lucas Vieira</span>
+//   <span slot="role">Senior Engineer</span>
+// </user-card>
+
+// CSS ::part() — permite estilização externa controlada
+// user-card::part(avatar) { border: 2px solid blue; }
+```
+
+A combinação de HTML semântico, acessibilidade, SEO técnico e componentes nativos forma a fundação sobre a qual todo framework (React, Vue, Svelte) é construído. Dominar esses fundamentos torna você capaz de diagnosticar problemas que nenhum framework consegue abstrair.

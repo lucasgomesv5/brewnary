@@ -1,0 +1,1518 @@
+---
+title: "Logaritmos, Exponenciais e Álgebra"
+description: "Logaritmos e suas propriedades, crescimento exponencial, séries e somatórios, aritmética modular, recorrências e o Master Theorem — a matemática essencial para análise de algoritmos"
+track: "cs"
+order: 3
+section: "Fundamentos Matemáticos"
+priority: "high"
+tags: ["logaritmos", "exponenciais", "álgebra", "somatórios", "aritmética-modular", "master-theorem", "recorrências"]
+prerequisites: ["logica-e-matematica"]
+keyTakeaways:
+  - "log₂(n) aparece em todo algoritmo que divide o problema pela metade — binary search, merge sort, árvores balanceadas"
+  - "Crescimento exponencial 2ⁿ é o inimigo: brute force combinatório, torre de Hanoi, subsets — reconhecer e evitar é essencial"
+  - "Séries aritméticas (n(n+1)/2), geométricas (aⁿ-1)/(a-1) e harmônicas (H(n) ≈ ln n) aparecem constantemente em análise de complexidade"
+  - "Aritmética modular é a base de hashing, criptografia RSA, circular buffers e algoritmos de calendar"
+  - "O Master Theorem resolve recorrências T(n) = aT(n/b) + f(n) em três casos diretos — cobrindo a maioria dos divide-and-conquer"
+---
+
+# Logaritmos, Exponenciais e Álgebra
+
+Esta lição cobre a matemática que aparece diariamente na análise de algoritmos e no design de sistemas. Logaritmos explicam por que binary search é rápido. Exponenciais explicam por que brute force é inviável. Séries e somatórios quantificam o custo de loops. Aritmética modular fundamenta hashing e criptografia. Recorrências e o Master Theorem permitem determinar a complexidade de algoritmos divide-and-conquer em segundos. Cada conceito aqui tem aplicação direta e imediata no código que você escreve.
+
+---
+
+## 1. Logaritmos
+
+### 1.1 Definição Formal
+
+O logaritmo é a operação inversa da exponenciação. Formalmente:
+
+```
+log_b(x) = y  ⟺  b^y = x
+```
+
+Onde `b > 0`, `b ≠ 1` e `x > 0`. A base `b` é o fator de divisão, `x` é o argumento e `y` é o expoente necessário para que `b` elevado a `y` produza `x`.
+
+**Exemplos concretos:**
+
+```
+log₂(8)   = 3    porque  2³ = 8
+log₂(1)   = 0    porque  2⁰ = 1
+log₂(1024)= 10   porque  2¹⁰ = 1024
+log₁₀(100)= 2    porque  10² = 100
+log₃(81)  = 4    porque  3⁴ = 81
+```
+
+Em ciência da computação, **log₂** (logaritmo na base 2) domina absolutamente. Quando um paper ou livro escreve apenas "log n" sem especificar a base, em contexto de CS assume-se base 2. Em matemática pura, `log` geralmente significa `ln` (base `e`). Essa convenção é importante para evitar confusão.
+
+### 1.2 Propriedades Fundamentais
+
+As propriedades dos logaritmos derivam diretamente das leis da exponenciação. Cada uma tem aplicação direta em análise de complexidade.
+
+```
+1. Produto:     log_b(x · y)  = log_b(x) + log_b(y)
+2. Quociente:   log_b(x / y)  = log_b(x) - log_b(y)
+3. Potência:    log_b(x^k)    = k · log_b(x)
+4. Raiz:        log_b(ᵏ√x)   = log_b(x) / k
+5. Base 1:      log_b(b)      = 1
+6. Argumento 1: log_b(1)      = 0
+7. Inversão:    b^(log_b(x))  = x
+8. Recíproca:   log_b(x)      = 1 / log_x(b)
+```
+
+**Mudança de base — a propriedade mais importante em CS:**
+
+```
+log_b(x) = log_a(x) / log_a(b)
+```
+
+Isso significa que **qualquer logaritmo difere de outro apenas por uma constante multiplicativa**. Como Big O ignora constantes:
+
+```
+O(log₂ n) = O(log₃ n) = O(log₁₀ n) = O(ln n) = O(log n)
+```
+
+Na análise assintótica, a base do logaritmo é irrelevante. Mas quando estamos contando operações exatas (por exemplo, profundidade de uma árvore B com fator de branching 128), a base importa e muito.
+
+**Prova da mudança de base:**
+
+```
+Seja y = log_b(x), então b^y = x.
+Tomando log_a de ambos os lados:
+  log_a(b^y) = log_a(x)
+  y · log_a(b) = log_a(x)
+  y = log_a(x) / log_a(b)
+Logo: log_b(x) = log_a(x) / log_a(b)  ∎
+```
+
+### 1.3 Por Que log₂ Domina em CS
+
+Cada vez que um algoritmo **divide o problema pela metade**, ele consome "um passo" de log₂. Essa é a intuição central:
+
+```
+n → n/2 → n/4 → n/8 → ... → 1
+```
+
+Quantos passos até chegar a 1? Resolvemos `n / 2^k = 1`, ou seja, `k = log₂(n)`.
+
+| Algoritmo/Estrutura | Por que aparece log₂ |
+|---|---|
+| Binary search | Divide o array pela metade a cada comparação |
+| Merge sort | Divide o array pela metade a cada nível de recursão |
+| Árvore binária balanceada (AVL, Red-Black) | Altura = log₂(n) para n nós |
+| Heap (binary) | Inserção/extração percorre a altura = log₂(n) |
+| Quicksort (caso médio) | Partição divide aproximadamente pela metade |
+| B-Tree (ordem m) | Altura = log_m(n) — base muda, mas princípio é o mesmo |
+
+**Quando a base NÃO é 2:**
+
+Se o algoritmo divide o problema em 3 partes (como ternary search), o logaritmo é log₃(n). Se uma B-Tree tem fator de branching 128, a altura é log₁₂₈(n). Assintoticamente é tudo O(log n), mas a constante real importa para performance.
+
+### 1.4 Logaritmo e Número de Dígitos
+
+Uma aplicação elegante: o número de dígitos de um inteiro positivo `n` na base `b` é:
+
+```
+dígitos(n, b) = ⌊log_b(n)⌋ + 1
+```
+
+**Prova:** O menor número com `d` dígitos na base `b` é `b^(d-1)` e o maior é `b^d - 1`. Então `n` tem `d` dígitos se e somente se `b^(d-1) ≤ n < b^d`, o que equivale a `d - 1 ≤ log_b(n) < d`, ou seja, `d = ⌊log_b(n)⌋ + 1`.
+
+```typescript
+function numDigits(n: number, base: number = 10): number {
+  if (n === 0) return 1;
+  return Math.floor(Math.log(Math.abs(n)) / Math.log(base)) + 1;
+}
+
+console.log(numDigits(999));       // 3
+console.log(numDigits(1000));      // 4
+console.log(numDigits(255, 2));    // 8  (11111111 em binário)
+console.log(numDigits(255, 16));   // 2  (FF em hexadecimal)
+```
+
+Isso explica por que armazenar um número `n` requer O(log n) bits — `⌊log₂(n)⌋ + 1` bits, para ser exato.
+
+### 1.5 Binary Search: O Exemplo Canônico de log₂
+
+Binary search é o algoritmo que mais diretamente encarna o logaritmo. A cada iteração, metade do espaço de busca é descartado.
+
+```typescript
+function binarySearch(arr: number[], target: number): number {
+  let lo = 0;
+  let hi = arr.length - 1;
+  let steps = 0;
+
+  while (lo <= hi) {
+    steps++;
+    const mid = lo + ((hi - lo) >> 1);
+    if (arr[mid] === target) {
+      console.log(`Encontrado em ${steps} passos (log₂(${arr.length}) ≈ ${Math.log2(arr.length).toFixed(1)})`);
+      return mid;
+    }
+    if (arr[mid] < target) lo = mid + 1;
+    else hi = mid - 1;
+  }
+
+  console.log(`Não encontrado após ${steps} passos`);
+  return -1;
+}
+
+// Demonstração: array de 1 milhão de elementos
+const arr = Array.from({ length: 1_000_000 }, (_, i) => i);
+binarySearch(arr, 742_831);
+// Encontrado em 20 passos (log₂(1000000) ≈ 20.0)
+```
+
+**Tabela: passos do binary search vs tamanho do array:**
+
+| n (tamanho do array) | log₂(n) | Passos máximos |
+|---|---|---|
+| 1.000 | 10.0 | 10 |
+| 1.000.000 | 20.0 | 20 |
+| 1.000.000.000 | 30.0 | 30 |
+| 4.294.967.296 (2³²) | 32.0 | 32 |
+| 10¹⁸ | 60.0 | 60 |
+
+Isso é extraordinário: para buscar em **1 bilhão de elementos**, bastam 30 comparações. Esse é o poder do logaritmo.
+
+### 1.6 Implementação: log₂ Iterativo
+
+A função `Math.log2` usa ponto flutuante, o que pode introduzir erros. Para valores inteiros, podemos calcular log₂ de forma exata com operações inteiras:
+
+```typescript
+/** Calcula ⌊log₂(n)⌋ para n > 0 usando bit shifting */
+function floorLog2(n: number): number {
+  if (n <= 0) throw new Error("log₂ indefinido para n ≤ 0");
+
+  let log = 0;
+  let value = n;
+
+  // Divide por 2 sucessivamente até chegar a 1
+  while (value > 1) {
+    value >>= 1; // value = Math.floor(value / 2)
+    log++;
+  }
+
+  return log;
+}
+
+console.log(floorLog2(1));     // 0  (2⁰ = 1)
+console.log(floorLog2(2));     // 1  (2¹ = 2)
+console.log(floorLog2(7));     // 2  (⌊log₂(7)⌋ = 2)
+console.log(floorLog2(8));     // 3  (2³ = 8)
+console.log(floorLog2(1023));  // 9  (⌊log₂(1023)⌋ = 9)
+console.log(floorLog2(1024));  // 10 (2¹⁰ = 1024)
+```
+
+Para BigInt (números arbitrariamente grandes), a mesma ideia funciona:
+
+```typescript
+function floorLog2BigInt(n: bigint): bigint {
+  if (n <= 0n) throw new Error("log₂ indefinido para n ≤ 0");
+  let log = 0n;
+  let value = n;
+  while (value > 1n) {
+    value >>= 1n;
+    log++;
+  }
+  return log;
+}
+
+console.log(floorLog2BigInt(2n ** 100n)); // 100n
+```
+
+### 1.7 Identidades Úteis para Análise de Algoritmos
+
+Algumas identidades com logaritmos que aparecem frequentemente:
+
+```
+log₂(2ⁿ) = n                    // definição
+log₂(n!) ≈ n log₂(n) - n log₂(e) // aproximação de Stirling
+log₂(n choose k) ≤ n · H(k/n)   // H é a entropia binária
+2^(log₂ n) = n                   // inversa
+log₂(n^k) = k · log₂(n)         // loops aninhados com divisão
+```
+
+A aproximação de Stirling merece destaque: `log₂(n!) = Θ(n log n)`. Isso prova que o lower bound para ordenação por comparação é `Ω(n log n)`, pois existem `n!` permutações possíveis e cada comparação divide as possibilidades por 2, exigindo pelo menos `log₂(n!)` comparações.
+
+---
+
+## 2. Exponenciais e Crescimento
+
+### 2.1 A Explosão Exponencial
+
+A função exponencial `2ⁿ` cresce mais rápido do que qualquer polinômio. Para qualquer constante `k`, por maior que seja:
+
+```
+lim (n→∞) nᵏ / 2ⁿ = 0
+```
+
+Isso significa que, para `n` suficientemente grande, `2ⁿ` sempre domina `nᵏ`. Essa é a razão fundamental pela qual algoritmos exponenciais são considerados intratáveis.
+
+### 2.2 De Onde Vem 2ⁿ em CS
+
+O número 2ⁿ aparece como o **número de subconjuntos** de um conjunto com `n` elementos. Cada elemento pode estar "dentro" ou "fora" do subconjunto — 2 escolhas binárias para cada um dos n elementos, totalizando 2ⁿ subconjuntos.
+
+| Problema | Por que é 2ⁿ |
+|---|---|
+| Listar todos os subsets | Cada elemento: incluir ou não → 2ⁿ subsets |
+| Knapsack (brute force) | Testar toda combinação de itens → 2ⁿ |
+| SAT (satisfiability) | Cada variável: true ou false → 2ⁿ atribuições |
+| Power set | |P(S)| = 2ⁿ por definição |
+| Traveling Salesman (brute force) | n! permutações, mas DP reduz para O(n² · 2ⁿ) |
+
+```typescript
+/** Gera todos os subconjuntos de um array usando bitmask */
+function powerSet<T>(arr: T[]): T[][] {
+  const n = arr.length;
+  const total = 1 << n; // 2^n
+  const subsets: T[][] = [];
+
+  for (let mask = 0; mask < total; mask++) {
+    const subset: T[] = [];
+    for (let i = 0; i < n; i++) {
+      if (mask & (1 << i)) {
+        subset.push(arr[i]);
+      }
+    }
+    subsets.push(subset);
+  }
+
+  return subsets;
+}
+
+console.log(powerSet([1, 2, 3]));
+// [[], [1], [2], [1,2], [3], [1,3], [2,3], [1,2,3]]
+// 2³ = 8 subconjuntos
+```
+
+### 2.3 Comparação de Crescimento
+
+Esta tabela mostra por que a escolha de algoritmo importa muito mais do que hardware:
+
+| n | log₂(n) | n | n·log₂(n) | n² | 2ⁿ | n! |
+|---|---|---|---|---|---|---|
+| 10 | 3.3 | 10 | 33 | 100 | 1.024 | 3.628.800 |
+| 20 | 4.3 | 20 | 86 | 400 | 1.048.576 | 2.4 × 10¹⁸ |
+| 30 | 4.9 | 30 | 147 | 900 | 1.07 × 10⁹ | 2.65 × 10³² |
+| 40 | 5.3 | 40 | 213 | 1.600 | 1.10 × 10¹² | 8.16 × 10⁴⁷ |
+| 50 | 5.6 | 50 | 282 | 2.500 | 1.13 × 10¹⁵ | 3.04 × 10⁶⁴ |
+| 100 | 6.6 | 100 | 664 | 10.000 | 1.27 × 10³⁰ | 9.33 × 10¹⁵⁷ |
+
+**Interpretação prática:** Se uma operação leva 1 nanosegundo:
+
+- `n² = 10.000` operações → **10 microssegundos** (ok)
+- `2⁴⁰ ≈ 10¹²` operações → **~17 minutos** (problemático)
+- `2¹⁰⁰ ≈ 10³⁰` operações → **~4 × 10¹³ anos** (mais que a idade do universo)
+
+### 2.4 Torre de Hanoi: O Exemplo Clássico de 2ⁿ
+
+A Torre de Hanoi com `n` discos requer exatamente `T(n) = 2ⁿ - 1` movimentos. A recorrência é:
+
+```
+T(1) = 1
+T(n) = 2·T(n-1) + 1
+```
+
+**Prova por indução:**
+
+```
+Base: T(1) = 2¹ - 1 = 1 ✓
+Hipótese: Suponha T(k) = 2ᵏ - 1 para k < n.
+Passo: T(n) = 2·T(n-1) + 1
+            = 2·(2ⁿ⁻¹ - 1) + 1
+            = 2ⁿ - 2 + 1
+            = 2ⁿ - 1  ∎
+```
+
+```typescript
+function hanoiMoves(n: number): bigint {
+  // T(n) = 2^n - 1
+  return (1n << BigInt(n)) - 1n;
+}
+
+console.log(hanoiMoves(3));   // 7n
+console.log(hanoiMoves(10));  // 1023n
+console.log(hanoiMoves(64));  // 18446744073709551615n (~1.8 × 10¹⁹)
+
+// A lenda: monges movendo 64 discos a 1 por segundo
+// levariam 584.942.417.355 anos — ~42x a idade do universo
+```
+
+### 2.5 Fibonacci e a Razão Áurea
+
+A sequência de Fibonacci tem relação direta com a exponencial φⁿ, onde φ = (1 + √5) / 2 ≈ 1.618 (razão áurea).
+
+A fórmula de Binet fornece o n-ésimo Fibonacci diretamente:
+
+```
+F(n) = (φⁿ - ψⁿ) / √5
+```
+
+onde ψ = (1 - √5) / 2 ≈ -0.618. Como |ψ| &lt; 1, o termo ψⁿ converge para 0, então:
+
+```
+F(n) ≈ φⁿ / √5   (arredondado para o inteiro mais próximo)
+```
+
+Isso significa que **F(n) cresce exponencialmente** com base φ ≈ 1.618. A implicação em CS: o algoritmo ingênuo recursivo para Fibonacci tem complexidade O(φⁿ) ≈ O(1.618ⁿ), que é exponencial.
+
+```typescript
+const PHI = (1 + Math.sqrt(5)) / 2;
+const PSI = (1 - Math.sqrt(5)) / 2;
+
+/** Fórmula de Binet — O(1) mas imprecisa para n grande (ponto flutuante) */
+function fibBinet(n: number): number {
+  return Math.round((PHI ** n - PSI ** n) / Math.sqrt(5));
+}
+
+/** Fibonacci iterativo — O(n) e exato */
+function fib(n: number): bigint {
+  if (n <= 1) return BigInt(n);
+  let a = 0n, b = 1n;
+  for (let i = 2; i <= n; i++) {
+    [a, b] = [b, a + b];
+  }
+  return b;
+}
+
+console.log(fibBinet(10));  // 55
+console.log(fib(10));       // 55n
+console.log(fib(100));      // 354224848179261915075n
+```
+
+### 2.6 Exponenciação Rápida (Exponentiation by Squaring)
+
+Calcular `base^exp` ingenuamente requer `exp - 1` multiplicações — O(exp), que é O(2ⁿ) se `exp` tem `n` bits. A exponenciação rápida reduz isso para O(log exp) = O(n) multiplicações.
+
+**Ideia central:**
+
+```
+base^exp = (base²)^(exp/2)         se exp é par
+base^exp = base · (base²)^((exp-1)/2)  se exp é ímpar
+```
+
+A cada passo, o expoente é dividido pela metade → log₂(exp) passos.
+
+```typescript
+/**
+ * Exponenciação modular rápida: calcula (base^exp) % mod
+ * Complexidade: O(log exp) multiplicações
+ * Essencial para criptografia (RSA) e hashing
+ */
+function fastPow(base: bigint, exp: bigint, mod: bigint): bigint {
+  if (mod === 1n) return 0n;
+
+  let result = 1n;
+  base = base % mod;
+
+  while (exp > 0n) {
+    // Se exp é ímpar, multiplica result por base
+    if (exp & 1n) {
+      result = (result * base) % mod;
+    }
+    // exp = exp / 2
+    exp >>= 1n;
+    // base = base²
+    base = (base * base) % mod;
+  }
+
+  return result;
+}
+
+// Exemplo: 2^100 mod 1000000007
+console.log(fastPow(2n, 100n, 1000000007n));  // 976371285n
+
+// Sem mod, calcular 2^100 diretamente:
+function fastPowExact(base: bigint, exp: bigint): bigint {
+  let result = 1n;
+  while (exp > 0n) {
+    if (exp & 1n) result *= base;
+    exp >>= 1n;
+    if (exp > 0n) base *= base;
+  }
+  return result;
+}
+
+console.log(fastPowExact(2n, 10n));   // 1024n
+console.log(fastPowExact(3n, 20n));   // 3486784401n
+```
+
+**Trace de execução para `fastPow(3, 13, 1000)`:**
+
+```
+Iteração  base   exp   exp ímpar?  result
+─────────────────────────────────────────
+   0       3     13      sim       3
+   1       9      6      não       3
+   2      81      3      sim      243
+   3     561      1      sim      123  ← (243 × 561) % 1000
+```
+
+**Por que isso importa:** RSA usa expoentes de 2048+ bits. Sem fast exponentiation, RSA seria computacionalmente impossível. Com ela, são ~2048 multiplicações modulares.
+
+### 2.7 Crescimento de Funções — Hierarquia Formal
+
+A hierarquia completa de crescimento, da mais lenta à mais rápida:
+
+```
+O(1) ⊂ O(log log n) ⊂ O(log n) ⊂ O(√n) ⊂ O(n) ⊂ O(n log n) ⊂ O(n²) ⊂ O(n³) ⊂ O(2ⁿ) ⊂ O(n!) ⊂ O(nⁿ)
+```
+
+**Regra prática para limites de competição:**
+
+```
+n ≤ 10       → O(n!) ou O(2ⁿ) ok    (brute force com permutações)
+n ≤ 20-25    → O(2ⁿ) ok              (bitmask DP)
+n ≤ 500      → O(n³) ok              (Floyd-Warshall, matrix chain)
+n ≤ 10.000   → O(n²) ok              (DP quadrática)
+n ≤ 1.000.000 → O(n log n) ok        (sorting, segment trees)
+n ≤ 10⁸      → O(n) necessário       (linear scan)
+n > 10⁸      → O(log n) ou O(1)      (math, binary search)
+```
+
+---
+
+## 3. Séries e Somatórios
+
+### 3.1 Notação Sigma (∑)
+
+O somatório ∑ é uma notação compacta para a soma de uma sequência de termos:
+
+```
+∑ᵢ₌₁ⁿ f(i) = f(1) + f(2) + f(3) + ... + f(n)
+```
+
+**Propriedades algébricas do somatório:**
+
+```
+1. Linearidade:     ∑(af(i) + bg(i)) = a·∑f(i) + b·∑g(i)
+2. Separação:       ∑ᵢ₌₁ⁿ f(i) = ∑ᵢ₌₁ᵏ f(i) + ∑ᵢ₌ₖ₊₁ⁿ f(i)
+3. Constante:       ∑ᵢ₌₁ⁿ c = c · n
+4. Mudança de índice: ∑ᵢ₌₁ⁿ f(i) = ∑ⱼ₌₀ⁿ⁻¹ f(j+1)
+```
+
+### 3.2 Série Aritmética
+
+A série aritmética é a soma dos primeiros `n` inteiros positivos:
+
+```
+∑ᵢ₌₁ⁿ i = 1 + 2 + 3 + ... + n = n(n+1)/2
+```
+
+**Prova (atribuída a Gauss):** Escreva a soma duas vezes, uma em ordem crescente e outra decrescente:
+
+```
+S = 1   + 2   + 3   + ... + n
+S = n   + n-1 + n-2 + ... + 1
+─────────────────────────────────
+2S = (n+1) + (n+1) + (n+1) + ... + (n+1)  [n vezes]
+2S = n(n+1)
+S = n(n+1)/2  ∎
+```
+
+**Por que isso importa em CS:** Dois loops aninhados onde o loop interno depende do externo:
+
+```typescript
+// Quantas vezes console.log é executado?
+function nestedLoop(n: number): number {
+  let count = 0;
+  for (let i = 0; i < n; i++) {
+    for (let j = 0; j <= i; j++) {
+      count++;
+    }
+  }
+  return count;
+  // count = 1 + 2 + 3 + ... + n = n(n+1)/2 = O(n²)
+}
+
+console.log(nestedLoop(10));    // 55  = 10 × 11 / 2
+console.log(nestedLoop(100));   // 5050 = 100 × 101 / 2
+console.log(nestedLoop(1000));  // 500500
+```
+
+**Série aritmética generalizada (primeiro termo `a`, razão `d`, `n` termos):**
+
+```
+∑ᵢ₌₀ⁿ⁻¹ (a + i·d) = n·a + d·n(n-1)/2 = n(2a + (n-1)d) / 2
+```
+
+**Soma dos quadrados (aparece em análise de bubble sort, selection sort):**
+
+```
+∑ᵢ₌₁ⁿ i² = n(n+1)(2n+1) / 6 = Θ(n³)
+```
+
+**Soma dos cubos:**
+
+```
+∑ᵢ₌₁ⁿ i³ = [n(n+1)/2]² = Θ(n⁴)
+```
+
+```typescript
+function arithmeticSeries(n: number): number {
+  return n * (n + 1) / 2;
+}
+
+function sumOfSquares(n: number): number {
+  return n * (n + 1) * (2 * n + 1) / 6;
+}
+
+function sumOfCubes(n: number): number {
+  const s = n * (n + 1) / 2;
+  return s * s;
+}
+
+// Verificação
+console.log(arithmeticSeries(100));   // 5050
+console.log(sumOfSquares(10));        // 385
+console.log(sumOfCubes(10));          // 3025 = 55²
+```
+
+### 3.3 Série Geométrica
+
+A série geométrica é a soma de potências consecutivas de uma razão `a`:
+
+```
+∑ᵢ₌₀ᵏ aⁱ = 1 + a + a² + ... + aᵏ = (aᵏ⁺¹ - 1) / (a - 1)    para a ≠ 1
+```
+
+**Prova:**
+
+```
+Seja S = 1 + a + a² + ... + aᵏ
+Então aS = a + a² + a³ + ... + aᵏ⁺¹
+Subtraindo: aS - S = aᵏ⁺¹ - 1
+S(a - 1) = aᵏ⁺¹ - 1
+S = (aᵏ⁺¹ - 1) / (a - 1)  ∎
+```
+
+**Caso especial a = 2 (extremamente comum em CS):**
+
+```
+∑ᵢ₌₀ᵏ 2ⁱ = 1 + 2 + 4 + ... + 2ᵏ = 2ᵏ⁺¹ - 1
+```
+
+Isso explica por que um array que dobra de tamanho (dynamic array / ArrayList) tem custo amortizado O(1) para `push`:
+
+```typescript
+/**
+ * Custo de resize de um dynamic array que dobra ao encher.
+ * Tamanhos: 1, 2, 4, 8, ..., 2^k onde 2^k ≥ n.
+ * Custo total de cópias: 1 + 2 + 4 + ... + 2^k = 2^(k+1) - 1 < 2n.
+ * Custo amortizado por operação: 2n / n = O(1).
+ */
+function simulateDynamicArray(n: number): { totalCopies: number; amortized: number } {
+  let capacity = 1;
+  let size = 0;
+  let totalCopies = 0;
+
+  for (let i = 0; i < n; i++) {
+    if (size === capacity) {
+      totalCopies += capacity; // Copia todos os elementos
+      capacity *= 2;           // Dobra capacidade
+    }
+    size++;
+  }
+
+  return { totalCopies, amortized: totalCopies / n };
+}
+
+console.log(simulateDynamicArray(1000));
+// { totalCopies: 1023, amortized: 1.023 }  — O(1) amortizado confirmado!
+
+console.log(simulateDynamicArray(1_000_000));
+// { totalCopies: 1048575, amortized: ~1.05 }
+```
+
+**Série geométrica infinita (|a| &lt; 1):**
+
+```
+∑ᵢ₌₀^∞ aⁱ = 1 / (1 - a)    para |a| < 1
+```
+
+Isso aparece em análise probabilística: se um evento tem probabilidade `p` de sucesso a cada tentativa, o número esperado de tentativas é `1/p`. Por exemplo, se uma hash table tem load factor `α`, o número esperado de probes em open addressing com uniform hashing é `1/(1 - α)`.
+
+```typescript
+function geometricSeries(a: number, k: number): number {
+  if (a === 1) return k + 1;
+  return (Math.pow(a, k + 1) - 1) / (a - 1);
+}
+
+// Série geométrica com a = 2, k = 10
+console.log(geometricSeries(2, 10));  // 2047 = 2¹¹ - 1
+
+// Série geométrica com a = 3, k = 5
+console.log(geometricSeries(3, 5));   // 364 = (3⁶ - 1) / 2
+```
+
+### 3.4 Série Harmônica
+
+A série harmônica é a soma dos recíprocos dos inteiros positivos:
+
+```
+H(n) = ∑ᵢ₌₁ⁿ 1/i = 1 + 1/2 + 1/3 + 1/4 + ... + 1/n
+```
+
+**Resultado fundamental:**
+
+```
+H(n) = ln(n) + γ + O(1/n)
+```
+
+onde γ ≈ 0.5772 é a **constante de Euler-Mascheroni**. Portanto, `H(n) = Θ(ln n) = Θ(log n)`.
+
+A série harmônica diverge (cresce sem limite), mas cresce extremamente devagar — é preciso somar mais de 10⁴³ termos para ultrapassar 100.
+
+**Onde H(n) aparece em CS:**
+
+| Contexto | Por que H(n) |
+|---|---|
+| Coupon collector | E[tentativas para coletar n cupons] = n·H(n) |
+| Quicksort (caso médio) | Comparações ≈ 2n·H(n) ≈ 2n·ln(n) ≈ 1.39·n·log₂(n) |
+| Skip list | Altura esperada = O(log n) via análise com harmônica |
+| Hash table com chaining | Busca em bucket com load α: Θ(1 + α) ≈ Θ(1 + n/m) |
+| Randomized algorithms | Muitas análises usam linearidade da expectativa + H(n) |
+
+```typescript
+function harmonicSeries(n: number): number {
+  let sum = 0;
+  for (let i = 1; i <= n; i++) {
+    sum += 1 / i;
+  }
+  return sum;
+}
+
+const EULER_MASCHERONI = 0.5772156649;
+
+// Comparação: H(n) vs ln(n) + γ
+for (const n of [10, 100, 1000, 10000, 100000]) {
+  const exact = harmonicSeries(n);
+  const approx = Math.log(n) + EULER_MASCHERONI;
+  console.log(`H(${n.toString().padStart(6)}) = ${exact.toFixed(6)} ≈ ${approx.toFixed(6)} (erro: ${Math.abs(exact - approx).toFixed(6)})`);
+}
+// H(    10) = 2.928968 ≈ 2.879816 (erro: 0.049153)
+// H(   100) = 5.187378 ≈ 5.182378 (erro: 0.005000)
+// H(  1000) = 7.485471 ≈ 7.484940 (erro: 0.000500)
+// H( 10000) = 9.787606 ≈ 9.787556 (erro: 0.000050)
+// H(100000) = 12.090146 ≈ 12.090141 (erro: 0.000005)
+```
+
+### 3.5 Soma Telescópica (Telescoping Sum)
+
+Uma soma telescópica é aquela em que termos consecutivos se cancelam, restando apenas o primeiro e o último:
+
+```
+∑ᵢ₌₁ⁿ (f(i) - f(i-1)) = f(n) - f(0)
+```
+
+**Exemplo clássico:**
+
+```
+∑ᵢ₌₁ⁿ 1/(i(i+1)) = ∑ᵢ₌₁ⁿ (1/i - 1/(i+1))
+                   = (1/1 - 1/2) + (1/2 - 1/3) + ... + (1/n - 1/(n+1))
+                   = 1 - 1/(n+1)
+                   = n/(n+1)
+```
+
+**Aplicação em CS — análise de splay trees:** O custo amortizado das operações em splay trees usa potenciais que telescopiam, resultando em custo amortizado O(log n) por operação.
+
+```typescript
+function telescopingSum(n: number): { direct: number; formula: number } {
+  let direct = 0;
+  for (let i = 1; i <= n; i++) {
+    direct += 1 / (i * (i + 1));
+  }
+  const formula = n / (n + 1);
+  return { direct, formula };
+}
+
+console.log(telescopingSum(10));    // { direct: 0.909090..., formula: 0.909090... }
+console.log(telescopingSum(1000));  // { direct: 0.999000..., formula: 0.999000... }
+```
+
+### 3.6 Tabela Resumo de Somatórios
+
+| Somatório | Forma fechada | Complexidade | Onde aparece |
+|---|---|---|---|
+| ∑ᵢ₌₁ⁿ 1 | n | O(n) | Loop simples |
+| ∑ᵢ₌₁ⁿ i | n(n+1)/2 | O(n²) | Dois loops aninhados |
+| ∑ᵢ₌₁ⁿ i² | n(n+1)(2n+1)/6 | O(n³) | Bubble sort analysis |
+| ∑ᵢ₌₀ᵏ 2ⁱ | 2ᵏ⁺¹ - 1 | O(2ᵏ) | Dynamic array resizes |
+| ∑ᵢ₌₀ᵏ aⁱ | (aᵏ⁺¹-1)/(a-1) | O(aᵏ) se a>1 | Árvores k-árias |
+| ∑ᵢ₌₁ⁿ 1/i | ≈ ln(n) + γ | O(log n) | Quicksort médio, coupon collector |
+| ∑ᵢ₌₁ⁿ 1/2ⁱ | 1 - 1/2ⁿ | O(1) | Série geom. convergente |
+| ∑ᵢ₌₁ⁿ i·2ⁱ | (n-1)·2ⁿ⁺¹ + 2 | O(n·2ⁿ) | Análise de certos DP |
+
+---
+
+## 4. Aritmética Modular
+
+### 4.1 Definição Formal
+
+Dois inteiros `a` e `b` são **congruentes módulo m** se `m` divide `(a - b)`. Notação:
+
+```
+a ≡ b (mod m)  ⟺  m | (a - b)  ⟺  ∃k ∈ ℤ : a = b + k·m
+```
+
+Equivalentemente, `a` e `b` têm o mesmo resto quando divididos por `m`.
+
+**Exemplos:**
+
+```
+17 ≡ 2  (mod 5)    porque  5 | (17 - 2) = 15
+-3 ≡ 7  (mod 10)   porque  10 | (-3 - 7) = -10
+100 ≡ 0 (mod 25)   porque  25 | (100 - 0) = 100
+```
+
+### 4.2 Propriedades Operacionais
+
+A aritmética modular preserva adição, subtração e multiplicação:
+
+```
+Se a ≡ a' (mod m) e b ≡ b' (mod m), então:
+  (a + b) ≡ (a' + b') (mod m)
+  (a - b) ≡ (a' - b') (mod m)
+  (a × b) ≡ (a' × b') (mod m)
+  (a ^ k) ≡ (a' ^ k) (mod m)    para k ≥ 0
+```
+
+**Consequência prática:** podemos aplicar `mod` a qualquer ponto intermediário de uma computação envolvendo soma e multiplicação, sem alterar o resultado final. Isso é essencial para evitar overflow.
+
+```typescript
+// ERRADO: pode causar overflow antes do mod
+function unsafeModProduct(a: number, b: number, m: number): number {
+  return (a * b) % m; // a * b pode exceder Number.MAX_SAFE_INTEGER
+}
+
+// CORRETO: aplica mod em cada passo
+function safeModProduct(a: bigint, b: bigint, m: bigint): bigint {
+  return ((a % m) * (b % m)) % m;
+}
+```
+
+**Divisão NÃO é preservada diretamente.** `(a / b) mod m` NÃO é igual a `((a mod m) / (b mod m)) mod m`. Para "dividir" em aritmética modular, precisamos do **inverso modular**.
+
+### 4.3 Inverso Modular
+
+O inverso modular de `a` módulo `m` é um inteiro `a⁻¹` tal que:
+
+```
+a · a⁻¹ ≡ 1 (mod m)
+```
+
+O inverso existe se e somente se `gcd(a, m) = 1` (ou seja, `a` e `m` são coprimos).
+
+**Algoritmo Euclidiano Estendido — encontra gcd(a, b) e coeficientes x, y tais que ax + by = gcd(a, b):**
+
+```typescript
+interface ExtGcdResult {
+  gcd: bigint;
+  x: bigint;  // coeficiente de a
+  y: bigint;  // coeficiente de b
+}
+
+function extendedGcd(a: bigint, b: bigint): ExtGcdResult {
+  if (b === 0n) {
+    return { gcd: a, x: 1n, y: 0n };
+  }
+  const { gcd, x: x1, y: y1 } = extendedGcd(b, a % b);
+  return {
+    gcd,
+    x: y1,
+    y: x1 - (a / b) * y1,
+  };
+}
+
+function modInverse(a: bigint, m: bigint): bigint {
+  const { gcd, x } = extendedGcd(a, m);
+  if (gcd !== 1n) {
+    throw new Error(`Inverso modular não existe: gcd(${a}, ${m}) = ${gcd}`);
+  }
+  return ((x % m) + m) % m; // Garante resultado positivo
+}
+
+console.log(modInverse(3n, 7n));   // 5n  (pois 3 × 5 = 15 ≡ 1 mod 7)
+console.log(modInverse(7n, 11n));  // 8n  (pois 7 × 8 = 56 ≡ 1 mod 11)
+```
+
+### 4.4 Pequeno Teorema de Fermat
+
+Se `p` é primo e `gcd(a, p) = 1`, então:
+
+```
+a^(p-1) ≡ 1 (mod p)
+```
+
+**Corolário:** O inverso modular de `a` módulo primo `p` é:
+
+```
+a⁻¹ ≡ a^(p-2) (mod p)
+```
+
+Isso é mais simples que o algoritmo euclidiano estendido e pode ser computado com `fastPow`:
+
+```typescript
+function modInverseFermat(a: bigint, p: bigint): bigint {
+  // Requer que p seja primo
+  return fastPow(a, p - 2n, p);
+}
+
+const MOD = 1000000007n; // Primo muito usado em competitive programming
+
+console.log(modInverseFermat(3n, 7n));        // 5n
+console.log(modInverseFermat(42n, MOD));       // Calcula 42^(MOD-2) mod MOD
+```
+
+### 4.5 Aplicações em CS
+
+#### Hashing (Division Method)
+
+A operação mais fundamental de uma hash table é `h(k) = k mod m`:
+
+```typescript
+function divisionHash(key: number, tableSize: number): number {
+  // tableSize deve ser primo para boa distribuição
+  return ((key % tableSize) + tableSize) % tableSize;
+}
+
+// Polynomial rolling hash para strings
+function polynomialHash(s: string, mod: number = 1_000_000_007, base: number = 31): number {
+  let hash = 0;
+  let power = 1;
+
+  for (let i = 0; i < s.length; i++) {
+    const charCode = s.charCodeAt(i) - 96; // 'a' = 1, 'b' = 2, ...
+    hash = (hash + charCode * power) % mod;
+    power = (power * base) % mod;
+  }
+
+  return hash;
+}
+
+console.log(polynomialHash("hello"));  // Hash determinístico da string
+console.log(polynomialHash("world"));  // Hash diferente
+```
+
+#### Circular Buffers
+
+Circular buffers usam `mod` para tratar um array linear como circular:
+
+```typescript
+class CircularBuffer<T> {
+  private buffer: (T | undefined)[];
+  private head = 0;
+  private tail = 0;
+  private count = 0;
+
+  constructor(private capacity: number) {
+    this.buffer = new Array(capacity);
+  }
+
+  enqueue(item: T): void {
+    if (this.count === this.capacity) {
+      throw new Error("Buffer cheio");
+    }
+    this.buffer[this.tail] = item;
+    this.tail = (this.tail + 1) % this.capacity; // Wrap-around!
+    this.count++;
+  }
+
+  dequeue(): T {
+    if (this.count === 0) {
+      throw new Error("Buffer vazio");
+    }
+    const item = this.buffer[this.head]!;
+    this.buffer[this.head] = undefined;
+    this.head = (this.head + 1) % this.capacity; // Wrap-around!
+    this.count--;
+    return item;
+  }
+
+  get size(): number {
+    return this.count;
+  }
+}
+
+const buf = new CircularBuffer<number>(4);
+buf.enqueue(10);
+buf.enqueue(20);
+buf.enqueue(30);
+console.log(buf.dequeue()); // 10
+buf.enqueue(40);
+buf.enqueue(50);
+// Internamente: [_, 20, 30, 40] com head=1, tail=0 (wraparound via %)
+```
+
+#### Aritmética de Calendário
+
+Calcular o dia da semana é aritmética modular pura:
+
+```typescript
+/** Fórmula de Zeller para dia da semana (0 = sábado, 1 = domingo, ..., 6 = sexta) */
+function dayOfWeek(day: number, month: number, year: number): string {
+  const days = ["Sábado", "Domingo", "Segunda", "Terça", "Quarta", "Quinta", "Sexta"];
+
+  // Zeller: janeiro e fevereiro são tratados como meses 13 e 14 do ano anterior
+  if (month < 3) {
+    month += 12;
+    year--;
+  }
+
+  const k = year % 100;
+  const j = Math.floor(year / 100);
+  const h = (day + Math.floor((13 * (month + 1)) / 5) + k + Math.floor(k / 4) + Math.floor(j / 4) - 2 * j) % 7;
+
+  return days[((h % 7) + 7) % 7]; // Garante resultado positivo
+}
+
+console.log(dayOfWeek(1, 1, 2000));   // "Sábado"
+console.log(dayOfWeek(15, 3, 2025));  // "Sábado"
+```
+
+### 4.6 Visão de Alto Nível: RSA
+
+O RSA é o exemplo mais célebre de aritmética modular em ação. O esquema simplificado:
+
+```
+1. Escolha dois primos grandes p, q. Calcule n = p × q.
+2. Calcule φ(n) = (p-1)(q-1)   [função totiente de Euler].
+3. Escolha e tal que gcd(e, φ(n)) = 1. Par (n, e) é a chave pública.
+4. Calcule d = e⁻¹ mod φ(n).  Par (n, d) é a chave privada.
+5. Cifrar:   C = M^e mod n
+6. Decifrar: M = C^d mod n
+```
+
+**Por que funciona:** Pelo Teorema de Euler, `M^(e·d) ≡ M^(1 + k·φ(n)) ≡ M (mod n)`.
+
+```typescript
+// Demonstração simplificada do RSA com números pequenos
+function rsaDemo(): void {
+  const p = 61n;
+  const q = 53n;
+  const n = p * q;               // 3233
+  const phi = (p - 1n) * (q - 1n); // 3120
+  const e = 17n;                  // Coprimo com phi
+  const d = modInverse(e, phi);   // d tal que e·d ≡ 1 (mod phi)
+
+  console.log(`Chave pública:  (n=${n}, e=${e})`);
+  console.log(`Chave privada:  (n=${n}, d=${d})`);
+
+  const message = 42n;
+  const encrypted = fastPow(message, e, n);
+  const decrypted = fastPow(encrypted, d, n);
+
+  console.log(`Mensagem original:  ${message}`);
+  console.log(`Mensagem cifrada:   ${encrypted}`);
+  console.log(`Mensagem decifrada: ${decrypted}`);
+  console.log(`Funcionou: ${decrypted === message}`); // true
+}
+
+rsaDemo();
+```
+
+Toda a segurança do RSA repousa no fato de que **fatorar n = p × q é computacionalmente intratável** para primos de 1024+ bits, enquanto a exponenciação modular é eficiente graças ao fast exponentiation.
+
+---
+
+## 5. Recorrências e o Master Theorem
+
+### 5.1 O Que É Uma Recorrência
+
+Uma **relação de recorrência** define uma função T(n) em termos de valores menores de si mesma. Na análise de algoritmos, recorrências descrevem o custo de algoritmos recursivos.
+
+A forma geral para algoritmos divide-and-conquer é:
+
+```
+T(n) = aT(n/b) + f(n)
+```
+
+Onde:
+- `a` = número de subproblemas em cada chamada recursiva (a ≥ 1)
+- `n/b` = tamanho de cada subproblema (b > 1)
+- `f(n)` = custo do trabalho fora das chamadas recursivas (dividir + combinar)
+
+### 5.2 Exemplos Clássicos de Recorrências
+
+| Algoritmo | Recorrência | a | b | f(n) |
+|---|---|---|---|---|
+| Binary search | T(n) = T(n/2) + O(1) | 1 | 2 | O(1) |
+| Merge sort | T(n) = 2T(n/2) + O(n) | 2 | 2 | O(n) |
+| Karatsuba (multiplicação) | T(n) = 3T(n/2) + O(n) | 3 | 2 | O(n) |
+| Strassen (matrizes) | T(n) = 7T(n/2) + O(n²) | 7 | 2 | O(n²) |
+| Busca em árvore binária | T(n) = T(n/2) + O(1) | 1 | 2 | O(1) |
+| Closest pair of points | T(n) = 2T(n/2) + O(n log n) | 2 | 2 | O(n log n) |
+
+### 5.3 Intuição: A Árvore de Recursão
+
+A maneira mais visual de entender uma recorrência é desenhar sua **árvore de recursão**. Considere `T(n) = 2T(n/2) + cn` (merge sort):
+
+```
+Nível 0:                    cn                        → custo cn
+                          /    \
+Nível 1:            cn/2        cn/2                   → custo cn
+                   /    \      /    \
+Nível 2:       cn/4   cn/4  cn/4   cn/4               → custo cn
+                ...
+Nível k:       cn/2ᵏ  cn/2ᵏ  ...  cn/2ᵏ (2ᵏ nós)     → custo cn
+                ...
+Nível log₂n:   c    c    c   ...   c    (n folhas)     → custo cn
+
+Altura da árvore: log₂(n) níveis
+Custo por nível: cn  (constante!)
+Custo total: cn · log₂(n) = O(n log n)
+```
+
+Para `T(n) = T(n/2) + c` (binary search):
+
+```
+Nível 0:       c                    → 1 nó, custo c
+Nível 1:       c                    → 1 nó, custo c
+Nível 2:       c                    → 1 nó, custo c
+...
+Nível log₂n:  c                    → 1 nó, custo c
+
+Custo total: c · log₂(n) = O(log n)
+```
+
+Para `T(n) = 3T(n/2) + cn` (Karatsuba):
+
+```
+Nível 0:       cn                              → custo cn
+Nível 1:       cn/2  cn/2  cn/2                → custo 3cn/2
+Nível 2:       (9 nós de custo cn/4 cada)      → custo 9cn/4 = (3/2)²cn
+...
+Nível k:       3ᵏ nós de custo cn/2ᵏ cada      → custo (3/2)ᵏ · cn
+
+O custo cresce a cada nível (3/2 > 1) → dominado pelas folhas.
+Número de folhas: 3^(log₂ n) = n^(log₂ 3) ≈ n^1.585
+Custo total: O(n^(log₂ 3)) ≈ O(n^1.585)
+```
+
+### 5.4 O Master Theorem
+
+O Master Theorem resolve recorrências da forma `T(n) = aT(n/b) + Θ(nᵈ)` de maneira direta, comparando `d` com `log_b(a)`:
+
+```
+T(n) = aT(n/b) + Θ(nᵈ)
+
+Defina c_crit = log_b(a)
+
+Caso 1: d < c_crit  →  T(n) = Θ(n^(log_b(a)))
+         (folhas dominam — o custo está no fundo da árvore)
+
+Caso 2: d = c_crit  →  T(n) = Θ(nᵈ · log n)
+         (todos os níveis contribuem igualmente)
+
+Caso 3: d > c_crit  →  T(n) = Θ(nᵈ)
+         (raiz domina — o custo está no topo da árvore)
+```
+
+**Intuição por trás dos três casos:**
+
+- **Caso 1:** As subárvores se multiplicam mais rápido do que o trabalho diminui. O custo é dominado pelas `a^(log_b n) = n^(log_b a)` folhas.
+- **Caso 2:** O trabalho em cada nível é exatamente igual, e há `log_b(n)` níveis.
+- **Caso 3:** O trabalho diminui tão rápido nas subárvores que o nível da raiz domina.
+
+### 5.5 Aplicando o Master Theorem
+
+#### Binary Search: T(n) = T(n/2) + O(1)
+
+```
+a = 1, b = 2, d = 0
+c_crit = log₂(1) = 0
+d = c_crit = 0 → Caso 2
+T(n) = Θ(n⁰ · log n) = Θ(log n)  ✓
+```
+
+#### Merge Sort: T(n) = 2T(n/2) + O(n)
+
+```
+a = 2, b = 2, d = 1
+c_crit = log₂(2) = 1
+d = c_crit = 1 → Caso 2
+T(n) = Θ(n¹ · log n) = Θ(n log n)  ✓
+```
+
+#### Karatsuba: T(n) = 3T(n/2) + O(n)
+
+```
+a = 3, b = 2, d = 1
+c_crit = log₂(3) ≈ 1.585
+d = 1 < 1.585 = c_crit → Caso 1
+T(n) = Θ(n^(log₂ 3)) ≈ Θ(n^1.585)  ✓
+```
+
+#### Strassen: T(n) = 7T(n/2) + O(n²)
+
+```
+a = 7, b = 2, d = 2
+c_crit = log₂(7) ≈ 2.807
+d = 2 < 2.807 = c_crit → Caso 1
+T(n) = Θ(n^(log₂ 7)) ≈ Θ(n^2.807)  ✓
+(melhor que o O(n³) da multiplicação de matrizes ingênua)
+```
+
+#### Caso hipotético: T(n) = 2T(n/2) + O(n²)
+
+```
+a = 2, b = 2, d = 2
+c_crit = log₂(2) = 1
+d = 2 > 1 = c_crit → Caso 3
+T(n) = Θ(n²)
+(a raiz domina: O(n²) trabalho no topo, e as subárvores somam menos)
+```
+
+### 5.6 Implementação: Detector de Caso do Master Theorem
+
+```typescript
+interface MasterResult {
+  a: number;
+  b: number;
+  d: number;
+  cCrit: number;        // log_b(a)
+  caso: 1 | 2 | 3;
+  complexidade: string;
+}
+
+function masterTheorem(a: number, b: number, d: number): MasterResult {
+  if (a < 1) throw new Error("a deve ser ≥ 1");
+  if (b <= 1) throw new Error("b deve ser > 1");
+  if (d < 0) throw new Error("d deve ser ≥ 0");
+
+  const cCrit = Math.log(a) / Math.log(b); // log_b(a)
+
+  // Comparação com tolerância para ponto flutuante
+  const EPS = 1e-9;
+
+  if (d < cCrit - EPS) {
+    // Caso 1: folhas dominam
+    const exponent = cCrit;
+    const expStr = Number.isInteger(exponent)
+      ? `n^${exponent}`
+      : `n^(log_${b}(${a})) ≈ n^${exponent.toFixed(3)}`;
+    return { a, b, d, cCrit, caso: 1, complexidade: `Θ(${expStr})` };
+  }
+
+  if (d > cCrit + EPS) {
+    // Caso 3: raiz domina
+    return { a, b, d, cCrit, caso: 3, complexidade: `Θ(n^${d})` };
+  }
+
+  // Caso 2: todos os níveis contribuem igualmente
+  if (d === 0) {
+    return { a, b, d, cCrit, caso: 2, complexidade: "Θ(log n)" };
+  }
+  return { a, b, d, cCrit, caso: 2, complexidade: `Θ(n^${d} · log n)` };
+}
+
+// Testes
+console.log(masterTheorem(1, 2, 0));
+// { caso: 2, complexidade: "Θ(log n)" }  — Binary Search
+
+console.log(masterTheorem(2, 2, 1));
+// { caso: 2, complexidade: "Θ(n^1 · log n)" }  — Merge Sort
+
+console.log(masterTheorem(3, 2, 1));
+// { caso: 1, complexidade: "Θ(n^(log_2(3)) ≈ n^1.585)" }  — Karatsuba
+
+console.log(masterTheorem(7, 2, 2));
+// { caso: 1, complexidade: "Θ(n^(log_2(7)) ≈ n^2.807)" }  — Strassen
+
+console.log(masterTheorem(2, 2, 2));
+// { caso: 3, complexidade: "Θ(n^2)" }  — Raiz domina
+
+console.log(masterTheorem(4, 2, 2));
+// { caso: 2, complexidade: "Θ(n^2 · log n)" }  — log_2(4) = 2 = d
+
+console.log(masterTheorem(9, 3, 2));
+// { caso: 2, complexidade: "Θ(n^2 · log n)" }  — log_3(9) = 2 = d
+```
+
+### 5.7 Recorrências que o Master Theorem NÃO Resolve
+
+O Master Theorem exige a forma exata `T(n) = aT(n/b) + Θ(nᵈ)`. Ele **não se aplica** quando:
+
+1. **Subproblemas de tamanhos diferentes:**
+   `T(n) = T(n/3) + T(2n/3) + O(n)` — árvore de recursão com galhos desiguais (aparece na análise do quicksort com partição desbalanceada). Solução: árvore de recursão ou Akra-Bazzi.
+
+2. **Custo f(n) não é polinomial puro:**
+   `T(n) = 2T(n/2) + n log n` — o extra `log n` impede a aplicação direta. Existe uma versão estendida do Master Theorem que cobre esse caso (resultado: `Θ(n log²n)`).
+
+3. **Subtração em vez de divisão:**
+   `T(n) = T(n-1) + O(n)` — essa é uma recorrência linear, não divide-and-conquer. Solução direta:
+   `T(n) = O(n) + O(n-1) + ... + O(1) = O(n²)`.
+
+4. **Múltiplas recorrências combinadas:**
+   `T(n) = T(√n) + O(1)` — o argumento não é `n/b`. Substituição `m = log n` transforma em `S(m) = S(m/2) + O(1)`, aí sim aplicável: `T(n) = O(log log n)`.
+
+### 5.8 Método da Substituição (Breve)
+
+O método da substituição consiste em **adivinhar** a forma da solução e **provar por indução** que a adivinhação está correta.
+
+**Exemplo: Provar que T(n) = 2T(n/2) + n é O(n log n).**
+
+```
+Hipótese: T(n) ≤ cn log n para alguma constante c > 0.
+
+Passo indutivo:
+T(n) = 2T(n/2) + n
+     ≤ 2 · c(n/2)log(n/2) + n           [hipótese indutiva]
+     = cn(log n - 1) + n
+     = cn·log n - cn + n
+     = cn·log n - (c - 1)n
+     ≤ cn·log n                          [para c ≥ 1]
+
+Logo, T(n) = O(n log n) com c = 1.  ∎
+```
+
+O método da substituição é poderoso mas requer "adivinhar" a resposta. Na prática, a árvore de recursão dá a intuição e o método da substituição fornece a prova formal.
+
+### 5.9 Tabela Resumo de Recorrências Clássicas
+
+| Recorrência | Solução | Algoritmo |
+|---|---|---|
+| T(n) = T(n/2) + O(1) | O(log n) | Binary search |
+| T(n) = T(n-1) + O(1) | O(n) | Linear scan recursivo |
+| T(n) = 2T(n/2) + O(1) | O(n) | Percurso de árvore (só dividir) |
+| T(n) = 2T(n/2) + O(n) | O(n log n) | Merge sort |
+| T(n) = T(n-1) + O(n) | O(n²) | Selection sort, insertion sort |
+| T(n) = 2T(n-1) + O(1) | O(2ⁿ) | Torre de Hanoi, Fibonacci ingênuo |
+| T(n) = 3T(n/2) + O(n) | O(n^1.585) | Karatsuba |
+| T(n) = 7T(n/2) + O(n²) | O(n^2.807) | Strassen |
+| T(n) = T(n/2) + O(n) | O(n) | Select (mediana das medianas) |
+| T(n) = 2T(n/4) + O(1) | O(√n) | — |
+| T(n) = T(√n) + O(1) | O(log log n) | van Emde Boas lookup |
+
+---
+
+## 6. Polinômios e o Método de Horner
+
+### 6.1 Avaliação Ingênua de Polinômios
+
+Dado um polinômio de grau `n`:
+
+```
+P(x) = aₙxⁿ + aₙ₋₁xⁿ⁻¹ + ... + a₁x + a₀
+```
+
+A avaliação ingênua calcula cada termo `aᵢxⁱ` separadamente. Para o termo `aᵢxⁱ`, são necessárias `i` multiplicações (para computar `xⁱ`). O total de multiplicações é:
+
+```
+∑ᵢ₌₁ⁿ i = n(n+1)/2 = O(n²)
+```
+
+Mesmo otimizando com `x² = x·x`, `x³ = x²·x`, etc. (reutilizando potências anteriores), ainda são `n - 1` multiplicações para as potências mais `n` multiplicações pelos coeficientes = `2n - 1` multiplicações e `n` adições = O(n). Mas Horner faz melhor em termos de organização e cache.
+
+### 6.2 Método de Horner
+
+Horner reescreve o polinômio em forma aninhada:
+
+```
+P(x) = aₙxⁿ + aₙ₋₁xⁿ⁻¹ + ... + a₁x + a₀
+     = (...((aₙx + aₙ₋₁)x + aₙ₋₂)x + ... + a₁)x + a₀
+```
+
+**Exemplo concreto:** `P(x) = 2x³ + 3x² - 5x + 7`
+
+```
+Forma de Horner: ((2x + 3)x - 5)x + 7
+```
+
+Avaliação para x = 4:
+```
+Passo 1: 2                           (coeficiente líder)
+Passo 2: 2 × 4 + 3 = 11
+Passo 3: 11 × 4 + (-5) = 39
+Passo 4: 39 × 4 + 7 = 163
+```
+
+Resultado: `P(4) = 163`. Exatamente `n` multiplicações e `n` adições — O(n).
+
+```typescript
+/**
+ * Avalia um polinômio usando o método de Horner.
+ * coeffs[0] = aₙ (coeficiente líder), coeffs[n] = a₀ (termo independente)
+ * Complexidade: O(n) — exatamente n multiplicações e n adições
+ */
+function hornerEval(coeffs: number[], x: number): number {
+  let result = coeffs[0];
+  for (let i = 1; i < coeffs.length; i++) {
+    result = result * x + coeffs[i];
+  }
+  return result;
+}
+
+// P(x) = 2x³ + 3x² - 5x + 7
+const coefficients = [2, 3, -5, 7];
+console.log(hornerEval(coefficients, 4));   // 163
+console.log(hornerEval(coefficients, 0));   // 7 (termo independente)
+console.log(hornerEval(coefficients, 1));   // 7 (2 + 3 - 5 + 7)
+console.log(hornerEval(coefficients, -1));  // 13 (-2 + 3 + 5 + 7)
+
+// Versão com BigInt para aritmética modular
+function hornerEvalMod(coeffs: bigint[], x: bigint, mod: bigint): bigint {
+  let result = coeffs[0] % mod;
+  for (let i = 1; i < coeffs.length; i++) {
+    result = (result * x + coeffs[i]) % mod;
+  }
+  return ((result % mod) + mod) % mod; // Garante resultado positivo
+}
+```
+
+### 6.3 Aplicação: Hash de Strings (Polynomial Rolling Hash)
+
+O hash polinomial de uma string `s = s₀s₁...sₙ₋₁` é essencialmente a avaliação de um polinômio onde os coeficientes são os códigos dos caracteres:
+
+```
+H(s) = (s₀ · pⁿ⁻¹ + s₁ · pⁿ⁻² + ... + sₙ₋₂ · p + sₙ₋₁) mod m
+```
+
+Isso é exatamente o método de Horner! A base `p` é tipicamente um primo (31, 37, 53) e `m` é um primo grande (10⁹ + 7).
+
+```typescript
+/**
+ * Polynomial Rolling Hash usando Horner.
+ * Permite calcular o hash de qualquer substring em O(1)
+ * após pré-processamento O(n).
+ */
+class RollingHash {
+  private prefixHash: bigint[];
+  private powers: bigint[];
+  private mod: bigint;
+  private base: bigint;
+
+  constructor(s: string, base = 31n, mod = 1_000_000_007n) {
+    this.mod = mod;
+    this.base = base;
+    const n = s.length;
+    this.prefixHash = new Array(n + 1);
+    this.powers = new Array(n + 1);
+
+    this.prefixHash[0] = 0n;
+    this.powers[0] = 1n;
+
+    for (let i = 0; i < n; i++) {
+      const charCode = BigInt(s.charCodeAt(i) - 96); // 'a' = 1
+      this.prefixHash[i + 1] = (this.prefixHash[i] * base + charCode) % mod;
+      this.powers[i + 1] = (this.powers[i] * base) % mod;
+    }
+  }
+
+  /** Hash da substring s[l..r] (inclusive) em O(1) */
+  getHash(l: number, r: number): bigint {
+    const raw = this.prefixHash[r + 1] - this.prefixHash[l] * this.powers[r - l + 1] % this.mod;
+    return ((raw % this.mod) + this.mod) % this.mod;
+  }
+}
+
+// Uso: detectar se duas substrings são iguais em O(1)
+const rh = new RollingHash("abracadabra");
+const hashAbra1 = rh.getHash(0, 3);  // "abra" (posições 0-3)
+const hashAbra2 = rh.getHash(7, 10); // "abra" (posições 7-10)
+console.log(hashAbra1 === hashAbra2); // true — mesma substring
+
+const hashBrac = rh.getHash(1, 4);   // "brac"
+console.log(hashAbra1 === hashBrac);  // false — substrings diferentes
+```
+
+**Por que Horner e não avaliação ingênua?** Além da eficiência O(n) vs O(n²), o método de Horner acumula o resultado da esquerda para a direita, o que permite a construção incremental do hash (rolling hash). Isso é a base do algoritmo **Rabin-Karp** para busca de padrões em strings, que compara hashes de substrings deslizantes em O(1) cada.
+
+### 6.4 Comparação de Desempenho
+
+```typescript
+/**
+ * Avaliação ingênua — O(n) multiplicações com potências pré-computadas,
+ * mas sem a elegância e estabilidade numérica de Horner.
+ */
+function naiveEval(coeffs: number[], x: number): number {
+  const n = coeffs.length - 1;
+  let result = 0;
+  let power = 1;
+
+  // coeffs[n] = a₀, coeffs[0] = aₙ
+  for (let i = n; i >= 0; i--) {
+    result += coeffs[i] * power;
+    power *= x;
+  }
+
+  return result;
+}
+
+// Benchmark comparativo
+function benchmark(fn: () => void, label: string, iterations = 100_000): void {
+  const start = performance.now();
+  for (let i = 0; i < iterations; i++) fn();
+  const elapsed = performance.now() - start;
+  console.log(`${label}: ${elapsed.toFixed(2)}ms (${iterations} iterações)`);
+}
+
+// Polinômio de grau 1000
+const bigCoeffs = Array.from({ length: 1001 }, (_, i) => i + 1);
+
+benchmark(() => hornerEval(bigCoeffs, 1.5), "Horner ");
+benchmark(() => naiveEval(bigCoeffs, 1.5), "Ingênuo");
+// Horner é consistentemente mais rápido por melhor uso de cache e pipeline
+```
+
+---
+
+## 7. Conexões e Visão Unificada
+
+### 7.1 Por Que Tudo Isso Importa Junto
+
+Os conceitos desta lição não existem isoladamente — eles se conectam constantemente na prática:
+
+1. **Binary search** usa log₂(n) passos → sua recorrência T(n) = T(n/2) + O(1) resolve para O(log n) pelo Master Theorem.
+
+2. **Merge sort** divide pela metade (log₂) e combina em O(n) → recorrência T(n) = 2T(n/2) + O(n), Master Theorem caso 2 → O(n log n). A série geométrica mostra que o custo por nível é constante.
+
+3. **Dynamic arrays** dobram de tamanho → custo de resize é série geométrica ∑2ⁱ = 2ⁿ - 1 &lt; 2n → amortizado O(1).
+
+4. **Hash tables** usam aritmética modular (h(k) = k mod m), polynomial hash (Horner), e a série harmônica aparece na análise de colisões.
+
+5. **RSA** combina exponenciação rápida (O(log exp) pelo squaring), aritmética modular, e o fato de que fatoração é exponencialmente difícil.
+
+6. **Fibonacci** cresce como φⁿ (exponencial), mas pode ser computado em O(log n) com exponenciação de matrizes — novamente, fast exponentiation.
+
+### 7.2 Checklist de Competências
+
+Após dominar esta lição, você deve ser capaz de:
+
+```
+□ Converter entre bases logarítmicas e explicar por que a base não importa em Big O
+□ Calcular log₂ iterativamente e explicar a conexão com binary search
+□ Identificar quando um problema é exponencial (2ⁿ) e saber que brute force é inviável
+□ Implementar exponenciação rápida (O(log n) multiplicações)
+□ Calcular séries aritméticas, geométricas e harmônicas de forma fechada
+□ Explicar por que dois loops aninhados são O(n²) usando a série aritmética
+□ Usar aritmética modular para hashing, circular buffers e criptografia
+□ Calcular inverso modular via Euclides estendido e Fermat
+□ Resolver recorrências divide-and-conquer com o Master Theorem
+□ Identificar qual dos 3 casos se aplica e justificar
+□ Avaliar polinômios com Horner em O(n) e aplicar para polynomial hash
+□ Conectar todos esses conceitos com algoritmos e estruturas reais
+```
+
+### 7.3 Erros Comuns em Entrevistas
+
+| Erro | Correção |
+|---|---|
+| "log n é sempre log₂ n" | Em Big O sim, a base é irrelevante. Em cálculo exato (altura de B-Tree), a base importa. |
+| "O(2ⁿ) e O(3ⁿ) são a mesma coisa" | NÃO. 3ⁿ cresce exponencialmente mais rápido que 2ⁿ. Diferente de log, bases importam em exponenciais. |
+| Confundir O(n log n) com O(n²) | Para n = 10⁶: n log n ≈ 2×10⁷, n² = 10¹². Diferença de 5 ordens de magnitude. |
+| "Master Theorem resolve tudo" | Não resolve subproblemas desiguais, recorrências lineares (T(n-1)), nem f(n) não-polinomiais. |
+| Esquecer mod em cálculos intermediários | BigInt ou aplicar mod a cada multiplicação. Number estoura em ~2⁵³. |
+| "O inverso modular sempre existe" | Só existe quando gcd(a, m) = 1. Para m primo e a não múltiplo de m, sempre existe. |
+
+### 7.4 Referências para Aprofundamento
+
+```
+- CLRS (Cormen et al.) — Capítulos 3 (Growth of Functions), 4 (Divide-and-Conquer),
+  Apêndice A (Somatórios), 31 (Number-Theoretic Algorithms)
+- Concrete Mathematics (Graham, Knuth, Patashnik) — O texto definitivo sobre
+  matemática discreta para CS
+- Mathematics for Computer Science (Lehman, Leighton, Meyer) — disponível
+  gratuitamente pelo MIT OpenCourseWare
+```

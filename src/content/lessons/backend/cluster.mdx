@@ -1,0 +1,567 @@
+---
+title: "Cluster"
+description: "Multi-processo no Node.js para aproveitar todos os cores da CPU"
+track: "backend"
+order: 5
+section: "Node.js"
+priority: "high"
+tags: ["nodejs", "cluster", "multi-processo", "escalabilidade"]
+prerequisites: ["event-loop"]
+keyTakeaways:
+  - "O módulo cluster cria um worker por CPU, cada um sendo um processo Node completo com V8 isolada"
+  - "O processo primary gerencia os workers e pode fazer auto-recovery e graceful shutdown"
+  - "Na prática, PM2 automatiza clustering com o comando pm2 start app.js -i max"
+---
+
+## Cluster — Multi-Processo no Node.js
+
+O Node.js roda single-threaded por padrão. Isso significa que, numa máquina com 8 cores, um processo Node utiliza apenas **um core**. O módulo `cluster` resolve isso criando múltiplos processos (workers) que compartilham a mesma porta TCP, permitindo que a aplicação escale verticalmente sem alterações no código da aplicação.
+
+A arquitetura segue o modelo **master/worker** (ou primary/worker, na nomenclatura atualizada). O processo primary não lida com requisições — ele é responsável por criar, monitorar e reiniciar workers.
+
+## O Módulo `cluster`: Arquitetura e Funcionamento
+
+Internamente, `cluster.fork()` utiliza `child_process.fork()` para criar um novo processo V8 completo. Cada worker possui seu próprio event loop, heap de memória e instância V8. A comunicação entre primary e workers acontece via **IPC (Inter-Process Communication)**, implementado sobre Unix domain sockets (Linux/macOS) ou named pipes (Windows).
+
+```javascript
+const cluster = require('node:cluster');
+const http = require('node:http');
+const os = require('node:os');
+
+if (cluster.isPrimary) {
+  const numCPUs = os.availableParallelism(); // Node 18.14+, mais preciso que os.cpus().length
+  console.log(`[Primary PID ${process.pid}] Iniciando ${numCPUs} workers...`);
+
+  for (let i = 0; i < numCPUs; i++) {
+    const worker = cluster.fork({ WORKER_INDEX: i }); // env vars passadas ao worker
+
+    // IPC: Primary envia mensagem ao worker
+    worker.send({ type: 'config', payload: { maxConnections: 1000 } });
+
+    // IPC: Primary recebe mensagem do worker
+    worker.on('message', (msg) => {
+      if (msg.type === 'metrics') {
+        console.log(`[Worker ${worker.id}] RPS: ${msg.rps}, Latência P99: ${msg.p99}ms`);
+      }
+    });
+  }
+
+  cluster.on('exit', (worker, code, signal) => {
+    if (signal) {
+      console.log(`[Worker ${worker.id}] Morto por sinal: ${signal}`);
+    } else if (code !== 0) {
+      console.log(`[Worker ${worker.id}] Crash com código ${code}. Reiniciando...`);
+      cluster.fork(); // Auto-recovery: substitui o worker que morreu
+    }
+  });
+} else {
+  // Cada worker é um processo Node.js completo e independente
+  const server = http.createServer((req, res) => {
+    res.writeHead(200);
+    res.end(`Resposta do worker ${process.pid}\n`);
+  });
+
+  server.listen(3000); // Todos os workers compartilham a mesma porta!
+
+  // IPC: Worker recebe mensagem do primary
+  process.on('message', (msg) => {
+    if (msg.type === 'config') {
+      console.log(`[Worker PID ${process.pid}] Config recebida:`, msg.payload);
+    }
+  });
+}
+```
+
+### IPC: Comunicação entre Processos
+
+O canal IPC é serializado via JSON por padrão. Isso significa que **não é possível enviar referências a objetos, funções ou buffers diretamente** — tudo é serializado/deserializado. Para dados binários, é preciso converter para Base64 ou usar `SharedArrayBuffer` (via Worker Threads, não Cluster).
+
+```javascript
+// Primary -> Worker: enviar comando de shutdown
+worker.send({ type: 'shutdown', gracePeriod: 5000 });
+
+// Worker -> Primary: reportar métricas
+process.send({ type: 'metrics', rps: 1250, p99: 12.3, heapUsed: process.memoryUsage().heapUsed });
+
+// Enviar um socket handle (caso especial — o kernel permite)
+// Isso é como o load balancing interno funciona
+worker.send({ type: 'connection' }, socket);
+```
+
+## Load Balancing: Round-Robin vs SO-Level
+
+O Node.js oferece duas estratégias de distribuição de conexões entre workers:
+
+**Round-Robin (padrão no Linux/macOS):** O processo primary aceita a conexão e distribui para os workers de forma circular. Mais justo, evita starvation.
+
+**SO-Level (padrão no Windows):** O sistema operacional decide qual worker recebe a conexão. Pode causar distribuição desigual — alguns workers ficam sobrecarregados enquanto outros estão ociosos.
+
+```javascript
+// Forçar estratégia de scheduling
+cluster.schedulingPolicy = cluster.SCHED_RR;    // Round-robin
+cluster.schedulingPolicy = cluster.SCHED_NONE;  // SO-level
+
+// Ou via variável de ambiente (antes de importar cluster)
+// NODE_CLUSTER_SCHED_POLICY=rr node app.js
+// NODE_CLUSTER_SCHED_POLICY=none node app.js
+```
+
+Na prática, o round-robin é quase sempre superior. O scheduling do SO tende a favorecer o último worker que ficou ocioso, criando distribuição desigual conhecida como **"thundering herd"** em cenários de alta concorrência.
+
+## O Problema do Estado Compartilhado
+
+Workers são processos **completamente isolados**. Eles não compartilham memória, variáveis globais ou estado. Isso quebra padrões que dependem de estado in-memory:
+
+```javascript
+// PROBLEMA: cada worker tem seu próprio Map
+const sessions = new Map(); // Existe apenas neste worker!
+
+server.on('request', (req, res) => {
+  // Se o usuário fez login no Worker 1 e a próxima request
+  // vai pro Worker 2, a sessão não existe lá.
+  const session = sessions.get(req.cookies.sessionId); // undefined no Worker 2!
+});
+```
+
+**Soluções para estado compartilhado:**
+
+| Solução | Latência | Consistência | Complexidade |
+|---------|----------|-------------|-------------|
+| Redis | ~0.5ms | Eventual (configurável) | Baixa |
+| PostgreSQL | ~2-5ms | Forte (ACID) | Média |
+| IPC via Primary | ~0.1ms | Forte (single-point) | Alta |
+| Memcached | ~0.3ms | Eventual | Baixa |
+
+```javascript
+// Solução com Redis — a mais comum em produção
+const Redis = require('ioredis');
+const redis = new Redis({ host: '127.0.0.1', port: 6379, maxRetriesPerRequest: 3 });
+
+server.on('request', async (req, res) => {
+  // Qualquer worker pode ler/escrever — Redis é externo e compartilhado
+  const session = await redis.get(`session:${req.cookies.sessionId}`);
+  if (!session) {
+    res.writeHead(401);
+    return res.end('Não autenticado');
+  }
+  // Rate limiting distribuído entre workers
+  const key = `ratelimit:${req.socket.remoteAddress}`;
+  const count = await redis.incr(key);
+  if (count === 1) await redis.expire(key, 60);
+  if (count > 100) {
+    res.writeHead(429);
+    return res.end('Rate limit excedido');
+  }
+});
+```
+
+## Graceful Shutdown e Zero-Downtime Restart
+
+Em produção, você precisa reiniciar workers sem perder requisições em andamento. O padrão é: (1) parar de aceitar novas conexões, (2) aguardar as conexões ativas finalizarem, (3) encerrar o processo.
+
+```javascript
+if (cluster.isPrimary) {
+  function gracefulRestart() {
+    const workers = Object.values(cluster.workers);
+    let index = 0;
+
+    function restartNext() {
+      if (index >= workers.length) return;
+      const worker = workers[index++];
+
+      console.log(`Reiniciando worker ${worker.id}...`);
+      const replacement = cluster.fork();
+
+      // Espera o novo worker estar pronto antes de matar o antigo
+      replacement.on('listening', () => {
+        worker.send({ type: 'shutdown' });
+        worker.disconnect(); // Para de receber novas conexões
+
+        const killTimer = setTimeout(() => {
+          console.log(`Worker ${worker.id} não encerrou a tempo. Forçando kill.`);
+          worker.kill('SIGKILL');
+        }, 10000); // 10s de timeout
+
+        worker.on('exit', () => {
+          clearTimeout(killTimer);
+          console.log(`Worker ${worker.id} encerrado com sucesso.`);
+          restartNext(); // Reinicia o próximo (rolling restart)
+        });
+      });
+    }
+
+    restartNext();
+  }
+
+  process.on('SIGUSR2', gracefulRestart); // kill -USR2 <primary_pid>
+} else {
+  const server = http.createServer(app);
+  server.listen(3000);
+
+  let isShuttingDown = false;
+
+  process.on('message', (msg) => {
+    if (msg.type === 'shutdown') {
+      isShuttingDown = true;
+
+      // Middleware para rejeitar novas requisições durante shutdown
+      // (conexões keep-alive podem continuar enviando requests)
+      server.on('request', (req, res) => {
+        if (isShuttingDown) {
+          res.setHeader('Connection', 'close');
+        }
+      });
+
+      server.close(() => {
+        console.log(`[Worker ${process.pid}] Todas as conexões finalizadas. Encerrando.`);
+        process.exit(0);
+      });
+    }
+  });
+}
+```
+
+## Worker Threads: Paralelismo Real para CPU-Intensive
+
+`cluster` cria processos separados. `worker_threads` cria **threads dentro do mesmo processo**, compartilhando memória via `SharedArrayBuffer`. Use Worker Threads para tarefas CPU-intensive (criptografia, processamento de imagem, parsing pesado) sem bloquear o event loop principal.
+
+```javascript
+const { Worker, isMainThread, parentPort, workerData } = require('node:worker_threads');
+
+if (isMainThread) {
+  // Thread principal — delega trabalho pesado
+  function runHeavyTask(data) {
+    return new Promise((resolve, reject) => {
+      const worker = new Worker(__filename, { workerData: data });
+      worker.on('message', resolve);
+      worker.on('error', reject);
+      worker.on('exit', (code) => {
+        if (code !== 0) reject(new Error(`Worker parou com código ${code}`));
+      });
+    });
+  }
+
+  // Exemplo: hash de senha sem bloquear o event loop
+  const express = require('express');
+  const app = express();
+
+  app.post('/register', async (req, res) => {
+    // Não bloqueia o event loop — roda numa thread separada
+    const hash = await runHeavyTask({
+      type: 'hash',
+      password: req.body.password,
+      saltRounds: 14,
+    });
+    res.json({ hash });
+  });
+
+  app.listen(3000);
+} else {
+  // Worker thread — execução CPU-intensive
+  const bcrypt = require('bcrypt');
+
+  if (workerData.type === 'hash') {
+    const hash = bcrypt.hashSync(workerData.password, workerData.saltRounds);
+    parentPort.postMessage(hash);
+  }
+}
+```
+
+### SharedArrayBuffer e Atomics
+
+Para cenários de alto desempenho onde a serialização JSON é gargalo, `SharedArrayBuffer` permite que múltiplas threads acessem a mesma região de memória. `Atomics` fornece operações atômicas para evitar race conditions.
+
+```javascript
+const { Worker, isMainThread } = require('node:worker_threads');
+
+if (isMainThread) {
+  // Memória compartilhada entre todas as threads
+  const shared = new SharedArrayBuffer(4); // 4 bytes = 1 Int32
+  const counter = new Int32Array(shared);
+
+  const NUM_THREADS = 4;
+  const INCREMENTS = 1_000_000;
+
+  const workers = [];
+  for (let i = 0; i < NUM_THREADS; i++) {
+    workers.push(new Promise((resolve) => {
+      const w = new Worker(__filename, { workerData: { shared, increments: INCREMENTS } });
+      w.on('exit', resolve);
+    }));
+  }
+
+  Promise.all(workers).then(() => {
+    // Sem Atomics: resultado imprevisível (race condition)
+    // Com Atomics: sempre 4.000.000
+    console.log(`Contador final: ${counter[0]}`);
+  });
+} else {
+  const { shared, increments } = require('node:worker_threads').workerData;
+  const counter = new Int32Array(shared);
+
+  for (let i = 0; i < increments; i++) {
+    Atomics.add(counter, 0, 1); // Incremento atômico — thread-safe
+  }
+}
+```
+
+## Child Process: exec, execFile, spawn, fork
+
+O módulo `child_process` oferece quatro formas de criar subprocessos. Cada uma tem trade-offs específicos:
+
+| Método | Shell | Streaming | IPC | Uso ideal |
+|--------|-------|-----------|-----|-----------|
+| `exec` | Sim | Não (buffer) | Não | Comandos curtos com output pequeno |
+| `execFile` | Não | Não (buffer) | Não | Executáveis específicos (mais seguro) |
+| `spawn` | Não* | Sim | Não | Processos com output grande/contínuo |
+| `fork` | Não | Sim | Sim | Scripts Node.js que precisam de IPC |
+
+```javascript
+const { exec, execFile, spawn, fork } = require('node:child_process');
+
+// exec: roda num shell, vulnerável a injection se input não for sanitizado
+exec('ls -la /tmp', { maxBuffer: 1024 * 1024 }, (err, stdout, stderr) => {
+  // stdout e stderr são strings completas (buffered)
+  console.log(stdout);
+});
+
+// execFile: sem shell, mais seguro, sem injection
+execFile('/usr/bin/ffmpeg', ['-i', 'input.mp4', '-c:v', 'libx264', 'output.mp4'], (err) => {
+  if (err) console.error('FFmpeg falhou:', err.message);
+});
+
+// spawn: streaming — ideal para processos de longa duração
+const ffmpeg = spawn('ffmpeg', ['-i', 'pipe:0', '-f', 'mp4', 'pipe:1'], {
+  stdio: ['pipe', 'pipe', 'pipe'],
+});
+// Pode conectar stdin/stdout a streams
+inputStream.pipe(ffmpeg.stdin);
+ffmpeg.stdout.pipe(outputStream);
+ffmpeg.stderr.on('data', (chunk) => console.log('FFmpeg:', chunk.toString()));
+
+// fork: cria processo Node.js com canal IPC automático
+const child = fork('./heavy-computation.js', { execArgv: ['--max-old-space-size=4096'] });
+child.send({ type: 'start', data: largeDataset });
+child.on('message', (result) => console.log('Resultado:', result));
+```
+
+**Regra prática:** Use `spawn` para tudo que não seja Node.js. Use `fork` para scripts Node.js que precisam trocar mensagens com o processo pai. Evite `exec` com input de usuário (shell injection).
+
+## PM2: Process Manager para Produção
+
+PM2 abstrai toda a lógica de cluster, graceful restart e monitoramento. Na prática, é o padrão da indústria para rodar Node.js em produção sem containers.
+
+```javascript
+// ecosystem.config.js — Configuração declarativa do PM2
+module.exports = {
+  apps: [
+    {
+      name: 'api-gateway',
+      script: './dist/server.js',
+      instances: 'max',           // Um worker por CPU
+      exec_mode: 'cluster',       // Modo cluster (vs fork)
+      max_memory_restart: '500M', // Reinicia se ultrapassar 500MB
+      node_args: '--max-old-space-size=512',
+
+      // Variáveis de ambiente por ambiente
+      env_production: {
+        NODE_ENV: 'production',
+        PORT: 3000,
+      },
+      env_staging: {
+        NODE_ENV: 'staging',
+        PORT: 3001,
+      },
+
+      // Graceful shutdown
+      kill_timeout: 5000,          // 5s para encerrar antes de SIGKILL
+      listen_timeout: 10000,       // 10s para o worker começar a ouvir
+      shutdown_with_message: true,  // Envia 'shutdown' via IPC antes de SIGINT
+
+      // Logs
+      log_date_format: 'YYYY-MM-DD HH:mm:ss.SSS',
+      error_file: './logs/api-error.log',
+      out_file: './logs/api-out.log',
+      merge_logs: true,            // Combina logs de todos os workers
+      log_type: 'json',            // Formato JSON para parsing (ELK stack)
+
+      // Watch e restart
+      watch: false,                // Nunca em produção
+      max_restarts: 10,            // Máximo de restarts em janela de tempo
+      min_uptime: 5000,            // Worker deve rodar >= 5s para contar como "estável"
+      restart_delay: 4000,         // Delay entre restarts (evita restart loop)
+
+      // Métricas
+      pmx: true,                   // Habilita métricas customizadas
+    },
+  ],
+};
+```
+
+```bash
+# Comandos essenciais do PM2
+pm2 start ecosystem.config.js --env production
+pm2 reload api-gateway          # Zero-downtime restart (rolling)
+pm2 restart api-gateway          # Hard restart (com downtime)
+pm2 scale api-gateway +2         # Adiciona 2 workers
+pm2 monit                        # Dashboard em tempo real no terminal
+pm2 logs api-gateway --lines 100 # Últimas 100 linhas de log
+pm2 save                         # Salva lista de processos
+pm2 startup                      # Configura auto-start no boot do SO
+```
+
+### PM2: Métricas Customizadas
+
+```javascript
+const io = require('@pm2/io');
+
+// Métricas visíveis no pm2 monit e PM2 Plus (dashboard web)
+const requestsPerSecond = io.meter({ name: 'req/s', samples: 1, timeframe: 1 });
+const dbLatency = io.histogram({ name: 'DB Latency', measurement: 'mean' });
+const activeConnections = io.metric({ name: 'Active WS Connections', value: () => wsServer.clients.size });
+
+app.use((req, res, next) => {
+  requestsPerSecond.mark();
+  const start = process.hrtime.bigint();
+  res.on('finish', () => {
+    const duration = Number(process.hrtime.bigint() - start) / 1e6;
+    dbLatency.update(duration);
+  });
+  next();
+});
+
+// Ações remotas — executáveis via pm2 trigger
+io.action('heap-dump', (cb) => {
+  require('node:v8').writeHeapSnapshot();
+  cb({ success: true });
+});
+```
+
+## Escalabilidade Horizontal: Containers e Orquestração
+
+Cluster e PM2 resolvem escalabilidade **vertical** (usar todos os cores de uma máquina). Para escalabilidade **horizontal** (múltiplas máquinas), a abordagem moderna é containers.
+
+```dockerfile
+# Dockerfile otimizado para Node.js em produção
+FROM node:20-alpine AS builder
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci --only=production && npm cache clean --force
+COPY . .
+RUN npm run build
+
+FROM node:20-alpine
+RUN apk add --no-cache tini
+WORKDIR /app
+COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/node_modules ./node_modules
+COPY --from=builder /app/package.json ./
+
+# NÃO use cluster/PM2 dentro do container — o K8s faz o scaling
+# Um processo por container é o padrão (12-factor app)
+USER node
+ENTRYPOINT ["tini", "--"]
+CMD ["node", "dist/server.js"]
+
+HEALTHCHECK --interval=30s --timeout=3s \
+  CMD wget -qO- http://localhost:3000/health || exit 1
+```
+
+**Ponto crítico:** Dentro de containers orquestrados (Kubernetes, ECS), **não use cluster mode nem PM2**. O orquestrador já faz o scaling criando múltiplas réplicas do container. Usar cluster dentro do container significa que o K8s não consegue monitorar workers individuais, e o health check pode mascarar falhas.
+
+```yaml
+# kubernetes deployment — escalabilidade horizontal
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-gateway
+spec:
+  replicas: 4  # Equivalente a 4 workers no cluster
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1  # Zero-downtime: sempre >= 3 pods rodando
+      maxSurge: 1
+  template:
+    spec:
+      containers:
+        - name: api
+          image: registry.example.com/api:v1.2.3
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              cpu: "1000m"
+              memory: "512Mi"
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 3000
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "sleep 5"] # Espera drain do LB
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: api-gateway-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: api-gateway
+  minReplicas: 2
+  maxReplicas: 20
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+```
+
+## Comparação com Outros Runtimes
+
+O modelo de concorrência do Node.js (single-threaded + event loop + cluster para multi-processo) não é universal. Outros runtimes tomaram decisões arquiteturais diferentes:
+
+| Runtime | Modelo | Unidade de concorrência | Memória por unidade | Preempção |
+|---------|--------|------------------------|--------------------|-----------|
+| Node.js | Multi-processo (cluster) | Processo OS (~30MB) | Alta | SO |
+| Go | Goroutines (M:N scheduling) | Goroutine (~4KB) | Muito baixa | Runtime |
+| Erlang/Elixir | BEAM VM | Processo BEAM (~2KB) | Muito baixa | VM (preemptivo) |
+| Java (Loom) | Virtual Threads | VThread (~1KB) | Muito baixa | Runtime |
+| Rust (Tokio) | Async tasks no thread pool | Future (~poucos bytes) | Mínima | Cooperativo |
+
+**Go** consegue criar milhões de goroutines num único processo. O scheduler do runtime Go multiplexa goroutines em OS threads (modelo M:N). Não precisa de cluster — um único processo Go já usa todos os cores.
+
+**Erlang/Elixir (BEAM VM)** é o gold standard para concorrência. Processos BEAM são isolados (sem memória compartilhada), extremamente leves (~2KB), e o scheduler da VM é **preemptivo** — nenhum processo pode monopolizar o CPU. Essa é a razão pela qual o WhatsApp conseguia lidar com 2 milhões de conexões por servidor com Erlang.
+
+**Na prática:** O modelo do Node.js exige mais infraestrutura (cluster + Redis + load balancer) para atingir o que Go e Erlang fazem nativamente. Porém, o ecossistema npm, a familiaridade com JavaScript e o desempenho excelente para I/O-bound workloads mantêm o Node.js como escolha válida para a maioria das aplicações web.
+
+## Resumo de Decisão
+
+```
+Pergunta: "Preciso de mais throughput na minha API Node.js"
+
+1. A API é I/O-bound? (DB queries, HTTP calls, file reads)
+   → Sim: Cluster (PM2 em VMs, K8s replicas em containers)
+   → Não: Worker Threads para as operações CPU-intensive
+
+2. Preciso de estado compartilhado entre workers?
+   → Redis para sessions, rate limiting, cache
+   → PostgreSQL para dados que precisam de ACID
+
+3. Preciso escalar além de uma máquina?
+   → Containers (Docker) + Orquestrador (K8s) + Load Balancer
+   → NÃO use PM2/cluster dentro do container
+
+4. Preciso executar binários externos?
+   → spawn() para processos de longa duração com streaming
+   → execFile() para operações curtas sem shell
+   → NUNCA exec() com input de usuário
+```

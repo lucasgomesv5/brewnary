@@ -1,0 +1,974 @@
+---
+title: "Sistemas Operacionais"
+description: "Processos, threads, escalonamento, memória virtual, concorrência, deadlock, filesystem, I/O assíncrono, containers e o event loop do Node.js"
+track: "cs"
+order: 15
+section: "Sistemas"
+priority: "medium"
+tags: ["SO", "processos", "threads", "concorrência", "escalonamento", "memória-virtual", "deadlock", "filesystem", "epoll", "containers"]
+prerequisites: ["linguagem-c"]
+keyTakeaways:
+  - "Processos possuem memória isolada via espaços de endereçamento distintos; threads compartilham o heap mas mantêm stacks independentes"
+  - "O CFS do Linux usa uma red-black tree de vruntime para escalonamento O(log n) — não existe time-slice fixo"
+  - "Page faults são o mecanismo central da memória virtual: o MMU gera uma exceção e o kernel resolve mapeamento ou mata o processo"
+  - "Deadlock exige as quatro condições de Coffman simultaneamente — quebrar qualquer uma previne o problema"
+  - "epoll (Linux) e kqueue (macOS/BSD) são multiplexadores O(1) que viabilizam servidores com milhões de conexões"
+  - "Containers não são VMs: são processos normais isolados por namespaces e limitados por cgroups"
+  - "O event loop do Node.js delega I/O ao kernel via epoll/kqueue e usa uma thread pool (libuv) apenas para operações sem suporte assíncrono nativo"
+---
+
+# Sistemas Operacionais
+
+## 1. Processos vs Threads
+
+### O que é um processo
+
+Um **processo** é a abstração fundamental do SO para execução. Quando o kernel carrega um ELF (Linux) ou Mach-O (macOS), ele cria:
+
+- Um **espaço de endereçamento virtual** isolado (tipicamente 48 bits em x86-64 = 256 TiB)
+- Um **PCB (Process Control Block)** no kernel — a struct `task_struct` no Linux (~6 KiB)
+- Entradas na **tabela de file descriptors** (fd 0 = stdin, 1 = stdout, 2 = stderr)
+
+O PCB armazena tudo que o kernel precisa para gerenciar o processo:
+
+```
+task_struct (Linux simplificado):
+├── pid, tgid (thread group id)
+├── state: TASK_RUNNING | TASK_INTERRUPTIBLE | TASK_ZOMBIE | ...
+├── mm_struct → pgd (Page Global Directory — raiz da page table)
+├── files_struct → fdtable (tabela de file descriptors)
+├── signal_struct → handlers para cada sinal
+├── sched_entity → vruntime (para o CFS)
+├── cred → uid, gid, capabilities
+├── nsproxy → namespaces (pid_ns, net_ns, mnt_ns, ...)
+└── registradores salvos (rip, rsp, rflags, registradores gerais)
+```
+
+### fork() e exec()
+
+A criação de processos no Unix segue o modelo **fork-exec**:
+
+```c
+#include <unistd.h>
+#include <sys/wait.h>
+#include <stdio.h>
+
+int main(void) {
+    pid_t pid = fork();  // duplica o processo — retorna duas vezes
+
+    if (pid == 0) {
+        // Processo filho: PID novo, cópia do espaço de endereçamento (COW)
+        execvp("ls", (char *[]){"ls", "-la", NULL});
+        // exec() substitui a imagem do processo — se retornar, houve erro
+        perror("exec falhou");
+        _exit(127);
+    } else if (pid > 0) {
+        // Processo pai: pid contém o PID do filho
+        int status;
+        waitpid(pid, &status, 0);  // espera o filho terminar
+        if (WIFEXITED(status))
+            printf("Filho saiu com código %d\n", WEXITSTATUS(status));
+    } else {
+        perror("fork falhou");
+    }
+}
+```
+
+O `fork()` moderno usa **Copy-on-Write (COW)**: as page tables do filho apontam para as mesmas páginas físicas do pai, marcadas como read-only. Somente quando um dos dois escreve, o kernel intercepta o page fault e copia a página. Isso torna `fork()` extremamente barato — O(n) no número de entradas da page table, não no tamanho da memória.
+
+### Threads: compartilhamento de memória
+
+Uma thread é um **fluxo de execução dentro do mesmo espaço de endereçamento**. No Linux, threads são implementadas via `clone()` com flags específicas:
+
+```c
+// fork() equivale a:
+clone(SIGCHLD, 0);
+
+// pthread_create() equivale a:
+clone(CLONE_VM | CLONE_FS | CLONE_FILES | CLONE_SIGHAND | CLONE_THREAD, stack_ptr);
+//      ↑ mesmo espaço   ↑ mesmo cwd   ↑ mesma fdtable  ↑ mesmos handlers
+```
+
+Diferenças fundamentais de memória:
+
+```
+PROCESSO A                    PROCESSO B
+┌──────────────────┐         ┌──────────────────┐
+│ Stack            │         │ Stack            │   ← memória isolada
+│ Heap             │         │ Heap             │   ← memória isolada
+│ BSS/Data         │         │ BSS/Data         │   ← memória isolada
+│ Text (código)    │         │ Text (código)    │   ← memória isolada
+│ Page Table → PT_A│         │ Page Table → PT_B│   ← page tables distintas
+└──────────────────┘         └──────────────────┘
+
+THREAD 1 (mesmo processo)    THREAD 2 (mesmo processo)
+┌──────────────────┐         ┌──────────────────┐
+│ Stack (própria)  │         │ Stack (própria)  │   ← cada thread tem sua stack
+│ Heap ────────────┼─────────┼─ Heap            │   ← COMPARTILHADO
+│ BSS/Data ────────┼─────────┼─ BSS/Data        │   ← COMPARTILHADO
+│ Text ────────────┼─────────┼─ Text            │   ← COMPARTILHADO
+│ Page Table ──────┼─────────┼─ Page Table      │   ← MESMA page table
+└──────────────────┘         └──────────────────┘
+```
+
+### Context Switch
+
+Quando o kernel troca o processo em execução, ele executa um **context switch**:
+
+1. Salva os registradores do processo atual no seu `task_struct`
+2. Atualiza o ponteiro da page table (registrador `CR3` em x86-64) — isso invalida a TLB
+3. Restaura os registradores do próximo processo
+4. Retorna para userspace via `iret` ou `sysret`
+
+Custo típico: **1-5 μs** (microsegundos) em hardware moderno. O custo indireto (cache misses, TLB misses) pode ser muito maior — da ordem de **10-30 μs** em workloads reais. Troca entre threads do mesmo processo é mais barata porque **não invalida a TLB** (mesmo `CR3`).
+
+---
+
+## 2. Escalonamento de Processos
+
+O escalonador (scheduler) decide **qual processo/thread recebe a CPU e por quanto tempo**.
+
+### FIFO (First-Come, First-Served)
+
+O mais simples: uma fila. Problema clássico — **efeito comboio**: um processo CPU-bound de 100ms bloqueia todos os I/O-bound atrás dele.
+
+```
+Processos: P1 (burst=24ms), P2 (burst=3ms), P3 (burst=3ms)
+Ordem de chegada: P1, P2, P3
+
+Gantt: |--- P1 (24ms) ---|P2(3)|P3(3)|
+Tempo médio de espera = (0 + 24 + 27) / 3 = 17ms
+
+Se a ordem fosse P2, P3, P1:
+Gantt: |P2(3)|P3(3)|--- P1 (24ms) ---|
+Tempo médio de espera = (0 + 3 + 6) / 3 = 3ms    ← 5.7x melhor!
+```
+
+### SJF (Shortest Job First)
+
+Ótimo para minimizar tempo médio de espera — mas **requer conhecer o burst time a priori**, o que é impossível em sistemas reais. Versão preemptiva: **SRTF** (Shortest Remaining Time First). Problema: **starvation** de processos longos.
+
+### Round-Robin
+
+Cada processo recebe um **quantum** (time-slice) fixo. Ao expirar, o processo vai para o final da fila.
+
+```
+Quantum = 4ms
+Processos: P1(24ms), P2(3ms), P3(3ms)
+
+Gantt: |P1(4)|P2(3)|P3(3)|P1(4)|P1(4)|P1(4)|P1(4)|P1(4)|
+       0    4    7   10   14   18   22   26   30
+
+Tempo médio de espera = ((0+6) + 4 + 7) / 3 = 17/3 ≈ 5.67ms
+```
+
+O quantum é um trade-off crítico:
+- **Quantum muito grande** → degenera para FIFO
+- **Quantum muito pequeno** → overhead de context switch domina (se quantum = 10μs e context switch = 5μs, 33% da CPU é desperdiçada)
+- **Valor típico**: 1-10ms em sistemas modernos
+
+### MLFQ (Multi-Level Feedback Queue)
+
+Combina múltiplas filas com prioridades diferentes. Regras fundamentais (Arpaci-Dusseau):
+
+1. Se prioridade(A) > prioridade(B), A executa
+2. Se prioridade(A) = prioridade(B), Round-Robin entre eles
+3. Novos processos entram na fila de **maior prioridade**
+4. Se um processo usa todo o seu quantum, **desce de prioridade** (é CPU-bound)
+5. Se um processo libera a CPU antes do quantum (I/O), **mantém a prioridade** (é I/O-bound)
+6. Periodicamente, **boost**: todos voltam para a fila de maior prioridade (previne starvation)
+
+### CFS — Completely Fair Scheduler (Linux, desde 2.6.23)
+
+O CFS não usa filas de prioridade nem time-slices fixos. Ele mantém uma **red-black tree** ordenada por `vruntime` (virtual runtime):
+
+```
+vruntime = tempo_real_de_execução × (peso_nice_0 / peso_do_processo)
+
+Quanto maior a prioridade (nice mais baixo), mais lentamente o vruntime avança.
+
+nice  0 → peso 1024 (referência)
+nice -5 → peso 3121 (vruntime avança ~3x mais devagar)
+nice +5 → peso  335 (vruntime avança ~3x mais rápido)
+
+A cada tick, o CFS:
+1. Atualiza o vruntime do processo atual
+2. Se vruntime_atual > vruntime_mínimo_da_árvore + threshold → preempção
+3. O processo com menor vruntime (nó mais à esquerda da RB-tree) executa
+
+Complexidade: O(log n) para inserção/remoção, O(1) para obter o mínimo (cached).
+```
+
+O CFS garante que, ao longo do tempo, todos os processos recebam CPU proporcional ao seu peso. Processos I/O-bound acumulam pouco vruntime e são naturalmente favorecidos quando acordam.
+
+---
+
+## 3. Memória Virtual e Paginação
+
+### Por que memória virtual existe
+
+Sem memória virtual, cada processo precisaria de endereços físicos contíguos, não haveria isolamento, e o sistema seria impossível de gerenciar. A memória virtual fornece:
+
+1. **Isolamento**: cada processo vê seu próprio espaço de endereçamento
+2. **Abstração**: o programador não precisa saber onde a memória física está
+3. **Overcommit**: podemos alocar mais memória virtual do que física (com swap)
+
+### Paginação
+
+A memória é dividida em **páginas** (tipicamente 4 KiB em x86-64, mas huge pages de 2 MiB ou 1 GiB existem). A tradução endereço virtual → físico usa uma **page table** hierárquica de 4 níveis em x86-64:
+
+```
+Endereço virtual de 48 bits (canonical form):
+┌────────┬────────┬────────┬────────┬────────────┐
+│ PML4   │ PDPT   │  PD    │  PT    │  Offset    │
+│ 9 bits │ 9 bits │ 9 bits │ 9 bits │  12 bits   │
+└────────┴────────┴────────┴────────┴────────────┘
+  Nível 4   Nível 3  Nível 2  Nível 1  Dentro da página
+
+Cada nível tem 512 entradas (2⁹), cada entrada tem 8 bytes.
+Uma página de 4 KiB comporta exatamente 512 entradas × 8 bytes = 4096 bytes.
+
+Total endereçável: 2⁴⁸ bytes = 256 TiB de espaço virtual.
+```
+
+Cada entrada da page table (PTE) contém:
+
+```
+PTE (Page Table Entry) — 64 bits em x86-64:
+├── Bits 12-51: endereço físico da página (alinhado a 4 KiB)
+├── Bit 0 (Present): página está na RAM?
+├── Bit 1 (R/W): leitura+escrita ou somente leitura?
+├── Bit 2 (U/S): userspace pode acessar?
+├── Bit 5 (Accessed): página foi lida? (usado pelo algoritmo de substituição)
+├── Bit 6 (Dirty): página foi escrita? (precisa ser salva no swap antes de evictar)
+├── Bit 63 (NX): No-Execute — previne execução de código em páginas de dados
+└── Bits restantes: flags adicionais
+```
+
+### TLB (Translation Lookaside Buffer)
+
+Percorrer 4 níveis de page table para cada acesso à memória seria catastrófico. A TLB é um **cache de traduções** no próprio processador:
+
+```
+TLB hit:  endereço virtual → endereço físico em ~1 ciclo (< 1ns)
+TLB miss: page table walk em ~10-100 ciclos (em hardware, via page table walker)
+
+TLBs típicas (Intel):
+- L1 DTLB: 64 entradas (4 KiB pages) + 32 entradas (2 MiB pages), 4-way set associative
+- L2 STLB: 1536 entradas, 12-way set associative
+
+Taxa de hit típica: >99% para workloads normais.
+```
+
+Huge pages (2 MiB) cobrem 512× mais memória por entrada da TLB, reduzindo misses drasticamente. Para bancos de dados e aplicações com working sets grandes, huge pages podem melhorar a performance em 5-30%.
+
+### Page Faults
+
+Quando o bit Present de uma PTE é 0, o MMU gera uma **exceção de page fault**. O kernel analisa o endereço e decide:
+
+```
+Page fault no endereço X:
+├── X está em uma VMA (Virtual Memory Area) válida?
+│   ├── SIM: é um minor fault ou major fault?
+│   │   ├── Minor fault: página existe em RAM mas não está mapeada
+│   │   │   → kernel atualiza a page table (ex: COW, demand paging)
+│   │   │   → custo: ~1-10 μs
+│   │   └── Major fault: página está no disco (swap) ou precisa ser lida
+│   │       → kernel lê do disco, mapeia, retoma o processo
+│   │       → custo: ~1-10 ms (1000x mais caro!)
+│   └── NÃO: acesso inválido
+│       → kernel envia SIGSEGV ao processo ("Segmentation fault")
+```
+
+---
+
+## 4. Gerenciamento de Memória: Stack vs Heap
+
+### Stack
+
+A stack é uma região de memória **contígua, LIFO, com tamanho fixo** (tipicamente 8 MiB por thread no Linux — `ulimit -s`):
+
+```c
+void foo(int x) {        // x é empurrado na stack
+    int arr[1024];        // 4 KiB alocados na stack — instantâneo
+    char buf[8192];       // 8 KiB — cuidado, stack tem limite!
+    // ao retornar, rsp volta ao valor anterior — "desalocação" é grátis
+}
+```
+
+Alocação na stack é **O(1)** — apenas ajusta o stack pointer (`sub rsp, N`). Sem fragmentação, sem overhead de metadata. Mas o tamanho é limitado e a lifetime é atrelada ao escopo.
+
+### Heap e malloc()
+
+O heap é gerenciado por um **alocador em userspace** (glibc malloc, jemalloc, mimalloc, tcmalloc). O alocador obtém memória do kernel via `brk()` ou `mmap()` e a subdivide:
+
+```
+Como malloc funciona (simplificado — glibc ptmalloc2):
+
+1. Para alocações pequenas (< 128 KiB por padrão):
+   - Mantém "bins" — listas livres organizadas por tamanho
+   - Fastbins: LIFO, sem coalescing, para alocações ≤ 80 bytes
+   - Smallbins: doubly-linked, tamanhos exatos (16, 32, 48, ..., 512 bytes)
+   - Unsorted bin: cache de chunks recém-liberados
+   - Large bins: sorted, para alocações > 512 bytes
+
+2. Para alocações grandes (≥ 128 KiB):
+   - Usa mmap() diretamente — cada alocação é uma região separada
+   - munmap() ao liberar — sem fragmentação, mas overhead de syscall
+
+Cada chunk alocado tem um header:
+┌─────────────────┬──────────────┐
+│ prev_size (8B)  │ size | flags │  ← metadata do alocador (16 bytes)
+├─────────────────┴──────────────┤
+│ dados do usuário               │  ← o que malloc() retorna
+└────────────────────────────────┘
+```
+
+### Fragmentação
+
+```
+Fragmentação INTERNA: memória desperdiçada dentro de um bloco alocado.
+  - Você pede 20 bytes, o alocador dá 32 (alinhamento) → 12 bytes desperdiçados.
+  - Mitigação: size classes bem projetadas (jemalloc usa classes espaçadas por ~20%).
+
+Fragmentação EXTERNA: memória livre total é suficiente, mas não é contígua.
+  - Livre: [8KB][16KB][8KB] — total 32 KiB livre, mas não consegue alocar 20 KiB contíguos.
+  - Mitigação: compactação (impossível em C/C++), coalescing de blocos adjacentes, mmap().
+```
+
+### Memory-Mapped Files (mmap)
+
+`mmap()` mapeia um arquivo (ou memória anônima) diretamente no espaço de endereçamento do processo:
+
+```c
+#include <sys/mman.h>
+#include <fcntl.h>
+
+int fd = open("dados.bin", O_RDONLY);
+// Mapeia 1 GiB do arquivo na memória virtual — não lê nada do disco ainda!
+void *ptr = mmap(NULL, 1UL << 30, PROT_READ, MAP_PRIVATE, fd, 0);
+
+// Acessar ptr[i] causa page fault → kernel lê a página do disco sob demanda
+// Páginas são cacheadas no page cache do kernel — zero cópias entre kernel e userspace
+
+munmap(ptr, 1UL << 30);  // libera o mapeamento
+close(fd);
+```
+
+Vantagens do mmap: demand paging automático, zero-copy, compartilhamento entre processos (`MAP_SHARED`), e o kernel gerencia a eviction via page cache. Desvantagem: error handling é via `SIGBUS` (se o arquivo for truncado), e não há controle granular sobre I/O ordering.
+
+### Copy-on-Write (COW)
+
+COW é usado extensivamente pelo kernel:
+
+- **fork()**: páginas do pai são compartilhadas read-only com o filho. Escrita causa page fault → kernel copia a página → remapeia como read-write.
+- **mmap MAP_PRIVATE**: modificações são locais ao processo — a página original é preservada.
+- **Deduplicação (KSM)**: o kernel escaneia páginas com conteúdo idêntico e as merge com COW.
+
+---
+
+## 5. Concorrência
+
+### Race Conditions
+
+Uma race condition ocorre quando o resultado depende da **ordem de execução** de operações concorrentes em dados compartilhados:
+
+```c
+// Duas threads executando counter++ "simultaneamente":
+// counter++ NÃO é atômico — são 3 instruções:
+
+// Thread A              Thread B
+// MOV EAX, [counter]    MOV EAX, [counter]    → ambas leem 42
+// INC EAX               INC EAX               → ambas calculam 43
+// MOV [counter], EAX    MOV [counter], EAX    → ambas escrevem 43
+// Resultado: counter = 43 (deveria ser 44) — LOST UPDATE
+```
+
+### Mutex (Mutual Exclusion)
+
+O mecanismo mais básico de sincronização. Implementado em hardware com instruções atômicas como `CMPXCHG` (compare-and-swap) ou `LOCK XCHG`:
+
+```c
+pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+int counter = 0;
+
+void *increment(void *arg) {
+    for (int i = 0; i < 1000000; i++) {
+        pthread_mutex_lock(&lock);    // se outra thread detém o lock, BLOQUEIA
+        counter++;                     // seção crítica — apenas 1 thread por vez
+        pthread_mutex_unlock(&lock);  // libera o lock, acorda threads esperando
+    }
+    return NULL;
+}
+```
+
+No Linux, `pthread_mutex_lock` usa um **futex** (fast userspace mutex): tenta `CMPXCHG` no userspace primeiro (fast path — sem syscall). Só faz syscall `futex(FUTEX_WAIT)` se houver contenção.
+
+### Semáforo (Dijkstra, 1965)
+
+Um semáforo é um inteiro não-negativo com duas operações atômicas:
+
+```
+P(S) / wait(S) / sem_wait():
+    while (S ≤ 0) bloqueia;
+    S = S - 1;
+
+V(S) / signal(S) / sem_post():
+    S = S + 1;
+    se alguma thread está bloqueada em P, acorda uma.
+
+Semáforo binário (S inicializado em 1) ≈ mutex.
+Semáforo contável (S inicializado em N) = limita N acessos concorrentes.
+```
+
+### Monitores
+
+Um **monitor** encapsula mutex + variáveis de condição em uma abstração de alto nível. Em Java, todo objeto é um monitor (`synchronized`, `wait()`, `notify()`). Em C/pthreads, usamos `pthread_cond_t`:
+
+```c
+pthread_mutex_t mtx = PTHREAD_MUTEX_INITIALIZER;
+pthread_cond_t cond = PTHREAD_COND_INITIALIZER;
+int ready = 0;
+
+// Thread produtora
+pthread_mutex_lock(&mtx);
+ready = 1;
+pthread_cond_signal(&cond);  // acorda uma thread esperando
+pthread_mutex_unlock(&mtx);
+
+// Thread consumidora
+pthread_mutex_lock(&mtx);
+while (!ready)                       // SEMPRE usar while, não if (spurious wakeups!)
+    pthread_cond_wait(&cond, &mtx);  // libera mtx atomicamente e bloqueia
+// aqui: mtx está locked e ready == 1
+pthread_mutex_unlock(&mtx);
+```
+
+---
+
+## 6. Problemas Clássicos de Concorrência
+
+### Producer-Consumer (Bounded Buffer)
+
+```c
+#define N 10
+sem_t empty, full;
+pthread_mutex_t mtx;
+int buffer[N];
+int in = 0, out = 0;
+
+void init() {
+    sem_init(&empty, 0, N);  // N slots vazios
+    sem_init(&full, 0, 0);   // 0 itens disponíveis
+}
+
+void *producer(void *arg) {
+    while (1) {
+        int item = produce();
+        sem_wait(&empty);         // espera slot vazio
+        pthread_mutex_lock(&mtx);
+        buffer[in] = item;
+        in = (in + 1) % N;
+        pthread_mutex_unlock(&mtx);
+        sem_post(&full);          // sinaliza item disponível
+    }
+}
+
+void *consumer(void *arg) {
+    while (1) {
+        sem_wait(&full);          // espera item disponível
+        pthread_mutex_lock(&mtx);
+        int item = buffer[out];
+        out = (out + 1) % N;
+        pthread_mutex_unlock(&mtx);
+        sem_post(&empty);         // sinaliza slot liberado
+        consume(item);
+    }
+}
+```
+
+### Readers-Writers
+
+Múltiplos leitores podem acessar simultaneamente, mas escritores precisam de acesso exclusivo:
+
+```c
+// Solução com prioridade para leitores (escritores podem sofrer starvation)
+pthread_rwlock_t rwlock = PTHREAD_RWLOCK_INITIALIZER;
+
+void *reader(void *arg) {
+    pthread_rwlock_rdlock(&rwlock);  // múltiplos leitores simultâneos OK
+    read_data();
+    pthread_rwlock_unlock(&rwlock);
+}
+
+void *writer(void *arg) {
+    pthread_rwlock_wrlock(&rwlock);  // exclusivo — espera todos os leitores saírem
+    write_data();
+    pthread_rwlock_unlock(&rwlock);
+}
+```
+
+### Dining Philosophers (Dijkstra)
+
+Cinco filósofos sentados em uma mesa circular, com um garfo entre cada par. Para comer, cada filósofo precisa dos dois garfos adjacentes. Solução clássica para evitar deadlock — **ordenação de recursos**:
+
+```c
+// Cada filósofo i pega sempre o garfo de menor índice primeiro
+void philosopher(int i) {
+    int left = i;
+    int right = (i + 1) % 5;
+    int first = (left < right) ? left : right;
+    int second = (left < right) ? right : left;
+
+    while (1) {
+        think();
+        pthread_mutex_lock(&forks[first]);   // sempre pega o de menor índice
+        pthread_mutex_lock(&forks[second]);  // depois o de maior índice
+        eat();
+        pthread_mutex_unlock(&forks[second]);
+        pthread_mutex_unlock(&forks[first]);
+    }
+}
+// Sem deadlock! A ordenação global impede espera circular.
+```
+
+---
+
+## 7. Deadlock
+
+### Condições de Coffman (1971)
+
+Um deadlock só ocorre se **todas as quatro condições** existem simultaneamente:
+
+```
+1. MUTUAL EXCLUSION: pelo menos um recurso é não-compartilhável
+2. HOLD AND WAIT: um processo detém um recurso e espera por outro
+3. NO PREEMPTION: recursos não podem ser tomados à força
+4. CIRCULAR WAIT: existe uma cadeia circular P1 → P2 → ... → Pn → P1
+```
+
+### Prevenção
+
+Basta **quebrar qualquer uma** das condições:
+
+```
+1. Eliminar mutual exclusion → impossível para muitos recursos (ex: impressora)
+2. Eliminar hold-and-wait → exigir que processos peçam todos os recursos de uma vez
+   (ineficiente — segura recursos que não precisa imediatamente)
+3. Permitir preemption → se um processo não consegue um recurso, libera todos e recomeça
+   (viável para recursos que podem ser salvos/restaurados, como memória)
+4. Eliminar circular wait → ordenação total dos recursos (como nos filósofos acima)
+   (solução mais prática na maioria dos casos)
+```
+
+### Detecção
+
+Construir um **grafo de alocação de recursos** (RAG) e verificar ciclos:
+
+```
+Algoritmo de detecção (variante do algoritmo do banqueiro de Dijkstra):
+
+Dado:
+  Available[m]: recursos disponíveis de cada tipo
+  Allocation[n][m]: recursos alocados a cada processo
+  Request[n][m]: recursos que cada processo está esperando
+
+1. Work = Available
+2. Para cada processo Pi não marcado:
+   Se Request[i] ≤ Work:
+     Work = Work + Allocation[i]   // simula Pi terminando e liberando recursos
+     Marcar Pi como "pode terminar"
+3. Repetir até convergir
+4. Se algum processo não foi marcado → DEADLOCK
+
+Complexidade: O(n² × m) no pior caso.
+```
+
+---
+
+## 8. Filesystem
+
+### Inodes
+
+No ext4 e sistemas de arquivos Unix-like, um **inode** é a estrutura que representa um arquivo no disco:
+
+```
+Inode (ext4):
+├── mode: tipo (regular, diretório, symlink, ...) + permissões (rwxrwxrwx)
+├── uid, gid: dono e grupo
+├── size: tamanho em bytes
+├── timestamps: atime, mtime, ctime (nanossegundos no ext4)
+├── link count: quantos hard links apontam para este inode
+├── block pointers:
+│   ├── 12 direct pointers → 12 × 4 KiB = 48 KiB
+│   ├── 1 indirect → 1024 × 4 KiB = 4 MiB
+│   ├── 1 double indirect → 1024² × 4 KiB = 4 GiB
+│   └── 1 triple indirect → 1024³ × 4 KiB = 4 TiB
+└── (ext4 usa extents em vez de block pointers — mais eficiente para arquivos contíguos)
+
+Diretório: é um arquivo cujo conteúdo é uma lista de (nome → número do inode).
+Um nome de arquivo NÃO está no inode — está no diretório que o contém.
+```
+
+### File Descriptors
+
+Um file descriptor é um **inteiro que indexa a fdtable do processo no kernel**:
+
+```
+Userspace                    Kernel
+┌──────────┐    ┌──────────────────────────────────────────┐
+│ fd = 3   │───→│ fdtable[3] → struct file {               │
+│          │    │   f_pos: 1024  (posição atual no arquivo)│
+│          │    │   f_flags: O_RDWR                        │
+│          │    │   f_op: ext4_file_operations              │
+│          │    │   f_inode → inode do arquivo              │
+│          │    │ }                                         │
+└──────────┘    └──────────────────────────────────────────┘
+
+Múltiplos fd podem apontar para a mesma struct file (via dup()/fork()).
+Múltiplas struct file podem apontar para o mesmo inode (aberturas independentes).
+```
+
+### Journaling
+
+Um **journal** garante consistência do filesystem após crash. O ext4 usa journal write-ahead:
+
+```
+Operação: criar arquivo "foo.txt"
+1. JOURNAL WRITE: grava as modificações planejadas no journal
+   (alocação de inode, atualização do diretório, alocação de blocos)
+2. COMMIT: marca a transação como committed no journal
+3. CHECKPOINT: aplica as modificações nas estruturas reais do filesystem
+4. Após o checkpoint, a entrada do journal pode ser reutilizada
+
+Se crash entre 1 e 2: transação incompleta — descartada no recovery
+Se crash entre 2 e 3: transação committed — reaplicada no recovery (idempotente)
+Se crash após 3: tudo OK
+
+Modos do ext4:
+- journal: dados + metadata no journal (mais seguro, mais lento)
+- ordered: só metadata no journal, mas dados são escritos antes do commit (padrão)
+- writeback: só metadata, dados podem estar inconsistentes (mais rápido, menos seguro)
+```
+
+O **XFS** usa um journal semelhante mas com alocação baseada em B+ trees e suporte superior para arquivos muito grandes e I/O paralelo.
+
+**FUSE** (Filesystem in Userspace) permite implementar filesystems em userspace — o kernel delega operações via `/dev/fuse` para um processo comum. Exemplos: sshfs, s3fs, ntfs-3g. O overhead de IPC kernel↔userspace adiciona latência, mas a flexibilidade é enorme.
+
+---
+
+## 9. I/O: Blocking, Non-Blocking, e Multiplexação
+
+### Blocking I/O
+
+```c
+char buf[4096];
+read(fd, buf, sizeof(buf));  // thread BLOQUEIA até dados chegarem
+// Para servir 10.000 conexões: precisaria de 10.000 threads → inviável
+```
+
+### Non-Blocking I/O + Multiplexação
+
+A ideia: **uma thread monitora milhares de file descriptors** e só processa os que estão prontos.
+
+```
+Evolução histórica:
+
+select() (1983, BSD):
+  - Limite de FD_SETSIZE (tipicamente 1024) file descriptors
+  - O(n): kernel percorre TODOS os fds a cada chamada
+  - Copia bitmaps entre kernel e userspace
+
+poll() (1986, SVR3):
+  - Sem limite fixo de fds (usa array dinâmico)
+  - Ainda O(n): kernel percorre todos os fds
+
+epoll (2002, Linux 2.5.44):
+  - O(1) para adicionar/remover fds (epoll_ctl)
+  - epoll_wait() retorna SOMENTE os fds prontos
+  - O kernel mantém uma lista de fds prontos via callbacks
+  - Suporta milhões de conexões com uma thread
+
+kqueue (FreeBSD/macOS):
+  - Equivalente ao epoll, mas com interface mais genérica
+  - Monitora fds, sinais, timers, processos, vnodes
+```
+
+### epoll em detalhe
+
+```c
+#include <sys/epoll.h>
+
+int epfd = epoll_create1(0);  // cria instância do epoll
+
+struct epoll_event ev;
+ev.events = EPOLLIN | EPOLLET;  // Edge-Triggered: notifica só na transição
+ev.data.fd = listen_fd;
+epoll_ctl(epfd, EPOLL_CTL_ADD, listen_fd, &ev);  // registra fd
+
+struct epoll_event events[1024];
+while (1) {
+    int n = epoll_wait(epfd, events, 1024, -1);  // bloqueia até atividade
+    for (int i = 0; i < n; i++) {
+        if (events[i].data.fd == listen_fd) {
+            int client = accept(listen_fd, NULL, NULL);
+            // registrar client no epoll...
+        } else {
+            handle_client(events[i].data.fd);
+        }
+    }
+}
+```
+
+**Edge-Triggered vs Level-Triggered**: em ET, o kernel notifica apenas quando o estado **muda** (ex: novos dados chegaram). Você deve ler tudo disponível até `EAGAIN`. Em LT (padrão), notifica enquanto houver dados — mais simples, mas gera mais wakeups.
+
+### io_uring (Linux 5.1+, 2019)
+
+O io_uring é a interface de I/O assíncrono mais moderna do Linux. Usa **dois ring buffers** compartilhados entre userspace e kernel via mmap — **zero syscalls no hot path**:
+
+```
+Submission Queue (SQ)           Completion Queue (CQ)
+┌─────────────────────┐         ┌─────────────────────┐
+│ SQE: read(fd, ...)  │──kernel─→│ CQE: resultado      │
+│ SQE: write(fd, ...) │  processa│ CQE: resultado      │
+│ SQE: accept(...)    │─────────→│ CQE: resultado      │
+└─────────────────────┘         └─────────────────────┘
+  Userspace escreve               Userspace lê
+
+Vantagens:
+- Batching: submete centenas de operações com uma syscall (ou zero, com SQPOLL)
+- Suporta: read/write, accept, connect, send/recv, fsync, fallocate, openat, ...
+- SQPOLL mode: uma kernel thread faz polling do SQ — zero syscalls do userspace
+- Performance: ~2-3x melhor que epoll para workloads de I/O intenso
+```
+
+---
+
+## 10. Sinais Unix
+
+Sinais são **interrupções de software** entregues a processos:
+
+```
+Sinal     Num  Ação padrão   Pode capturar?   Uso comum
+─────────────────────────────────────────────────────────────
+SIGTERM    15  Terminar        Sim            Encerramento gracioso (kill default)
+SIGKILL     9  Terminar        NÃO            Encerramento forçado (não pode ignorar)
+SIGINT      2  Terminar        Sim            Ctrl+C no terminal
+SIGSEGV    11  Core dump       Sim*           Acesso a memória inválida
+SIGSTOP    19  Parar           NÃO            Ctrl+Z (na verdade SIGTSTP=20)
+SIGCHLD    17  Ignorar         Sim            Filho terminou (para waitpid)
+SIGPIPE    13  Terminar        Sim            Escrita em pipe/socket sem leitor
+SIGUSR1    10  Terminar        Sim            Uso customizado (reload config, etc.)
+```
+
+### Signal Handlers
+
+```c
+#include <signal.h>
+#include <stdio.h>
+#include <unistd.h>
+
+volatile sig_atomic_t running = 1;  // volatile + sig_atomic_t: seguro em handlers
+
+void handle_sigterm(int sig) {
+    // CUIDADO: handlers devem ser async-signal-safe
+    // Funções seguras: write(), _exit(), atômicas em sig_atomic_t
+    // NÃO seguras: printf(), malloc(), mutex operations
+    running = 0;
+}
+
+int main(void) {
+    struct sigaction sa = {0};
+    sa.sa_handler = handle_sigterm;
+    sigemptyset(&sa.sa_mask);
+    sa.sa_flags = SA_RESTART;  // syscalls interrompidas são reiniciadas automaticamente
+
+    sigaction(SIGTERM, &sa, NULL);  // preferir sigaction() sobre signal()
+    sigaction(SIGINT, &sa, NULL);
+
+    while (running) {
+        // loop principal do servidor
+        do_work();
+    }
+
+    cleanup();  // graceful shutdown
+    return 0;
+}
+```
+
+---
+
+## 11. Containers: Visão do Kernel
+
+Containers **não são VMs**. Um container é um processo (ou grupo de processos) Linux normal, isolado por **namespaces** e limitado por **cgroups**. O mesmo kernel é compartilhado.
+
+### Namespaces
+
+```
+Namespace  Flag           O que isola
+──────────────────────────────────────────────────────────
+PID        CLONE_NEWPID   Árvore de processos (PID 1 dentro do container)
+NET        CLONE_NEWNET   Interfaces de rede, tabelas de roteamento, iptables
+MNT        CLONE_NEWNS    Pontos de montagem (filesystem root isolado)
+USER       CLONE_NEWUSER  UIDs/GIDs (root dentro do container = user fora)
+UTS        CLONE_NEWUTS   Hostname e domainname
+IPC        CLONE_NEWIPC   Filas de mensagens, semáforos, memória compartilhada
+CGROUP     CLONE_NEWCGROUP  Visão dos cgroups
+TIME       CLONE_NEWTIME   (Linux 5.6+) Offset de clock_gettime()
+```
+
+```c
+// Criar um processo com novos namespaces PID e NET:
+int child_pid = clone(child_fn, stack_top,
+    CLONE_NEWPID | CLONE_NEWNET | SIGCHLD, arg);
+
+// Ou entrar em namespaces existentes (como docker exec):
+int fd = open("/proc/PID/ns/net", O_RDONLY);
+setns(fd, CLONE_NEWNET);  // agora este processo está no namespace de rede do container
+
+// unshare() muda o namespace do processo atual:
+unshare(CLONE_NEWNS);  // agora montagens são isoladas
+```
+
+### Cgroups (Control Groups)
+
+Cgroups limitam e contabilizam **recursos** (CPU, memória, I/O, rede):
+
+```
+/sys/fs/cgroup/my_container/
+├── cpu.max: "100000 100000"     → máximo 100% de 1 CPU (quota/period em μs)
+├── memory.max: "536870912"      → máximo 512 MiB de RAM
+├── memory.current: "234881024"  → usando 224 MiB atualmente
+├── pids.max: "100"              → máximo 100 processos
+├── io.max: "8:0 rbps=10485760"  → máximo 10 MiB/s de leitura no device 8:0
+└── cgroup.procs: "12345\n12346" → PIDs dos processos neste cgroup
+```
+
+Quando um container excede `memory.max`, o kernel invoca o **OOM killer** — mata processos dentro do cgroup (não afeta o host).
+
+### Seccomp (Secure Computing)
+
+Seccomp filtra **syscalls** que um processo pode executar. Docker usa seccomp-bpf para bloquear syscalls perigosas (ex: `mount`, `reboot`, `kexec_load`):
+
+```
+Modo strict: permite apenas read(), write(), _exit(), sigreturn()
+Modo filter (BPF): programa BPF avalia cada syscall e decide:
+  → ALLOW, KILL, ERRNO(n), TRACE, LOG
+```
+
+A combinação namespace + cgroup + seccomp + capabilities é o que forma a "sandbox" de um container.
+
+---
+
+## 12. O Event Loop do Node.js e o Kernel
+
+O Node.js é construído sobre a **libuv**, que abstrai I/O assíncrono cross-platform:
+
+```
+Node.js (V8 + libuv):
+
+                    ┌──────────────────────────────┐
+                    │      Thread Principal          │
+                    │      (Event Loop - V8)         │
+                    │                                │
+                    │  1. timers (setTimeout)         │
+                    │  2. pending callbacks           │
+                    │  3. idle, prepare               │
+                    │  4. poll ← epoll_wait()/kevent()│  ← AQUI o kernel notifica I/O
+                    │  5. check (setImmediate)        │
+                    │  6. close callbacks              │
+                    │                                │
+                    └──────────┬───────────────────────┘
+                               │
+                    ┌──────────┴───────────────────────┐
+                    │       libuv Thread Pool           │
+                    │    (padrão: 4 threads,             │
+                    │     UV_THREADPOOL_SIZE=128 max)    │
+                    │                                   │
+                    │  - DNS lookup (getaddrinfo)        │
+                    │  - Filesystem (open, read, write)  │
+                    │  - Crypto (pbkdf2, randomBytes)    │
+                    │  - Compressão (zlib)               │
+                    └───────────────────────────────────┘
+```
+
+### Como funciona internamente
+
+Na **fase poll**, o event loop chama a primitiva do SO:
+- **Linux**: `epoll_wait()` — bloqueia até algum fd ter atividade ou timeout
+- **macOS/BSD**: `kevent()` (kqueue) — equivalente funcional
+- **Windows**: `GetQueuedCompletionStatusEx()` (IOCP)
+
+```
+Fluxo de uma requisição HTTP no Node.js:
+
+1. JavaScript: server.listen(3000)
+   → libuv cria socket, bind, listen
+   → epoll_ctl(EPOLL_CTL_ADD, listen_fd, EPOLLIN)
+
+2. Cliente conecta: kernel coloca listen_fd na ready list do epoll
+   → epoll_wait() retorna
+   → libuv chama accept(), obtém client_fd
+   → epoll_ctl(EPOLL_CTL_ADD, client_fd, EPOLLIN)
+   → V8 emite evento 'connection'
+
+3. Cliente envia dados: kernel coloca client_fd na ready list
+   → epoll_wait() retorna
+   → libuv chama read() no client_fd (non-blocking)
+   → V8 emite evento 'data' no socket
+
+4. JavaScript chama fs.readFile():
+   → libuv NÃO usa epoll (Linux não suporta epoll para files regulares!)
+   → enfileira na thread pool → worker thread faz read() blocante
+   → resultado volta para a main thread via pipe interna (monitorada pelo epoll)
+   → V8 executa o callback do fs.readFile()
+```
+
+O ponto crucial: **I/O de rede usa epoll/kqueue diretamente** (zero threads extras), enquanto **I/O de filesystem usa a thread pool** porque o kernel Linux não oferece I/O assíncrono real para arquivos regulares (o `io_uring` está mudando isso — libuv já tem suporte experimental).
+
+```javascript
+// Demonstração prática: saturando a thread pool
+const fs = require('fs');
+const crypto = require('crypto');
+
+// UV_THREADPOOL_SIZE=4 por padrão
+// Se você disparar 8 operações de crypto simultaneamente:
+const start = Date.now();
+for (let i = 0; i < 8; i++) {
+    crypto.pbkdf2('password', 'salt', 100000, 64, 'sha512', () => {
+        console.log(`${i}: ${Date.now() - start}ms`);
+    });
+}
+// Resultado típico (4 cores):
+// 0: 95ms, 1: 96ms, 2: 97ms, 3: 97ms   ← primeiro batch (4 threads)
+// 4: 190ms, 5: 191ms, 6: 192ms, 7: 193ms ← segundo batch (esperou thread livre)
+
+// Solução: UV_THREADPOOL_SIZE=8 node app.js
+// Ou melhor: use operações de rede (não bloqueiam a thread pool)
+```
+
+---
+
+## Resumo das Complexidades e Trade-offs
+
+```
+Operação                          Custo típico       Nota
+────────────────────────────────────────────────────────────────
+Context switch (threads)          ~1-3 μs            Mesmo espaço de endereçamento
+Context switch (processos)        ~3-5 μs + TLB      CR3 switch invalida TLB
+Syscall (Linux, sem KPTI)        ~100-200 ns         Com KPTI: ~400-800 ns
+TLB hit                          <1 ns               L1 TLB
+TLB miss (page table walk)       ~10-100 ns          4 níveis de indireção
+Minor page fault                 ~1-10 μs            Alocação de página física
+Major page fault (disco)         ~1-10 ms            1000x mais caro que minor
+Alocação na stack                ~1 ns               sub rsp, N
+malloc (fast path)               ~20-50 ns           Sem contenção, fastbin
+malloc (slow path, mmap)         ~1-10 μs            Syscall ao kernel
+epoll_wait (com eventos)         ~1-2 μs             Retorna fds prontos
+io_uring (SQPOLL mode)           ~0 ns de syscall    Kernel thread faz polling
+fork() com COW                   ~100-500 μs         Proporcional ao tamanho da page table
+Mutex sem contenção (futex)      ~10-25 ns           CMPXCHG no userspace
+Mutex com contenção              ~1-10 μs            Syscall futex + context switch
+```
+
+Entender esses custos é o que separa um engenheiro que "faz funcionar" de um que entende **por que** funciona e **quando** vai parar de funcionar.

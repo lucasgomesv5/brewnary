@@ -1,0 +1,35 @@
+---
+title: "Design Patterns (Gang of Four)"
+author: "Erich Gamma, Richard Helm, Ralph Johnson, John Vlissides"
+description: "O catalogo original de 23 design patterns que todo livro e framework referencia"
+category: "Arquitetura"
+priority: "recommended"
+order: 7
+coverColor: "#F59E0B"
+---
+
+## Por que ler
+
+E o catalogo original de 23 design patterns que todo livro e framework referencia. A linguagem usada e C++/Smalltalk, mas os CONCEITOS sao universais.
+
+## Os patterns mais relevantes para web developers
+
+**Creational:**
+- **Factory Method:** Cria objetos sem especificar a classe exata. Usado em ORMs (model.create()), frameworks de teste (createMock()).
+- **Singleton:** Instancia unica global. Usado em conexoes de banco, loggers, stores.
+- **Builder:** Constroi objetos complexos passo a passo. Usado em query builders (Knex), request builders.
+
+**Structural:**
+- **Adapter:** Converte interface incompativel. Usado quando voce wrapa uma API legada em uma interface moderna.
+- **Decorator:** Adiciona responsabilidades sem heranca. TypeScript decorators (`@Injectable()`, `@Controller()`).
+- **Proxy:** Controla acesso a um objeto. Usado em JS Proxies, lazy loading, caching.
+
+**Behavioral:**
+- **Observer:** Notifica mudancas. Event Emitters, React state, PubSub.
+- **Strategy:** Troca de algoritmo em runtime. Formas de pagamento, validacoes.
+- **Chain of Responsibility:** Passa request por uma cadeia. Express middleware!
+- **Iterator:** Percorre uma colecao sem expor estrutura. `for...of` em JS.
+
+### Aviso
+
+NAO decore todos os 23 patterns. Aprenda os 10 listados acima que sao os mais usados no dia-a-dia. Os outros voce consulta quando precisar.

@@ -1,0 +1,1064 @@
+---
+title: "Hash Tables (Tabelas Hash)"
+description: "Análise aprofundada de tabelas hash: funções hash, colisões, open addressing, consistent hashing, Bloom Filters, Cuckoo Hashing e implementação completa em TypeScript"
+track: "cs"
+order: 10
+section: "Estruturas de Dados"
+priority: "high"
+tags: ["hash-table", "estruturas-de-dados", "hash", "colisões", "map", "bloom-filter", "consistent-hashing"]
+prerequisites: ["arrays", "big-o-notation"]
+keyTakeaways:
+  - "Hash Tables mapeiam chaves para valores usando uma função hash com acesso O(1) amortizado — mas O(n) no pior caso sem rehashing"
+  - "Colisões são inevitáveis (Pigeonhole Principle) e a probabilidade cresce quadraticamente (Birthday Paradox: ~1 - e^(-n²/2m))"
+  - "Load factor α = n/m governa performance: separate chaining degrada linearmente, open addressing explode quando α → 1"
+  - "V8 usa hidden classes e inline caches para Objects, e hash tables determinísticas com insertion-order para Maps"
+  - "Bloom Filters oferecem membership testing em O(k) com espaço sub-linear, mas admitem false positives"
+---
+
+# Hash Tables (Tabelas Hash)
+
+## 1. Fundamentos: O Que É Uma Hash Table
+
+Uma **hash table** (ou tabela de dispersão) é uma estrutura de dados que implementa o tipo abstrato **associative array** — um mapeamento de chaves para valores com operações `insert`, `delete` e `lookup` em tempo **O(1) amortizado**.
+
+A ideia central é simples: dada uma chave `k`, aplicamos uma **função hash** `h(k)` que retorna um índice em um array de tamanho `m`. O valor associado à chave é armazenado nesse índice.
+
+```
+h: U → {0, 1, ..., m-1}
+```
+
+Onde `U` é o universo de chaves possíveis e `m` é o tamanho da tabela. Como tipicamente `|U| >> m`, colisões são **matematicamente inevitáveis**.
+
+---
+
+## 2. Funções Hash: Propriedades Formais
+
+Uma boa função hash deve satisfazer três propriedades:
+
+1. **Determinismo**: Para uma mesma chave `k`, `h(k)` sempre retorna o mesmo valor.
+2. **Uniformidade**: A probabilidade de qualquer slot ser escolhido deve ser aproximadamente `1/m`. Formalmente, para uma chave aleatória `k ∈ U`:
+   `P(h(k) = j) ≈ 1/m` para todo `j ∈ {0, ..., m-1}`
+3. **Eficiência**: `h(k)` deve ser computável em O(1) — ou mais precisamente, em tempo proporcional ao tamanho da representação da chave.
+
+### 2.1 Division Method
+
+```
+h(k) = k mod m
+```
+
+Simples e rápida, mas sensível à escolha de `m`. Se `m` é uma potência de 2, apenas os bits menos significativos de `k` são usados — péssima distribuição. Regra prática: **escolha `m` como um primo distante de potências de 2**. Por exemplo, se precisamos de ~1000 slots, `m = 1009` (primo) é muito melhor que `m = 1024`.
+
+### 2.2 Multiplication Method
+
+```
+h(k) = ⌊m · (k · A mod 1)⌋, onde 0 < A < 1
+```
+
+Knuth sugere `A ≈ (√5 - 1) / 2 ≈ 0.6180339887` (o inverso da razão áurea). A vantagem é que o valor de `m` não é crítico — funciona bem mesmo com potências de 2.
+
+```typescript
+function multiplicationHash(key: number, m: number): number {
+  const A = 0.6180339887; // (√5 - 1) / 2
+  return Math.floor(m * ((key * A) % 1));
+}
+```
+
+### 2.3 Universal Hashing
+
+Para evitar ataques adversariais (onde um atacante escolhe chaves que colidem), usamos **famílias universais de funções hash**. Uma família `H` é universal se:
+
+```
+Para h escolhida uniformemente de H:
+P(h(x) = h(y)) ≤ 1/m, para todo x ≠ y
+```
+
+A família de Carter-Wegman é a construção clássica:
+
+```
+h_{a,b}(k) = ((a·k + b) mod p) mod m
+```
+
+Onde `p` é um primo maior que `|U|`, `a ∈ {1, ..., p-1}` e `b ∈ {0, ..., p-1}` são escolhidos aleatoriamente. Essa família garante que **nenhum conjunto de chaves fixo pode causar degradação sistemática**.
+
+```typescript
+function createUniversalHash(m: number): (key: number) => number {
+  const p = 1000000007; // primo grande
+  const a = 1 + Math.floor(Math.random() * (p - 1));
+  const b = Math.floor(Math.random() * p);
+  return (key: number) => ((a * key + b) % p) % m;
+}
+```
+
+---
+
+## 3. Análise Formal de Colisões
+
+### 3.1 Pigeonhole Principle
+
+Se temos `n` chaves e `m` slots onde `n > m`, então **pelo menos um slot** terá mais de uma chave. Isso é trivial, mas a implicação é profunda: **colisões não são um bug, são uma certeza matemática** para qualquer tabela não trivial.
+
+### 3.2 Birthday Paradox
+
+O resultado surpreendente é que colisões acontecem **muito antes** de `n > m`. Considere `n` chaves inseridas uniformemente em `m` slots. A probabilidade de **nenhuma colisão** é:
+
+```
+P(sem colisão) = 1 · (1 - 1/m) · (1 - 2/m) · ... · (1 - (n-1)/m)
+               = ∏_{i=0}^{n-1} (1 - i/m)
+```
+
+Usando a aproximação `1 - x ≈ e^(-x)` para `x` pequeno:
+
+```
+P(sem colisão) ≈ e^{-∑_{i=0}^{n-1} i/m} = e^{-n(n-1)/(2m)} ≈ e^{-n²/(2m)}
+```
+
+Portanto:
+
+```
+P(pelo menos uma colisão) ≈ 1 - e^{-n²/(2m)}
+```
+
+Para uma tabela com `m = 365` (o clássico problema do aniversário), a probabilidade de colisão atinge **50% com apenas ~23 inserções**. Para `m = 1.000.000`, basta `n ≈ 1.177` para 50% de probabilidade de colisão.
+
+**Implicação prática**: mesmo tabelas enormes sofrem colisões com relativamente poucos elementos. Toda implementação **precisa** de uma estratégia de resolução de colisões.
+
+```typescript
+// Simulação do Birthday Paradox
+function birthdayParadoxSimulation(m: number, trials: number = 100000): number {
+  let totalInsertions = 0;
+
+  for (let t = 0; t < trials; t++) {
+    const seen = new Set<number>();
+    let n = 0;
+    while (true) {
+      const slot = Math.floor(Math.random() * m);
+      if (seen.has(slot)) break;
+      seen.add(slot);
+      n++;
+    }
+    totalInsertions += n;
+  }
+
+  return totalInsertions / trials; // inserções médias até primeira colisão
+}
+
+// birthdayParadoxSimulation(365) ≈ 24.6
+// Teórico: √(π·m/2) = √(π·365/2) ≈ 23.9
+```
+
+---
+
+## 4. Resolução de Colisões
+
+### 4.1 Separate Chaining
+
+Cada slot contém uma **linked list** (ou array dinâmico) de todos os pares `(key, value)` que mapeiam para aquele índice.
+
+**Análise com load factor**: Defina `α = n/m` (load factor), onde `n` é o número de elementos e `m` o número de slots.
+
+- **Busca sem sucesso**: Em média, percorremos uma lista de comprimento `α`. Tempo esperado: `Θ(1 + α)`.
+- **Busca com sucesso**: Em média, percorremos metade de uma lista. Tempo esperado: `Θ(1 + α/2) = Θ(1 + α)`.
+
+Se `α = O(1)` (mantemos `n` proporcional a `m` via rehashing), todas as operações são **O(1) esperado**.
+
+**Prova (busca sem sucesso)**: Sob a hipótese de hashing uniforme simples (SUHA), cada chave é igualmente provável de cair em qualquer dos `m` slots. O comprimento esperado de cada cadeia é `n/m = α`. Uma busca sem sucesso percorre toda a cadeia, logo o tempo esperado é `Θ(1 + α)`, onde o `1` representa o custo de computar `h(k)`.
+
+```typescript
+class SeparateChainingHashTable<K, V> {
+  private buckets: Array<Array<[K, V]>>;
+  private count: number = 0;
+  private capacity: number;
+
+  constructor(capacity: number = 16) {
+    this.capacity = capacity;
+    this.buckets = new Array(capacity).fill(null).map(() => []);
+  }
+
+  private hash(key: K): number {
+    const str = String(key);
+    let hash = 0;
+    for (let i = 0; i < str.length; i++) {
+      hash = (hash * 31 + str.charCodeAt(i)) | 0; // bitwise OR para manter 32-bit int
+    }
+    return ((hash % this.capacity) + this.capacity) % this.capacity;
+  }
+
+  get loadFactor(): number {
+    return this.count / this.capacity;
+  }
+
+  set(key: K, value: V): void {
+    if (this.loadFactor > 0.75) this.resize(this.capacity * 2);
+
+    const idx = this.hash(key);
+    const bucket = this.buckets[idx];
+    const existing = bucket.findIndex(([k]) => k === key);
+
+    if (existing !== -1) {
+      bucket[existing][1] = value;
+    } else {
+      bucket.push([key, value]);
+      this.count++;
+    }
+  }
+
+  get(key: K): V | undefined {
+    const idx = this.hash(key);
+    const pair = this.buckets[idx].find(([k]) => k === key);
+    return pair?.[1];
+  }
+
+  delete(key: K): boolean {
+    const idx = this.hash(key);
+    const bucket = this.buckets[idx];
+    const i = bucket.findIndex(([k]) => k === key);
+    if (i === -1) return false;
+    bucket.splice(i, 1);
+    this.count--;
+    return true;
+  }
+
+  private resize(newCapacity: number): void {
+    const oldBuckets = this.buckets;
+    this.capacity = newCapacity;
+    this.buckets = new Array(newCapacity).fill(null).map(() => []);
+    this.count = 0;
+    for (const bucket of oldBuckets) {
+      for (const [key, value] of bucket) {
+        this.set(key, value);
+      }
+    }
+  }
+}
+```
+
+### 4.2 Open Addressing
+
+Todas as chaves são armazenadas **diretamente** no array. Quando há colisão, uma **sequência de probing** determina o próximo slot a verificar.
+
+A sequência de probing é uma função `h(k, i)` para `i = 0, 1, 2, ...` que gera uma permutação de `{0, ..., m-1}`.
+
+#### Linear Probing
+
+```
+h(k, i) = (h'(k) + i) mod m
+```
+
+**Vantagem**: excelente cache locality (acessos sequenciais na memória).
+**Desvantagem**: sofre de **primary clustering** — sequências longas de slots ocupados tendem a crescer, pois qualquer inserção que caia nessa sequência a expande.
+
+O tempo esperado de uma busca sem sucesso com linear probing é:
+
+```
+E[probes] ≈ 1/2 · (1 + 1/(1-α)²)
+```
+
+Para `α = 0.75`, são ~8.5 probes. Para `α = 0.9`, são ~50.5 probes. A degradação é **dramática**.
+
+#### Quadratic Probing
+
+```
+h(k, i) = (h'(k) + c₁·i + c₂·i²) mod m
+```
+
+Elimina o primary clustering, mas sofre de **secondary clustering**: chaves com o mesmo hash inicial seguem a mesma sequência de probing. Não garante visitar todos os slots a menos que `m` seja primo e a tabela esteja menos da metade cheia.
+
+#### Double Hashing
+
+```
+h(k, i) = (h₁(k) + i · h₂(k)) mod m
+```
+
+Onde `h₁` e `h₂` são funções hash independentes. Produz `Θ(m²)` sequências de probing distintas (vs. `Θ(m)` para linear/quadratic), aproximando-se do **uniform hashing ideal**.
+
+Requisito: `h₂(k)` nunca pode ser 0 e deve ser coprimo com `m`. Escolha clássica: `m` primo e `h₂(k) = 1 + (k mod (m-1))`.
+
+```typescript
+class OpenAddressingHashTable<V> {
+  private keys: (string | null | typeof OpenAddressingHashTable.DELETED)[];
+  private values: (V | undefined)[];
+  private count: number = 0;
+  private capacity: number;
+
+  private static readonly DELETED = Symbol('DELETED');
+
+  constructor(capacity: number = 16) {
+    this.capacity = capacity;
+    this.keys = new Array(capacity).fill(null);
+    this.values = new Array(capacity).fill(undefined);
+  }
+
+  private h1(key: string): number {
+    let hash = 0;
+    for (let i = 0; i < key.length; i++) {
+      hash = (hash * 31 + key.charCodeAt(i)) | 0;
+    }
+    return ((hash % this.capacity) + this.capacity) % this.capacity;
+  }
+
+  private h2(key: string): number {
+    let hash = 0;
+    for (let i = 0; i < key.length; i++) {
+      hash = (hash * 37 + key.charCodeAt(i)) | 0;
+    }
+    // Garante que nunca retorna 0
+    return 1 + (((hash % (this.capacity - 1)) + (this.capacity - 1)) % (this.capacity - 1));
+  }
+
+  // Double hashing: h(k, i) = (h1(k) + i * h2(k)) mod m
+  private probe(key: string, i: number): number {
+    return (this.h1(key) + i * this.h2(key)) % this.capacity;
+  }
+
+  set(key: string, value: V): void {
+    if (this.count / this.capacity > 0.6) this.resize(this.capacity * 2);
+
+    for (let i = 0; i < this.capacity; i++) {
+      const idx = this.probe(key, i);
+      const k = this.keys[idx];
+      if (k === null || k === OpenAddressingHashTable.DELETED || k === key) {
+        if (k !== key) this.count++;
+        this.keys[idx] = key;
+        this.values[idx] = value;
+        return;
+      }
+    }
+  }
+
+  get(key: string): V | undefined {
+    for (let i = 0; i < this.capacity; i++) {
+      const idx = this.probe(key, i);
+      if (this.keys[idx] === null) return undefined;
+      if (this.keys[idx] === key) return this.values[idx];
+      // Se é DELETED, continuamos procurando
+    }
+    return undefined;
+  }
+
+  delete(key: string): boolean {
+    for (let i = 0; i < this.capacity; i++) {
+      const idx = this.probe(key, i);
+      if (this.keys[idx] === null) return false;
+      if (this.keys[idx] === key) {
+        this.keys[idx] = OpenAddressingHashTable.DELETED as any;
+        this.values[idx] = undefined;
+        this.count--;
+        return true;
+      }
+    }
+    return false;
+  }
+
+  private resize(newCapacity: number): void {
+    const oldKeys = this.keys;
+    const oldValues = this.values;
+    this.capacity = newCapacity;
+    this.keys = new Array(newCapacity).fill(null);
+    this.values = new Array(newCapacity).fill(undefined);
+    this.count = 0;
+    for (let i = 0; i < oldKeys.length; i++) {
+      if (oldKeys[i] !== null && oldKeys[i] !== OpenAddressingHashTable.DELETED) {
+        this.set(oldKeys[i] as string, oldValues[i] as V);
+      }
+    }
+  }
+}
+```
+
+---
+
+## 5. Load Factor e Rehashing
+
+O **load factor** `α = n/m` é a métrica mais importante para performance de hash tables.
+
+| Estratégia | α recomendado | Comportamento quando α → 1 |
+|---|---|---|
+| Separate Chaining | ≤ 1.0 (ideal ≤ 0.75) | Degradação linear: O(α) por operação |
+| Linear Probing | ≤ 0.7 | Explode: O(1/(1-α)²) |
+| Double Hashing | ≤ 0.7 | Explode: O(1/(1-α)) |
+
+**Rehashing** (ou resize) consiste em:
+
+1. Alocar um novo array com capacidade `2m` (ou o próximo primo após `2m`).
+2. Reinserir **todos** os `n` elementos com a nova função hash (pois `h(k) = ... mod m` muda quando `m` muda).
+3. Liberar o array antigo.
+
+O custo de um rehashing é `Θ(n)`, mas via **análise amortizada**, cada inserção tem custo amortizado O(1). A prova clássica usa o **método do potencial**:
+
+Defina `Φ = 2n - m` (potencial). Cada inserção normal custa 1 e aumenta `Φ` em 2. Quando `α` excede o threshold (tipicamente 0.75), o rehashing custa `Θ(n)` mas reduz `Φ` em `Θ(n)` (pois `m` dobra). O custo amortizado por operação é portanto `O(1)`.
+
+---
+
+## 6. Consistent Hashing
+
+Em sistemas distribuídos, se temos `k` servidores e usamos `h(key) mod k`, adicionar ou remover um servidor causa **remapeamento de quase todas as chaves**. Consistent Hashing resolve isso.
+
+### Como Funciona
+
+1. Mapeie cada servidor para um ponto em um **anel** `[0, 2³²)` usando uma função hash.
+2. Para uma chave, compute `h(key)` e caminhe no sentido horário até encontrar o primeiro servidor.
+3. Ao adicionar/remover um servidor, apenas as chaves entre ele e seu predecessor são remapeadas — em média `n/k` chaves (e não `n`).
+
+### Virtual Nodes
+
+Na prática, cada servidor físico é mapeado para múltiplos **virtual nodes** (vnodes) no anel. Isso garante distribuição mais uniforme e permite balancear carga proporcional à capacidade de cada servidor.
+
+```typescript
+class ConsistentHashRing {
+  private ring: Map<number, string> = new Map();
+  private sortedHashes: number[] = [];
+  private readonly virtualNodes: number;
+
+  constructor(virtualNodes: number = 150) {
+    this.virtualNodes = virtualNodes;
+  }
+
+  private hash(key: string): number {
+    // FNV-1a hash simplificado (32-bit)
+    let hash = 0x811c9dc5;
+    for (let i = 0; i < key.length; i++) {
+      hash ^= key.charCodeAt(i);
+      hash = (hash * 0x01000193) | 0;
+    }
+    return hash >>> 0; // unsigned 32-bit
+  }
+
+  addNode(nodeId: string): void {
+    for (let i = 0; i < this.virtualNodes; i++) {
+      const virtualKey = `${nodeId}#vn${i}`;
+      const h = this.hash(virtualKey);
+      this.ring.set(h, nodeId);
+      this.sortedHashes.push(h);
+    }
+    this.sortedHashes.sort((a, b) => a - b);
+  }
+
+  removeNode(nodeId: string): void {
+    for (let i = 0; i < this.virtualNodes; i++) {
+      const virtualKey = `${nodeId}#vn${i}`;
+      const h = this.hash(virtualKey);
+      this.ring.delete(h);
+    }
+    this.sortedHashes = this.sortedHashes.filter(h => this.ring.has(h));
+  }
+
+  getNode(key: string): string | undefined {
+    if (this.sortedHashes.length === 0) return undefined;
+
+    const h = this.hash(key);
+
+    // Busca binária pelo primeiro hash >= h
+    let lo = 0, hi = this.sortedHashes.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      if (this.sortedHashes[mid] < h) lo = mid + 1;
+      else hi = mid;
+    }
+
+    // Wrap around se necessário
+    const idx = lo % this.sortedHashes.length;
+    return this.ring.get(this.sortedHashes[idx]);
+  }
+}
+
+// Uso: distribuição de cache entre servidores
+const ring = new ConsistentHashRing(150);
+ring.addNode("server-A");
+ring.addNode("server-B");
+ring.addNode("server-C");
+
+ring.getNode("user:12345"); // → "server-B"
+ring.getNode("session:abc"); // → "server-A"
+
+// Ao adicionar server-D, apenas ~25% das chaves migram (1/4 do anel)
+ring.addNode("server-D");
+```
+
+---
+
+## 7. Hash Tables em JavaScript: Internals do V8
+
+### 7.1 Objects e Hidden Classes
+
+O V8 não implementa `Object` como uma hash table simples. Ele usa **hidden classes** (também chamadas de Shapes ou Maps internamente) para otimizar acesso a propriedades:
+
+1. Cada objeto tem um ponteiro para uma hidden class que descreve o layout de suas propriedades.
+2. Objetos com a mesma sequência de atribuição de propriedades compartilham a mesma hidden class.
+3. Isso permite **inline caches (ICs)**: quando `obj.x` é acessado, o V8 armazena o offset da propriedade na hidden class. Na próxima vez que o mesmo código acessa um objeto com a mesma hidden class, o acesso é **direto** (um load de memória), sem hash lookup.
+
+```javascript
+// Estes dois objetos compartilham a mesma hidden class:
+const a = { x: 1, y: 2 };
+const b = { x: 3, y: 4 };
+
+// Este objeto tem uma hidden class DIFERENTE (ordem diferente):
+const c = { y: 2, x: 1 };
+
+// Adicionar propriedades dinamicamente causa "map transitions" —
+// cada nova propriedade cria uma nova hidden class.
+// Quando o V8 detecta muitas transições, o objeto é "demovido"
+// para dictionary mode (hash table real) → muito mais lento.
+```
+
+**Dictionary mode**: Quando um objeto tem propriedades demais, propriedades deletadas com `delete`, ou propriedades computadas, o V8 converte o objeto para uma hash table real (dictionary mode). Isso é significativamente mais lento.
+
+### 7.2 Map e Set no V8
+
+`Map` e `Set` são implementados como **hash tables determinísticas com insertion-order** baseadas no design de Tyler Close. Internamente:
+
+- Usam um array de buckets com open addressing (variante de Robin Hood hashing em versões recentes).
+- Mantêm uma **linked list implícita** para preservar a ordem de inserção (exigida pela spec ECMAScript).
+- O hash para chaves numéricas usa uma função diferente das chaves string.
+- `Map` suporta qualquer valor como chave (incluindo objetos), usando o endereço de memória como parte do hash para referências.
+
+---
+
+## 8. Map vs Object vs WeakMap
+
+| Aspecto | Object | Map | WeakMap |
+|---|---|---|---|
+| **Tipo de chave** | String ou Symbol | Qualquer valor | Apenas objetos (não-registrados) |
+| **Ordem** | Parcial (inteiros → inserção para strings) | Inserção (garantida) | Não iterável |
+| **Performance insert** | Rápido com hidden class; lento em dictionary mode | Consistente O(1) amortizado | Consistente O(1) amortizado |
+| **Performance lookup** | O(1) com IC; O(1) amortizado sem | O(1) amortizado | O(1) amortizado |
+| **Iteração** | `Object.keys()` aloca array | `.entries()` iterator nativo | Não suportada |
+| **Garbage Collection** | Chaves são fortes | Chaves são fortes | **Chaves são fracas** (GC pode coletar) |
+| **Prototype chain** | Herda de `Object.prototype` | Sem poluição | Sem poluição |
+| **Serialização** | `JSON.stringify` nativo | Requer conversão manual | Impossível |
+
+### Quando usar cada um
+
+- **Object**: Dados estáticos com shape conhecida em compile time (configurações, DTOs). Beneficia de hidden classes e ICs.
+- **Map**: Coleções dinâmicas com chaves arbitrárias, quando a quantidade de chaves é desconhecida ou grande. Superior para inserção/deleção frequente.
+- **WeakMap**: Metadados associados a objetos sem impedir garbage collection. Caso clássico: caching de computações caras associadas a DOM nodes, ou armazenar dados privados de classes.
+
+```typescript
+// WeakMap para dados privados (padrão pré-private fields)
+const privateData = new WeakMap<object, { balance: number }>();
+
+class BankAccount {
+  constructor(initialBalance: number) {
+    privateData.set(this, { balance: initialBalance });
+  }
+
+  getBalance(): number {
+    return privateData.get(this)!.balance;
+  }
+
+  // Quando a instância de BankAccount é coletada pelo GC,
+  // a entrada no WeakMap é automaticamente removida.
+}
+```
+
+---
+
+## 9. Bloom Filters
+
+Um **Bloom Filter** é uma estrutura probabilística que responde à pergunta "este elemento está no conjunto?" com:
+
+- **"Não"** → **definitivamente não está** (zero false negatives)
+- **"Sim"** → **provavelmente está** (possível false positive)
+
+### Estrutura
+
+- Um bit array `B` de `m` bits, inicialmente todos 0.
+- `k` funções hash independentes: `h₁, h₂, ..., hₖ`, cada uma mapeando para `{0, ..., m-1}`.
+
+**Insert(x)**: Seta `B[h₁(x)] = B[h₂(x)] = ... = B[hₖ(x)] = 1`.
+
+**Query(x)**: Retorna "sim" se `B[hᵢ(x)] = 1` para todo `i`. Caso contrário, "não".
+
+### Análise de False Positives
+
+Após inserir `n` elementos, a probabilidade de um bit específico ainda ser 0 é:
+
+```
+P(bit = 0) = (1 - 1/m)^(kn) ≈ e^(-kn/m)
+```
+
+A probabilidade de false positive (todos os `k` bits de um elemento não-presente estarem setados):
+
+```
+P(FP) ≈ (1 - e^(-kn/m))^k
+```
+
+O número ótimo de funções hash que minimiza `P(FP)` é:
+
+```
+k_opt = (m/n) · ln(2) ≈ 0.693 · (m/n)
+```
+
+E a taxa de false positive ótima resultante é:
+
+```
+P(FP)_opt ≈ (1/2)^k ≈ 0.6185^(m/n)
+```
+
+Para `P(FP) ≤ 1%`, precisamos de `m/n ≈ 9.6` bits por elemento com `k = 7` hash functions.
+
+```typescript
+class BloomFilter {
+  private bits: Uint8Array;
+  private readonly size: number; // m
+  private readonly hashCount: number; // k
+
+  constructor(expectedItems: number, falsePositiveRate: number = 0.01) {
+    // m = -n·ln(p) / (ln(2))²
+    this.size = Math.ceil(
+      (-expectedItems * Math.log(falsePositiveRate)) / (Math.LN2 * Math.LN2)
+    );
+    // k = (m/n) · ln(2)
+    this.hashCount = Math.round((this.size / expectedItems) * Math.LN2);
+    this.bits = new Uint8Array(Math.ceil(this.size / 8));
+  }
+
+  // Simula k hash functions independentes via double hashing:
+  // gᵢ(x) = (h₁(x) + i·h₂(x)) mod m
+  // Kirsch-Mitzenmacker 2004: isso é tão bom quanto k funções independentes
+  private getHashes(value: string): number[] {
+    let h1 = 0, h2 = 0;
+    for (let i = 0; i < value.length; i++) {
+      h1 = (h1 * 31 + value.charCodeAt(i)) | 0;
+      h2 = (h2 * 37 + value.charCodeAt(i)) | 0;
+    }
+    h1 = h1 >>> 0;
+    h2 = h2 >>> 0;
+    if (h2 === 0) h2 = 1; // h2 nunca pode ser 0
+
+    const hashes: number[] = [];
+    for (let i = 0; i < this.hashCount; i++) {
+      hashes.push((h1 + i * h2) % this.size);
+    }
+    return hashes;
+  }
+
+  private setBit(pos: number): void {
+    this.bits[pos >>> 3] |= 1 << (pos & 7);
+  }
+
+  private getBit(pos: number): boolean {
+    return (this.bits[pos >>> 3] & (1 << (pos & 7))) !== 0;
+  }
+
+  add(value: string): void {
+    for (const h of this.getHashes(value)) {
+      this.setBit(h);
+    }
+  }
+
+  mightContain(value: string): boolean {
+    return this.getHashes(value).every(h => this.getBit(h));
+  }
+
+  // Uso de memória em bytes
+  get memoryUsage(): number {
+    return this.bits.byteLength;
+  }
+}
+
+// Exemplo: verificar se URL já foi visitada
+const visited = new BloomFilter(1_000_000, 0.01);
+// ~1.2 MB para 1 milhão de URLs com 1% de falsos positivos
+// vs. ~50+ MB para um Set com 1 milhão de strings
+
+visited.add("https://example.com/page1");
+visited.mightContain("https://example.com/page1"); // true (correto)
+visited.mightContain("https://example.com/page2"); // false (correto) ou true (false positive ~1%)
+```
+
+---
+
+## 10. Cuckoo Hashing
+
+Cuckoo Hashing garante **O(1) worst-case para lookup e delete** (não apenas amortizado). Usa duas funções hash e duas tabelas.
+
+### Algoritmo
+
+- Duas tabelas `T₁` e `T₂` de tamanho `m`, duas funções hash `h₁` e `h₂`.
+- **Lookup(x)**: Verifica `T₁[h₁(x)]` e `T₂[h₂(x)]`. Exatamente 2 acessos à memória — **O(1) worst-case**.
+- **Insert(x)**: Tenta inserir em `T₁[h₁(x)]`. Se ocupado, "expulsa" o ocupante `y`, que vai para `T₂[h₂(y)]`. Se esse também está ocupado, expulsa novamente, e assim por diante. Se o ciclo exceder um threshold, faz rehash com novas funções.
+
+O insert é **O(1) amortizado** (com alta probabilidade) se `α < 0.5`.
+
+```typescript
+class CuckooHashTable<V> {
+  private table1: (readonly [string, V] | null)[];
+  private table2: (readonly [string, V] | null)[];
+  private capacity: number;
+  private count: number = 0;
+  private readonly maxKicks = 500;
+
+  constructor(capacity: number = 16) {
+    this.capacity = capacity;
+    this.table1 = new Array(capacity).fill(null);
+    this.table2 = new Array(capacity).fill(null);
+  }
+
+  private hash1(key: string): number {
+    let h = 0x811c9dc5;
+    for (let i = 0; i < key.length; i++) {
+      h ^= key.charCodeAt(i);
+      h = (h * 0x01000193) | 0;
+    }
+    return (h >>> 0) % this.capacity;
+  }
+
+  private hash2(key: string): number {
+    let h = 0;
+    for (let i = 0; i < key.length; i++) {
+      h = (h * 65599 + key.charCodeAt(i)) | 0;
+    }
+    return (h >>> 0) % this.capacity;
+  }
+
+  // O(1) worst-case — apenas 2 lookups
+  get(key: string): V | undefined {
+    const i1 = this.hash1(key);
+    if (this.table1[i1]?.[0] === key) return this.table1[i1]![1];
+
+    const i2 = this.hash2(key);
+    if (this.table2[i2]?.[0] === key) return this.table2[i2]![1];
+
+    return undefined;
+  }
+
+  set(key: string, value: V): void {
+    // Atualizar se já existe
+    const i1 = this.hash1(key);
+    if (this.table1[i1]?.[0] === key) { this.table1[i1] = [key, value]; return; }
+    const i2 = this.hash2(key);
+    if (this.table2[i2]?.[0] === key) { this.table2[i2] = [key, value]; return; }
+
+    if (this.count >= this.capacity) this.resize();
+
+    let current: readonly [string, V] = [key, value];
+
+    for (let kick = 0; kick < this.maxKicks; kick++) {
+      // Tenta tabela 1
+      const pos1 = this.hash1(current[0]);
+      if (this.table1[pos1] === null) {
+        this.table1[pos1] = current;
+        this.count++;
+        return;
+      }
+      // Expulsa ocupante da tabela 1
+      const evicted1 = this.table1[pos1]!;
+      this.table1[pos1] = current;
+      current = evicted1;
+
+      // Tenta tabela 2
+      const pos2 = this.hash2(current[0]);
+      if (this.table2[pos2] === null) {
+        this.table2[pos2] = current;
+        this.count++;
+        return;
+      }
+      // Expulsa ocupante da tabela 2
+      const evicted2 = this.table2[pos2]!;
+      this.table2[pos2] = current;
+      current = evicted2;
+    }
+
+    // Ciclo detectado: rehash
+    this.resize();
+    this.set(current[0], current[1]);
+  }
+
+  delete(key: string): boolean {
+    const i1 = this.hash1(key);
+    if (this.table1[i1]?.[0] === key) {
+      this.table1[i1] = null;
+      this.count--;
+      return true;
+    }
+    const i2 = this.hash2(key);
+    if (this.table2[i2]?.[0] === key) {
+      this.table2[i2] = null;
+      this.count--;
+      return true;
+    }
+    return false;
+  }
+
+  private resize(): void {
+    const oldT1 = this.table1;
+    const oldT2 = this.table2;
+    this.capacity *= 2;
+    this.table1 = new Array(this.capacity).fill(null);
+    this.table2 = new Array(this.capacity).fill(null);
+    this.count = 0;
+    for (const entry of oldT1) if (entry) this.set(entry[0], entry[1]);
+    for (const entry of oldT2) if (entry) this.set(entry[0], entry[1]);
+  }
+}
+```
+
+---
+
+## 11. Perfect Hashing
+
+Para conjuntos **estáticos** (conhecidos em compile time), é possível construir funções hash que garantem **zero colisões** — O(1) worst-case com espaço O(n).
+
+### FKS (Fredman, Komlós, Szemerédi) — Two-Level Scheme
+
+1. **Nível 1**: Hash `n` chaves em `m = n` slots com uma função hash universal. Seja `nⱼ` o número de chaves no slot `j`.
+2. **Nível 2**: Para cada slot `j`, use uma tabela secundária de tamanho `mⱼ = nⱼ²` com outra função hash universal.
+
+O truque: com `mⱼ = nⱼ²`, a probabilidade de zero colisões no nível 2 é ≥ 1/2 (pelo Birthday Paradox invertido). Basta tentar funções hash aleatórias até encontrar uma sem colisão — em média, 2 tentativas.
+
+**Espaço total**: `∑ nⱼ² = O(n)` (demonstrável via análise de segundo momento).
+
+**Aplicação prática**: `gperf` (GNU perfect hash generator) usa essa técnica para gerar funções hash perfeitas para conjuntos de keywords em compiladores.
+
+---
+
+## 12. Aplicações Práticas
+
+### 12.1 Caching
+
+Hash tables são a base de caches LRU. A combinação de uma hash table (para O(1) lookup) com uma doubly-linked list (para O(1) eviction) produz uma cache com todas as operações em O(1).
+
+### 12.2 Deduplicação
+
+Detectar duplicatas em streams de dados: hash cada item e verifique se já existe na tabela. Bloom Filters são perfeitos quando falsos positivos são toleráveis e memória é crítica.
+
+### 12.3 Indexação de Banco de Dados
+
+Hash indexes em bancos de dados (PostgreSQL, MySQL com engine MEMORY) oferecem O(1) para equality lookups. A limitação: **não suportam range queries** (para isso, B-Trees são necessárias).
+
+### 12.4 Checksum e Integridade
+
+Funções hash criptográficas (MD5, SHA-256) são usadas para verificar integridade de dados. **Não são adequadas para hash tables** — são intencionalmente lentas (resistência a colisões computacional).
+
+| Função | Tamanho | Velocidade | Uso |
+|---|---|---|---|
+| MD5 | 128-bit | ~600 MB/s | Checksums (obsoleto para segurança) |
+| SHA-256 | 256-bit | ~250 MB/s | Integridade, blockchains |
+| xxHash | 64-bit | ~10 GB/s | Hash tables, checksums rápidos |
+| MurmurHash3 | 128-bit | ~5 GB/s | Hash tables de propósito geral |
+
+---
+
+## 13. Implementação Completa com TypeScript Generics
+
+```typescript
+class HashMap<K, V> implements Iterable<[K, V]> {
+  private buckets: Array<Array<{ key: K; value: V }>>;
+  private _size: number = 0;
+  private capacity: number;
+  private readonly loadFactorThreshold = 0.75;
+  private readonly shrinkThreshold = 0.25;
+  private readonly minCapacity = 16;
+  private readonly hashFn: (key: K) => number;
+
+  constructor(
+    initialCapacity: number = 16,
+    hashFn?: (key: K) => number
+  ) {
+    this.capacity = Math.max(initialCapacity, this.minCapacity);
+    this.buckets = this.createBuckets(this.capacity);
+    this.hashFn = hashFn ?? this.defaultHash;
+  }
+
+  get size(): number {
+    return this._size;
+  }
+
+  get loadFactor(): number {
+    return this._size / this.capacity;
+  }
+
+  private createBuckets(cap: number): Array<Array<{ key: K; value: V }>> {
+    return Array.from({ length: cap }, () => []);
+  }
+
+  private defaultHash(key: K): number {
+    const str = String(key);
+    // FNV-1a 32-bit
+    let hash = 0x811c9dc5;
+    for (let i = 0; i < str.length; i++) {
+      hash ^= str.charCodeAt(i);
+      hash = Math.imul(hash, 0x01000193);
+    }
+    return hash >>> 0;
+  }
+
+  private getIndex(key: K): number {
+    return this.hashFn(key) % this.capacity;
+  }
+
+  set(key: K, value: V): this {
+    if (this.loadFactor >= this.loadFactorThreshold) {
+      this.resize(this.capacity * 2);
+    }
+
+    const idx = this.getIndex(key);
+    const bucket = this.buckets[idx];
+
+    for (const entry of bucket) {
+      if (this.keysEqual(entry.key, key)) {
+        entry.value = value;
+        return this;
+      }
+    }
+
+    bucket.push({ key, value });
+    this._size++;
+    return this;
+  }
+
+  get(key: K): V | undefined {
+    const idx = this.getIndex(key);
+    const entry = this.buckets[idx].find(e => this.keysEqual(e.key, key));
+    return entry?.value;
+  }
+
+  has(key: K): boolean {
+    const idx = this.getIndex(key);
+    return this.buckets[idx].some(e => this.keysEqual(e.key, key));
+  }
+
+  delete(key: K): boolean {
+    const idx = this.getIndex(key);
+    const bucket = this.buckets[idx];
+    const i = bucket.findIndex(e => this.keysEqual(e.key, key));
+
+    if (i === -1) return false;
+
+    bucket.splice(i, 1);
+    this._size--;
+
+    if (
+      this.capacity > this.minCapacity &&
+      this.loadFactor < this.shrinkThreshold
+    ) {
+      this.resize(Math.max(this.capacity / 2, this.minCapacity));
+    }
+
+    return true;
+  }
+
+  clear(): void {
+    this.capacity = this.minCapacity;
+    this.buckets = this.createBuckets(this.capacity);
+    this._size = 0;
+  }
+
+  private keysEqual(a: K, b: K): boolean {
+    if (a === b) return true;
+    if (a !== null && b !== null && typeof a === 'object' && typeof b === 'object') {
+      return JSON.stringify(a) === JSON.stringify(b); // Fallback simples
+    }
+    return false;
+  }
+
+  private resize(newCapacity: number): void {
+    const newBuckets = this.createBuckets(newCapacity);
+    const oldCapacity = this.capacity;
+    this.capacity = newCapacity;
+
+    for (let i = 0; i < oldCapacity; i++) {
+      for (const entry of this.buckets[i]) {
+        const newIdx = this.getIndex(entry.key);
+        newBuckets[newIdx].push(entry);
+      }
+    }
+
+    this.buckets = newBuckets;
+  }
+
+  // Iteração — suporta for...of
+  *[Symbol.iterator](): Iterator<[K, V]> {
+    for (const bucket of this.buckets) {
+      for (const entry of bucket) {
+        yield [entry.key, entry.value];
+      }
+    }
+  }
+
+  *keys(): IterableIterator<K> {
+    for (const [key] of this) {
+      yield key;
+    }
+  }
+
+  *values(): IterableIterator<V> {
+    for (const [, value] of this) {
+      yield value;
+    }
+  }
+
+  *entries(): IterableIterator<[K, V]> {
+    yield* this;
+  }
+
+  forEach(callback: (value: V, key: K, map: HashMap<K, V>) => void): void {
+    for (const [key, value] of this) {
+      callback(value, key, this);
+    }
+  }
+
+  // Estatísticas internas (para debugging e análise de performance)
+  getStats(): {
+    size: number;
+    capacity: number;
+    loadFactor: number;
+    emptyBuckets: number;
+    maxChainLength: number;
+    avgChainLength: number;
+  } {
+    let emptyBuckets = 0;
+    let maxChain = 0;
+    let totalChain = 0;
+    let nonEmptyCount = 0;
+
+    for (const bucket of this.buckets) {
+      if (bucket.length === 0) {
+        emptyBuckets++;
+      } else {
+        nonEmptyCount++;
+        totalChain += bucket.length;
+        maxChain = Math.max(maxChain, bucket.length);
+      }
+    }
+
+    return {
+      size: this._size,
+      capacity: this.capacity,
+      loadFactor: this.loadFactor,
+      emptyBuckets,
+      maxChainLength: maxChain,
+      avgChainLength: nonEmptyCount > 0 ? totalChain / nonEmptyCount : 0,
+    };
+  }
+}
+
+// Uso:
+const map = new HashMap<string, number>();
+map.set("alpha", 1).set("beta", 2).set("gamma", 3);
+
+for (const [key, value] of map) {
+  console.log(`${key} => ${value}`);
+}
+
+console.log(map.getStats());
+// {
+//   size: 3, capacity: 16, loadFactor: 0.1875,
+//   emptyBuckets: 13, maxChainLength: 1, avgChainLength: 1
+// }
+```
+
+---
+
+## 14. Complexidade — Resumo
+
+| Operação | Caso Médio | Pior Caso (sem rehashing) | Pior Caso (com rehashing amortizado) |
+|---|---|---|---|
+| Insert | O(1) | O(n) | O(1) amortizado |
+| Lookup | O(1) | O(n) | O(n) — exceto Cuckoo: O(1) |
+| Delete | O(1) | O(n) | O(1) amortizado |
+| Space | O(n) | O(n) | O(n) |
+
+O pior caso O(n) para lookup em separate chaining ocorre quando **todas as chaves colidem no mesmo bucket** — uma cadeia degenerada. Hashing universal reduz isso a O(1) com alta probabilidade. Perfect hashing elimina completamente para conjuntos estáticos. Cuckoo Hashing garante O(1) worst-case para lookup em conjuntos dinâmicos, ao custo de inserções mais complexas.
+
+> **Nota para entrevistas**: Hash Tables são a estrutura mais testada em entrevistas técnicas. Two Sum, deduplicação, frequency counting, anagram grouping — todos dependem de O(1) lookup. Entenda não só a API, mas o **porquê** do O(1): a função hash distribui uniformemente, o load factor é mantido baixo por rehashing, e colisões são resolvidas eficientemente.

@@ -1,0 +1,798 @@
+---
+title: "Closures"
+description: "Entenda closures em profundidade: lexical environment, scope chain, [[Environment]] slot e implicações de memória"
+track: "frontend"
+order: 6
+section: "JavaScript"
+priority: "high"
+tags: ["javascript", "closures", "escopo", "encapsulamento"]
+prerequisites: []
+keyTakeaways:
+  - "Uma closure é quando uma função mantém uma referência ao lexical environment do escopo onde foi criada, mesmo após esse escopo terminar"
+  - "Closures permitem encapsulamento — variáveis privadas sem precisar de classes"
+  - "React Hooks são closures — entender closures é fundamental para entender React"
+---
+
+## Definição formal: o que é uma closure
+
+A definição mais precisa de closure vem da especificação ECMAScript: **uma closure é a combinação de uma função com uma referência ao seu lexical environment** (o ambiente léxico onde a função foi definida). Isso significa que a função "captura" o scope chain do momento da sua criação — não do momento da sua execução.
+
+Isso não é mágica. É consequência direta de como o JavaScript resolve variáveis: através de uma cadeia de **Environment Records** ligados entre si.
+
+```javascript
+// Definição formal em ação:
+function outer() {
+  const secret = 42;
+
+  // 'inner' captura o lexical environment de 'outer'
+  // Isso inclui a binding de 'secret' no Environment Record
+  function inner() {
+    return secret; // Resolvido via scope chain, NÃO por cópia
+  }
+
+  return inner;
+}
+
+const fn = outer();
+// outer() já terminou. Seu execution context saiu da call stack.
+// Mas o Environment Record de outer NÃO foi coletado pelo GC
+// porque 'fn' (inner) mantém uma referência a ele via [[Environment]].
+fn(); // 42
+```
+
+O ponto crucial: closures capturam **referências**, não valores. A variável é resolvida no momento da leitura, não no momento da captura.
+
+```javascript
+function createMutable() {
+  let value = 'inicial';
+
+  return {
+    get: () => value,          // lê a referência atual
+    set: (v) => { value = v }, // muta a mesma binding
+  };
+}
+
+const obj = createMutable();
+obj.get();        // 'inicial'
+obj.set('mutado');
+obj.get();        // 'mutado' — a closure referencia a MESMA variável
+```
+
+---
+
+## Execution context e scope chain
+
+Quando o engine JavaScript executa código, ele cria um **execution context** para cada invocação de função. Cada execution context contém:
+
+1. **Variable Environment** — o Environment Record onde `var` e `function` declarations são armazenadas
+2. **Lexical Environment** — o Environment Record onde `let`, `const` e `class` declarations são armazenadas
+3. **Outer Reference** — ponteiro para o Environment Record do escopo pai
+
+A resolução de variáveis percorre essa cadeia (scope chain) até encontrar a binding ou atingir o escopo global.
+
+```javascript
+const global = 'g';
+
+function a() {
+  const x = 1;
+
+  function b() {
+    const y = 2;
+
+    function c() {
+      const z = 3;
+      // Resolução de 'x':
+      // 1. Procura no Environment Record de c → não encontra
+      // 2. Segue outer reference → Environment Record de b → não encontra
+      // 3. Segue outer reference → Environment Record de a → ENCONTRA (x = 1)
+      console.log(x + y + z); // 6
+    }
+
+    c();
+  }
+
+  b();
+}
+
+a();
+```
+
+A scope chain é determinada **lexicamente** (pelo código-fonte), não dinamicamente (pela call stack). Por isso o termo "lexical scoping":
+
+```javascript
+const value = 'global';
+
+function printValue() {
+  // A outer reference de printValue aponta para o escopo global
+  // independente de ONDE printValue for chamada
+  console.log(value);
+}
+
+function wrapper() {
+  const value = 'local';
+  printValue(); // 'global' — NÃO 'local'
+  // printValue foi DEFINIDA no escopo global, então sua
+  // scope chain começa no escopo global
+}
+
+wrapper();
+```
+
+---
+
+## [[Environment]] internal slot: como o V8 armazena closures
+
+Na especificação ECMAScript, toda função possui um internal slot chamado `[[Environment]]`. Esse slot armazena uma referência ao **Lexical Environment** do escopo onde a função foi criada.
+
+Quando o V8 (engine do Chrome/Node.js) compila uma função que referencia variáveis de um escopo externo, ele cria um objeto chamado **Context** (não confundir com execution context). Esse Context armazena apenas as variáveis que são efetivamente capturadas — uma otimização chamada **scope analysis**.
+
+```javascript
+function outer() {
+  const captured = 'eu sou capturada';
+  const notCaptured = 'eu sou ignorada pelo V8';
+  let alsoNotCaptured = 42;
+
+  return function inner() {
+    // Somente 'captured' aparece no Context da closure.
+    // 'notCaptured' e 'alsoNotCaptured' são elegíveis para GC
+    // assim que outer() terminar.
+    return captured;
+  };
+}
+
+// Você pode verificar isso no Chrome DevTools:
+// 1. Coloque um breakpoint dentro de inner
+// 2. Veja o painel "Scope" → "Closure (outer)"
+// 3. Apenas 'captured' aparecerá listada
+```
+
+Internamente, o V8 faz o seguinte (simplificado):
+
+```
+// Pseudocódigo da representação interna do V8:
+inner.[[Environment]] = {
+  bindings: { captured: 'eu sou capturada' },  // Context object
+  outer: globalEnvironment
+}
+```
+
+Essa otimização é importante: **o V8 não captura todo o escopo**, apenas as variáveis efetivamente referenciadas. Porém, com `eval()` presente, essa otimização é desabilitada e todo o escopo é retido — um motivo a mais para evitar `eval`.
+
+---
+
+## Exemplos clássicos
+
+### Counter com closure
+
+```javascript
+function createCounter(initial = 0) {
+  let count = initial;
+
+  return {
+    increment: () => ++count,
+    decrement: () => --count,
+    getCount: () => count,
+    reset: () => { count = initial }, // 'initial' também está na closure
+  };
+}
+
+const counter = createCounter(10);
+counter.increment(); // 11
+counter.increment(); // 12
+counter.reset();
+counter.getCount();  // 10
+// 'count' é privada — impossível acessar de fora
+```
+
+### Variáveis privadas (antes de #private fields)
+
+```javascript
+function createBankAccount(initialBalance) {
+  let balance = initialBalance;
+  const transactions = [];
+
+  function recordTransaction(type, amount) {
+    transactions.push({
+      type,
+      amount,
+      date: new Date().toISOString(),
+      balanceAfter: balance,
+    });
+  }
+
+  return {
+    deposit(amount) {
+      if (amount <= 0) throw new RangeError('Depósito deve ser positivo');
+      balance += amount;
+      recordTransaction('deposit', amount);
+      return balance;
+    },
+    withdraw(amount) {
+      if (amount > balance) throw new RangeError('Saldo insuficiente');
+      balance -= amount;
+      recordTransaction('withdrawal', amount);
+      return balance;
+    },
+    getBalance: () => balance,
+    getStatement: () => [...transactions], // retorna cópia defensiva
+  };
+}
+
+const account = createBankAccount(1000);
+account.deposit(500);   // 1500
+account.withdraw(200);  // 1300
+// account.balance → undefined (privada!)
+// account.transactions → undefined (privada!)
+account.getStatement(); // [{ type: 'deposit', ... }, { type: 'withdrawal', ... }]
+```
+
+### Factory functions
+
+```javascript
+function createLogger(prefix, level = 'info') {
+  // Configuração capturada na closure — imutável para quem recebe o logger
+  const timestamp = () => new Date().toISOString();
+
+  const methods = {
+    info: (msg, ...args) =>
+      console.log(`[${timestamp()}] [${prefix}] INFO: ${msg}`, ...args),
+    warn: (msg, ...args) =>
+      console.warn(`[${timestamp()}] [${prefix}] WARN: ${msg}`, ...args),
+    error: (msg, ...args) =>
+      console.error(`[${timestamp()}] [${prefix}] ERROR: ${msg}`, ...args),
+  };
+
+  return methods;
+}
+
+const dbLogger = createLogger('DATABASE');
+const apiLogger = createLogger('API');
+
+dbLogger.info('Conexão estabelecida');  // [2026-...] [DATABASE] INFO: Conexão estabelecida
+apiLogger.error('Timeout na request');  // [2026-...] [API] ERROR: Timeout na request
+```
+
+### Partial application
+
+```javascript
+function partial(fn, ...presetArgs) {
+  // 'fn' e 'presetArgs' são capturados na closure
+  return function (...laterArgs) {
+    return fn(...presetArgs, ...laterArgs);
+  };
+}
+
+function multiply(a, b) {
+  return a * b;
+}
+
+const double = partial(multiply, 2);
+const triple = partial(multiply, 3);
+
+double(5); // 10
+triple(5); // 15
+
+// Uso prático: configurar fetch com base URL
+function apiRequest(baseUrl, endpoint, options = {}) {
+  return fetch(`${baseUrl}${endpoint}`, options);
+}
+
+const api = partial(apiRequest, 'https://api.example.com');
+api('/users');        // fetch('https://api.example.com/users')
+api('/orders', { method: 'POST' });
+```
+
+---
+
+## O problema do loop com var
+
+Este é o exemplo mais clássico de "pegadinha" envolvendo closures. Envolve a interação entre `var` (function-scoped), closures e execução assíncrona.
+
+```javascript
+// ❌ PROBLEMA: Todas as callbacks imprimem 3
+for (var i = 0; i < 3; i++) {
+  setTimeout(() => console.log(i), 100);
+}
+// Output: 3, 3, 3
+
+// POR QUÊ?
+// 1. 'var i' é function-scoped (ou global-scoped) — existe UMA ÚNICA variável 'i'
+// 2. As 3 funções de callback capturam a MESMA referência a 'i'
+// 3. setTimeout agenda as callbacks na task queue (executam após o loop)
+// 4. Quando as callbacks executam, o loop já terminou e i === 3
+```
+
+### Solução 1: `let` (block-scoped)
+
+```javascript
+// ✅ let cria uma nova binding a cada iteração do loop
+for (let i = 0; i < 3; i++) {
+  setTimeout(() => console.log(i), 100);
+}
+// Output: 0, 1, 2
+
+// Na spec, isso é equivalente a:
+// Iteração 0: cria Environment Record com i=0, callback captura ESSE record
+// Iteração 1: cria Environment Record com i=1, callback captura ESSE record
+// Iteração 2: cria Environment Record com i=2, callback captura ESSE record
+```
+
+### Solução 2: IIFE (Immediately Invoked Function Expression)
+
+```javascript
+// ✅ IIFE cria um novo escopo com uma cópia do valor
+for (var i = 0; i < 3; i++) {
+  (function (j) {
+    // 'j' é um parâmetro local — uma CÓPIA de 'i' naquele momento
+    setTimeout(() => console.log(j), 100);
+  })(i);
+}
+// Output: 0, 1, 2
+```
+
+### Solução 3: `bind`
+
+```javascript
+// ✅ bind cria uma nova função com o argumento pré-fixado
+for (var i = 0; i < 3; i++) {
+  setTimeout(console.log.bind(console, i), 100);
+}
+// Output: 0, 1, 2
+```
+
+---
+
+## Implicações de memória
+
+Closures mantêm referências a Environment Records inteiros (ou, com a otimização do V8, às variáveis capturadas). Isso significa que enquanto a closure existir, essas variáveis **não podem ser coletadas pelo garbage collector**.
+
+### Event listeners não removidos
+
+```javascript
+// ❌ Memory leak: a closure referencia 'heavyData' indefinidamente
+function setupHandler() {
+  const heavyData = new Array(1_000_000).fill('dados pesados');
+
+  document.getElementById('btn').addEventListener('click', () => {
+    console.log(heavyData.length); // heavyData retida na memória
+  });
+  // Se o elemento for removido do DOM mas o listener não for
+  // removido, heavyData nunca será coletada
+}
+
+// ✅ Solução: remover o listener quando não for mais necessário
+function setupHandlerCorrect() {
+  const heavyData = new Array(1_000_000).fill('dados pesados');
+
+  function handler() {
+    console.log(heavyData.length);
+  }
+
+  const btn = document.getElementById('btn');
+  btn.addEventListener('click', handler);
+
+  // Retorna função de cleanup
+  return () => {
+    btn.removeEventListener('click', handler);
+    // Agora heavyData pode ser coletada quando a closure 'handler' for GC'd
+  };
+}
+
+const cleanup = setupHandlerCorrect();
+// Quando não precisar mais:
+cleanup();
+```
+
+### Referências circulares e closures
+
+```javascript
+// ❌ Potencial leak em engines antigos (IE): referência circular DOM ↔ closure
+function attachHandler(element) {
+  element.addEventListener('click', function handler() {
+    // handler referencia 'element' via closure (escopo externo)
+    // 'element' referencia 'handler' via listener list
+    // Ciclo: element → handler → element
+    element.style.color = 'red';
+  });
+}
+
+// ✅ Em engines modernos (V8, SpiderMonkey), o GC é geracional e lida
+// com ciclos. Mas a boa prática continua sendo remover listeners:
+function attachHandlerClean(element) {
+  function handler() {
+    element.style.color = 'red';
+  }
+
+  element.addEventListener('click', handler);
+
+  return () => {
+    element.removeEventListener('click', handler);
+    element = null; // quebra a referência explicitamente
+  };
+}
+```
+
+### Closures inadvertidamente retendo escopos grandes
+
+```javascript
+// ❌ Problema sutil: 'unused' pode ser retida dependendo do engine
+function problematic() {
+  const unused = new ArrayBuffer(1024 * 1024 * 100); // 100MB
+  const used = 'pequeno';
+
+  return function () {
+    return used; // Só usa 'used', mas 'unused' pode ficar retida
+    // O V8 geralmente otimiza isso, mas nem sempre
+    // (especialmente com eval ou debugger presente no escopo)
+  };
+}
+
+// ✅ Solução: anular referências explicitamente se necessário
+function optimized() {
+  let unused = new ArrayBuffer(1024 * 1024 * 100);
+  const used = 'pequeno';
+
+  const result = function () {
+    return used;
+  };
+
+  unused = null; // Permite GC antes de retornar
+  return result;
+}
+```
+
+---
+
+## Currying e partial application via closures
+
+**Currying** transforma uma função de N argumentos em N funções de 1 argumento. **Partial application** fixa alguns argumentos e retorna uma função que aceita os restantes. Ambos dependem fundamentalmente de closures.
+
+```javascript
+// Currying genérico
+function curry(fn) {
+  const arity = fn.length;
+
+  return function curried(...args) {
+    if (args.length >= arity) {
+      return fn(...args);
+    }
+    // Retorna uma nova closure que acumula argumentos
+    return function (...moreArgs) {
+      return curried(...args, ...moreArgs);
+    };
+  };
+}
+
+const add = curry((a, b, c) => a + b + c);
+add(1)(2)(3);    // 6
+add(1, 2)(3);    // 6
+add(1)(2, 3);    // 6
+add(1, 2, 3);    // 6
+
+// Uso prático: compose e pipe
+const compose = (...fns) =>
+  (value) => fns.reduceRight((acc, fn) => fn(acc), value);
+
+const pipe = (...fns) =>
+  (value) => fns.reduce((acc, fn) => fn(acc), value);
+
+// Pipeline de transformação
+const processUser = pipe(
+  (user) => ({ ...user, name: user.name.trim() }),
+  (user) => ({ ...user, email: user.email.toLowerCase() }),
+  (user) => ({ ...user, createdAt: new Date().toISOString() }),
+);
+
+processUser({ name: '  Lucas ', email: 'LUCAS@MAIL.COM' });
+// { name: 'Lucas', email: 'lucas@mail.com', createdAt: '2026-...' }
+```
+
+---
+
+## Module pattern: closures como encapsulamento
+
+Antes de ES Modules (`import`/`export`), o **module pattern** era o mecanismo padrão para encapsulamento em JavaScript. Ele explora closures dentro de IIFEs para criar escopos privados.
+
+```javascript
+// Module pattern clássico (IIFE + closure)
+const UserModule = (function () {
+  // Tudo aqui é PRIVADO — só acessível dentro da closure
+  const users = new Map();
+  let nextId = 1;
+
+  function validateEmail(email) {
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+  }
+
+  // API pública — o que o IIFE retorna
+  return {
+    create(name, email) {
+      if (!validateEmail(email)) {
+        throw new Error(`Email inválido: ${email}`);
+      }
+      const id = nextId++;
+      const user = { id, name, email, createdAt: Date.now() };
+      users.set(id, user);
+      return { ...user }; // retorna cópia defensiva
+    },
+
+    findById(id) {
+      const user = users.get(id);
+      return user ? { ...user } : null;
+    },
+
+    count() {
+      return users.size;
+    },
+  };
+})();
+
+UserModule.create('Lucas', 'lucas@mail.com');
+UserModule.count(); // 1
+// UserModule.users → undefined (privado!)
+// UserModule.validateEmail → undefined (privado!)
+
+// Revealing module pattern (variação que nomeia tudo internamente)
+const MathModule = (function () {
+  function add(a, b) { return a + b; }
+  function subtract(a, b) { return a - b; }
+  function multiply(a, b) { return a * b; }
+  function _internalHelper() { /* privado */ }
+
+  return { add, subtract, multiply };
+  // _internalHelper não é exposta
+})();
+```
+
+---
+
+## Memoization com closures
+
+Memoization armazena resultados de chamadas anteriores para evitar recomputação. Closures são o mecanismo natural para manter o cache.
+
+```javascript
+// Memoização básica com Map
+function memoize(fn) {
+  const cache = new Map(); // Retida na closure
+
+  return function (...args) {
+    const key = JSON.stringify(args);
+
+    if (cache.has(key)) {
+      return cache.get(key);
+    }
+
+    const result = fn.apply(this, args);
+    cache.set(key, result);
+    return result;
+  };
+}
+
+const expensiveCalc = memoize((n) => {
+  console.log(`Calculando fib(${n})...`);
+  if (n <= 1) return n;
+  return expensiveCalc(n - 1) + expensiveCalc(n - 2);
+});
+
+expensiveCalc(10); // Calcula e cacheia cada sub-resultado
+expensiveCalc(10); // Retorna do cache instantaneamente
+
+// ❌ Problema: Map cresce indefinidamente → memory leak
+// Chaves são strings (JSON.stringify), nunca são removidas
+```
+
+### Memoização com WeakMap para evitar leaks
+
+```javascript
+// WeakMap permite que as chaves sejam coletadas pelo GC
+// Porém, WeakMap só aceita objetos como chaves
+function memoizeWeak(fn) {
+  const cache = new WeakMap();
+
+  return function (objArg) {
+    if (cache.has(objArg)) {
+      return cache.get(objArg);
+    }
+
+    const result = fn.call(this, objArg);
+    cache.set(objArg, result);
+    return result;
+  };
+}
+
+const processData = memoizeWeak((data) => {
+  // Operação cara sobre um objeto
+  return Object.keys(data).reduce((acc, key) => {
+    acc[key] = data[key] * 2;
+    return acc;
+  }, {});
+});
+
+let bigObj = { a: 1, b: 2, c: 3 };
+processData(bigObj); // Calcula
+processData(bigObj); // Retorna do cache
+
+bigObj = null; // Agora o GC pode coletar tanto bigObj quanto o resultado cacheado
+```
+
+### Memoização com LRU (Least Recently Used)
+
+```typescript
+function memoizeLRU<T extends (...args: any[]) => any>(
+  fn: T,
+  maxSize: number = 100,
+): T {
+  const cache = new Map<string, ReturnType<T>>();
+
+  return function (this: any, ...args: Parameters<T>): ReturnType<T> {
+    const key = JSON.stringify(args);
+
+    if (cache.has(key)) {
+      // Move para o "fim" (mais recente) — Map mantém ordem de inserção
+      const value = cache.get(key)!;
+      cache.delete(key);
+      cache.set(key, value);
+      return value;
+    }
+
+    const result = fn.apply(this, args);
+
+    if (cache.size >= maxSize) {
+      // Remove a entrada mais antiga (primeira no Map)
+      const oldestKey = cache.keys().next().value;
+      cache.delete(oldestKey);
+    }
+
+    cache.set(key, result);
+    return result;
+  } as T;
+}
+
+const cachedFetch = memoizeLRU(async (url: string) => {
+  const res = await fetch(url);
+  return res.json();
+}, 50); // Máximo 50 entradas
+```
+
+---
+
+## Closures em React: stale closures
+
+O modelo de Hooks do React **depende inteiramente de closures**. Cada render cria novas closures que capturam os valores daquele render específico. Isso é poderoso, mas pode causar **stale closures** — quando uma closure referencia valores desatualizados.
+
+### O problema com useEffect
+
+```javascript
+import { useState, useEffect } from 'react';
+
+function Timer() {
+  const [count, setCount] = useState(0);
+
+  useEffect(() => {
+    // ❌ Stale closure: esta callback captura count = 0
+    // e nunca vê atualizações porque o effect não re-executa
+    const interval = setInterval(() => {
+      console.log(`Count: ${count}`); // Sempre 0!
+      setCount(count + 1);           // Sempre seta para 1!
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, []); // [] = effect roda só uma vez, closure captura count = 0
+
+  return <div>{count}</div>;
+}
+
+// ✅ Solução 1: usar a forma funcional do setState
+function TimerFixed() {
+  const [count, setCount] = useState(0);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      // A forma funcional recebe o valor ATUAL do state,
+      // não depende da closure
+      setCount((prev) => prev + 1);
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, []);
+
+  return <div>{count}</div>;
+}
+
+// ✅ Solução 2: useRef para valor mutável
+function TimerWithRef() {
+  const [count, setCount] = useState(0);
+  const countRef = useRef(count);
+
+  // Sincroniza ref com state a cada render
+  useEffect(() => {
+    countRef.current = count;
+  });
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      // ref.current sempre aponta para o valor mais recente
+      console.log(`Count: ${countRef.current}`);
+      setCount((prev) => prev + 1);
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, []);
+
+  return <div>{count}</div>;
+}
+```
+
+### O problema com useCallback
+
+```javascript
+import { useState, useCallback } from 'react';
+
+function SearchComponent() {
+  const [query, setQuery] = useState('');
+
+  // ❌ Stale closure: query sempre será '' porque deps está vazio
+  const handleSearch = useCallback(() => {
+    fetch(`/api/search?q=${query}`); // query = '' para sempre
+  }, []);
+
+  // ✅ Correto: incluir query nas deps
+  const handleSearchFixed = useCallback(() => {
+    fetch(`/api/search?q=${query}`);
+  }, [query]); // Re-cria a closure quando query muda
+
+  return (
+    <>
+      <input value={query} onChange={(e) => setQuery(e.target.value)} />
+      <button onClick={handleSearchFixed}>Buscar</button>
+    </>
+  );
+}
+```
+
+### Por que Hooks dependem de closures
+
+```javascript
+// Simplificação de como o React implementa useState internamente:
+// (versão didática — a implementação real é mais complexa)
+let hooks = [];
+let currentHook = 0;
+
+function useState(initialValue) {
+  const hookIndex = currentHook; // Capturado na closure!
+
+  if (hooks[hookIndex] === undefined) {
+    hooks[hookIndex] = initialValue;
+  }
+
+  const setState = (newValue) => {
+    // 'hookIndex' é capturado por closure — cada useState
+    // tem seu próprio índice fixo
+    hooks[hookIndex] =
+      typeof newValue === 'function'
+        ? newValue(hooks[hookIndex])
+        : newValue;
+    render(); // Re-renderiza o componente
+  };
+
+  currentHook++;
+  return [hooks[hookIndex], setState];
+}
+
+// Por isso as regras de Hooks existem:
+// 1. Sempre chamar hooks na mesma ordem (hookIndex deve ser determinístico)
+// 2. Nunca chamar hooks dentro de condicionais (mudaria a ordem)
+```
+
+---
+
+## Resumo
+
+| Conceito | Mecanismo | Risco |
+|---|---|---|
+| Closure | Função + referência ao lexical environment | Retenção de memória desnecessária |
+| Scope chain | Environment Record → outer reference → ... → global | Resolução incorreta de variáveis com var |
+| [[Environment]] slot | Internal slot da função que aponta para o Environment Record | V8 desabilita otimizações com eval |
+| Module pattern | IIFE + closure para encapsulamento | Obsoleto com ES Modules, mas presente em código legado |
+| Memoization | Cache na closure | Memory leaks se o cache crescer sem limite |
+| Stale closures (React) | Closure captura valor antigo do state/props | Bugs sutis em useEffect/useCallback |

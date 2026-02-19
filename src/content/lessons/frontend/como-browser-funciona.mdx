@@ -1,0 +1,815 @@
+---
+title: "Como a Web Funciona"
+description: "Arquitetura multi-processo do browser, Critical Rendering Path, parsing, layout, paint, compositing e métricas de performance"
+track: "frontend"
+order: 1
+section: "Fundamentos Web"
+priority: "high"
+tags: ["browser", "dns", "http", "rendering", "performance"]
+prerequisites: []
+keyTakeaways:
+  - "O browser segue um pipeline: HTML → DOM → CSSOM → Render Tree → Layout → Paint → Composite"
+  - "Animações com transform/opacity são composited-only e muito mais baratas que reflow"
+  - "Cada DNS lookup + TCP + TLS custa ~100-300ms — minimize domínios externos"
+  - "Scripts sem async/defer bloqueiam o HTML parser e atrasam o First Contentful Paint"
+  - "O compositor roda numa thread separada — por isso transform e opacity não bloqueiam a main thread"
+---
+
+> **Ponto chave:** Frontend não é "deixar bonito". É engenharia de interfaces — performance, acessibilidade, arquitetura de estado e UX que não deixa o usuário frustrado. Pensar no browser como uma máquina com limitações reais de CPU, GPU, memória e rede é fundamental.
+
+---
+
+## 1. Arquitetura Multi-Processo do Browser
+
+Browsers modernos (Chromium, Firefox) usam uma arquitetura multi-processo para isolamento de segurança, estabilidade e performance.
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    BROWSER PROCESS                       │
+│  - UI (barra de endereço, tabs, botões)                 │
+│  - Gerenciamento de processos filhos                    │
+│  - Storage (cookies, IndexedDB, localStorage)           │
+│  - Coordenação de rede                                  │
+└───────────┬────────────┬────────────┬───────────────────┘
+            │            │            │
+   ┌────────▼──────┐ ┌──▼────────┐ ┌─▼──────────────┐
+   │   RENDERER    │ │  NETWORK  │ │  GPU PROCESS    │
+   │   PROCESS     │ │  PROCESS  │ │                 │
+   │               │ │           │ │ - Rasterização  │
+   │ - HTML Parser │ │ - DNS     │ │ - Composição    │
+   │ - CSS Parser  │ │ - TCP/TLS │ │   de layers     │
+   │ - JS Engine   │ │ - HTTP    │ │ - Aceleração    │
+   │   (V8/SM)     │ │ - Cache   │ │   de hardware   │
+   │ - Layout      │ │ - CORS    │ │ - WebGL/Canvas  │
+   │ - Paint       │ │           │ │                 │
+   └───────────────┘ └───────────┘ └─────────────────┘
+```
+
+**Por que multi-processo?**
+
+- **Isolamento de segurança:** cada tab roda num sandbox separado. Uma página maliciosa não acessa memória de outra aba.
+- **Estabilidade:** se um renderer process crashar, só aquela aba morre — o browser continua rodando.
+- **Performance:** parsing, layout e paint não competem diretamente com I/O de rede.
+
+No Chromium, o **Site Isolation** garante que cada *origin* roda no seu próprio processo. Isso é a base da proteção contra Spectre/Meltdown no browser.
+
+```
+// Verificar processos no Chrome:
+// chrome://process-internals/
+// Cada frame cross-origin terá seu próprio renderer process
+```
+
+---
+
+## 2. Navegação: Do URL ao Primeiro Byte
+
+Quando o usuário digita uma URL e pressiona Enter, o **browser process** inicia a navegação:
+
+```
+┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐    ┌──────────┐
+│   DNS    │───▶│   TCP    │───▶│   TLS    │───▶│  HTTP    │───▶│ Response │
+│  Lookup  │    │ Handshake│    │ Handshake│    │ Request  │    │ Parsing  │
+│ ~20-120ms│    │  ~1 RTT  │    │ ~1-2 RTT │    │  ~1 RTT  │    │          │
+└──────────┘    └──────────┘    └──────────┘    └──────────┘    └──────────┘
+```
+
+### 2.1 DNS Resolution
+
+O DNS resolve o domínio para um endereço IP. O browser verifica nesta ordem:
+
+1. **Cache do browser** (Chrome: `chrome://net-internals/#dns`)
+2. **Cache do SO** (arquivo `/etc/hosts` incluído)
+3. **Resolver do ISP** (DNS recursivo)
+4. **Root servers → TLD servers → Authoritative server**
+
+```
+;; Exemplo de resolução DNS para brewnary.dev
+;; Cada etapa adiciona latência (~20-120ms total)
+
+$ dig brewnary.dev +trace
+;; . → com. → brewnary.dev. → A 76.76.21.21
+```
+
+### 2.2 TCP + TLS
+
+O **TCP 3-way handshake** estabelece a conexão confiável:
+
+```
+Cliente          Servidor
+  │── SYN ──────────▶│   (1 RTT ida)
+  │◀─ SYN+ACK ──────│   (1 RTT volta)
+  │── ACK ──────────▶│   Conexão estabelecida
+```
+
+O **TLS 1.3** reduz para **1 RTT** (vs 2 RTT do TLS 1.2):
+
+```
+Cliente                         Servidor
+  │── ClientHello + KeyShare ────▶│   (1 RTT ida)
+  │◀─ ServerHello + KeyShare ────│   Chaves derivadas
+  │◀─ Certificado + Finished ───│
+  │── Finished ──────────────────▶│   Conexão segura
+```
+
+**Otimizações de frontend:**
+
+```html
+<!-- Inicia DNS + TCP + TLS antes de precisar do recurso -->
+<link rel="preconnect" href="https://fonts.googleapis.com">
+
+<!-- Só DNS (mais leve, para domínios menos prioritários) -->
+<link rel="dns-prefetch" href="https://analytics.example.com">
+
+<!-- Faz download do recurso antecipadamente -->
+<link rel="preload" href="/fonts/inter.woff2" as="font" type="font/woff2" crossorigin>
+
+<!-- Dica ao browser: essa página provavelmente será navegada -->
+<link rel="prefetch" href="/next-page.html">
+```
+
+### 2.3 HTTP/2 e HTTP/3
+
+**HTTP/1.1** abria até 6 conexões TCP por domínio. **HTTP/2** resolve isso com multiplexing:
+
+```
+HTTP/1.1:  Conexão 1: ──req1──res1──req3──res3──
+           Conexão 2: ──req2──res2──req4──res4──
+           (head-of-line blocking por conexão)
+
+HTTP/2:    Conexão 1: ──req1──req2──req3──req4──
+                       ──res2──res1──res4──res3──
+           (streams multiplexados numa única conexão TCP)
+           (ainda sofre de HOL blocking na camada TCP)
+
+HTTP/3:    QUIC (UDP): Cada stream é independente
+           (sem HOL blocking — perda de pacote afeta só o stream)
+```
+
+---
+
+## 3. Critical Rendering Path
+
+Uma vez que o HTML começa a chegar, o **renderer process** entra em ação. Este é o pipeline completo:
+
+```
+                    ┌──────────┐
+                    │  Network │
+                    │  (bytes) │
+                    └────┬─────┘
+                         │
+                    ┌────▼─────┐
+              ┌─────│  HTML    │─────── <link> encontrado ──┐
+              │     │  Parser  │                             │
+              │     └────┬─────┘                             │
+              │          │                              ┌────▼─────┐
+              │     ┌────▼─────┐                        │   CSS    │
+              │     │   DOM    │                        │  Parser  │
+              │     │   Tree   │                        └────┬─────┘
+              │     └────┬─────┘                             │
+              │          │                              ┌────▼─────┐
+              │          │                              │  CSSOM   │
+              │          │                              │   Tree   │
+              │          │                              └────┬─────┘
+              │          └──────────┬─────────────────────────┘
+              │                     │
+              │                ┌────▼─────┐
+              │                │  Render  │
+              │                │   Tree   │ (DOM + CSSOM combinados)
+              │                └────┬─────┘
+              │                     │
+              │                ┌────▼─────┐
+              │                │  Layout  │ (geometria: posição e tamanho)
+              │                └────┬─────┘
+              │                     │
+              │                ┌────▼─────┐
+              │                │  Paint   │ (ordens de desenho)
+              │                └────┬─────┘
+              │                     │
+              │                ┌────▼─────┐
+              │                │Composite │ (GPU compõe layers)
+              │                └──────────┘
+              │
+              │ <script> encontrado
+              │ (sem async/defer)
+              ▼
+        ┌──────────┐
+        │    JS    │ ← BLOQUEIA o parser até
+        │  Engine  │   download + execução completar
+        └──────────┘
+```
+
+---
+
+## 4. HTML Parser: Tokenização e Construção da Árvore
+
+O HTML parser opera em duas fases: **tokenização** (lexer) e **tree construction**.
+
+### 4.1 Tokenização
+
+O tokenizer é uma máquina de estados que converte bytes em tokens:
+
+```
+Bytes:   3C 68 31 3E 48 69 3C 2F 68 31 3E
+Chars:   <  h  1  >  H  i  <  /  h  1  >
+
+Tokens gerados:
+  StartTag { name: "h1", attributes: [] }
+  Character { data: "Hi" }
+  EndTag { name: "h1" }
+```
+
+A especificação HTML5 define **80+ estados** para o tokenizer. É por isso que HTML é tão "permissivo" — o parser tenta recuperar de quase qualquer erro.
+
+### 4.2 Tree Construction
+
+Os tokens alimentam o **tree construction algorithm**, que mantém uma **stack de elementos abertos**:
+
+```
+Input: <div><p>Texto<p>Outro</div>
+
+Stack:          Ação:
+[html, body]    → Início
+[html, body, div] → StartTag div
+[html, body, div, p] → StartTag p
+                   → Character "Texto"
+[html, body, div, p] → StartTag p (fecha o <p> anterior implicitamente!)
+[html, body, div, p] → Character "Outro"
+[html, body, div]  → EndTag div (fecha o <p> implicitamente)
+
+Resultado: dois <p> irmãos dentro do <div>
+```
+
+### 4.3 Speculative Parsing (Preload Scanner)
+
+Enquanto o parser principal está bloqueado esperando um `<script>`, o **preload scanner** continua lendo o HTML à frente para encontrar recursos que pode baixar antecipadamente:
+
+```html
+<head>
+  <script src="app.js"></script>       <!-- Parser bloqueia aqui -->
+  <link rel="stylesheet" href="style.css">  <!-- Preload scanner encontra -->
+  <img src="hero.jpg">                      <!-- Preload scanner encontra -->
+</head>
+```
+
+O preload scanner **não constrói DOM** — ele apenas identifica URLs de recursos (`<link>`, `<script>`, `<img>`) e inicia os downloads em paralelo. Isso é uma das otimizações mais importantes dos browsers modernos.
+
+### 4.4 Script Blocking: async, defer, e module
+
+```html
+<!-- BLOQUEIA o parser: download + execução sequencial -->
+<script src="app.js"></script>
+
+<!-- ASYNC: download em paralelo, executa assim que chegar (bloqueia o parser brevemente) -->
+<!-- Ordem de execução NÃO garantida entre múltiplos scripts async -->
+<script async src="analytics.js"></script>
+
+<!-- DEFER: download em paralelo, executa DEPOIS do parsing completo -->
+<!-- Ordem de execução GARANTIDA entre múltiplos scripts defer -->
+<script defer src="app.js"></script>
+<script defer src="vendor.js"></script>  <!-- app.js executa primeiro -->
+
+<!-- MODULE: comportamento padrão é defer -->
+<script type="module" src="app.mjs"></script>
+```
+
+```
+Timeline de parsing:
+
+Sem atributo:  ──parse──[download]──[execute]──parse──────
+async:         ──parse──────────────parse──[exec]──parse──
+                        [download]─┘
+defer:         ──parse──────────────────parse──[execute]──
+                        [download]──────┘
+                                          DOMContentLoaded ↑
+```
+
+**Quando usar cada um:**
+
+| Atributo | Caso de uso |
+|----------|-------------|
+| (nenhum) | Scripts que precisam rodar antes de qualquer conteúdo (raro) |
+| `async` | Scripts independentes: analytics, ads, widgets de terceiros |
+| `defer` | Scripts da aplicação que dependem do DOM estar completo |
+| `type="module"` | Código ES modules — defer por padrão |
+
+---
+
+## 5. CSSOM: Cascade, Especificidade e Construção
+
+O CSS parser constrói a **CSSOM (CSS Object Model)** — uma árvore que espelha o DOM mas contém os estilos computados.
+
+### 5.1 Cascade: Ordem de Precedência
+
+A cascade determina qual regra vence quando há conflito:
+
+```
+Prioridade (maior → menor):
+
+1. Declarações com !important (user-agent → user → author, invertido)
+2. Inline styles (style="...")
+3. Regras por especificidade
+4. Ordem de aparição no código (última vence)
+
+Especificidade é um vetor (A, B, C):
+  A = número de seletores #id
+  B = número de seletores .class, [attr], :pseudo-class
+  C = número de seletores element, ::pseudo-element
+
+Exemplos:
+  #nav .item a        → (1, 1, 1) = 111
+  .sidebar .widget    → (0, 2, 0) = 020
+  div p span          → (0, 0, 3) = 003
+  #main               → (1, 0, 0) = 100
+  style="color: red"  → (1, 0, 0, 0) — inline sempre vence especificidade
+```
+
+### 5.2 CSSOM como Render-Blocking
+
+O CSS é **render-blocking** (mas não parser-blocking). O browser não renderiza nada até que toda a CSSOM esteja construída. Isso evita o **FOUC (Flash of Unstyled Content)**.
+
+```
+HTML:    ──parse──parse──parse──parse──▶ DOM pronto
+CSS:     ──download────parse──────────▶ CSSOM pronta
+                                        ↓
+                                   Render Tree pode ser construída
+```
+
+**Implicação prática:** CSS no `<head>` é crítico. CSS enorme ou com muitos `@import` atrasa o First Paint.
+
+```css
+/* @import cria requisições em cadeia (waterfall) */
+/* style.css */
+@import url("reset.css");    /* Só baixa depois que style.css carrega */
+@import url("layout.css");   /* Só baixa depois que reset.css carrega */
+
+/* Prefira <link> tags paralelos no HTML */
+```
+
+```html
+<!-- Melhor: downloads em paralelo -->
+<link rel="stylesheet" href="reset.css">
+<link rel="stylesheet" href="layout.css">
+<link rel="stylesheet" href="style.css">
+```
+
+---
+
+## 6. Layout (Reflow)
+
+O Layout calcula a **geometria** de cada elemento: posição (x, y) e tamanho (width, height) no viewport.
+
+### 6.1 Box Model
+
+```
+┌─────────────────────────────────────────┐
+│                MARGIN                    │
+│  ┌───────────────────────────────────┐  │
+│  │            BORDER                 │  │
+│  │  ┌─────────────────────────────┐  │  │
+│  │  │         PADDING             │  │  │
+│  │  │  ┌───────────────────────┐  │  │  │
+│  │  │  │      CONTENT          │  │  │  │
+│  │  │  │    (width x height)   │  │  │  │
+│  │  │  └───────────────────────┘  │  │  │
+│  │  └─────────────────────────────┘  │  │
+│  └───────────────────────────────────┘  │
+└─────────────────────────────────────────┘
+
+box-sizing: content-box (padrão)
+  → width = largura do conteúdo
+  → tamanho total = width + padding + border
+
+box-sizing: border-box (recomendado)
+  → width = conteúdo + padding + border
+  → tamanho total = width (mais previsível)
+```
+
+### 6.2 Block Formatting Context (BFC)
+
+Um BFC é uma região isolada de layout. Elementos dentro de um BFC não afetam o layout externo. Um novo BFC é criado por:
+
+- `overflow` diferente de `visible` (`auto`, `hidden`, `scroll`)
+- `display: flow-root` (criado especificamente para isso)
+- `float` (left/right)
+- `position: absolute` ou `fixed`
+- Flex items, grid items
+- `display: inline-block`
+
+```css
+/* Problema clássico: margin collapse */
+.parent { background: gray; }
+.child  { margin-top: 20px; }
+/* A margin do child "vaza" para fora do parent */
+
+/* Solução: criar um BFC no parent */
+.parent {
+  background: gray;
+  display: flow-root; /* Cria BFC, contém a margin */
+}
+```
+
+### 6.3 O que Causa Reflow (Layout Thrashing)
+
+Reflow é **caro** — o browser precisa recalcular a geometria de parte (ou toda) a árvore. Gatilhos:
+
+- Mudar `width`, `height`, `padding`, `margin`, `border`
+- Mudar `font-size`, `font-family`
+- Adicionar/remover elementos do DOM
+- Mudar `display`, `position`, `float`
+- Redimensionar a janela
+- **Ler propriedades de layout** (`offsetWidth`, `clientHeight`, `getBoundingClientRect()`)
+
+```javascript
+// LAYOUT THRASHING — força reflow sincronizado a cada iteração
+const elements = document.querySelectorAll('.item');
+elements.forEach(el => {
+  const width = el.offsetWidth;       // Leitura → força layout
+  el.style.width = (width * 2) + 'px'; // Escrita → invalida layout
+  // Próxima leitura vai forçar layout de novo!
+});
+
+// CORREÇÃO — batch reads, depois batch writes
+const widths = [];
+elements.forEach(el => {
+  widths.push(el.offsetWidth);         // Todas as leituras primeiro
+});
+elements.forEach((el, i) => {
+  el.style.width = (widths[i] * 2) + 'px'; // Depois todas as escritas
+});
+```
+
+Use a biblioteca `fastdom` ou `requestAnimationFrame` para separar leituras e escritas:
+
+```javascript
+// Com requestAnimationFrame — escritas agrupadas no próximo frame
+function updateLayout(element, newWidth) {
+  requestAnimationFrame(() => {
+    element.style.width = newWidth + 'px';
+  });
+}
+```
+
+---
+
+## 7. Paint e Stacking Context
+
+Após o layout, o browser gera **paint records** — instruções de como desenhar cada pixel.
+
+### 7.1 Stacking Context e Paint Order
+
+A ordem de pintura segue o **stacking context**:
+
+```
+Ordem de pintura (de trás para frente):
+
+1. Background e borders do elemento raiz
+2. Descendentes com z-index negativo
+3. Block-level boxes no fluxo normal (na ordem do DOM)
+4. Float boxes
+5. Inline-level boxes no fluxo normal
+6. z-index: 0 (e position: relative sem z-index)
+7. Descendentes com z-index positivo
+
+Um NOVO stacking context é criado por:
+  - position + z-index (diferente de auto)
+  - opacity < 1
+  - transform (qualquer valor)
+  - filter (qualquer valor)
+  - will-change: transform, opacity, etc.
+  - isolation: isolate
+  - mix-blend-mode (diferente de normal)
+```
+
+```css
+/* Problema clássico: z-index não funciona */
+.parent { position: relative; z-index: 1; }
+.child  { position: absolute; z-index: 9999; }
+/* O .child NUNCA vai ficar acima de um irmão do .parent
+   que tenha z-index: 2, porque o stacking context
+   do .parent limita seus filhos */
+```
+
+### 7.2 Propriedades que Causam Repaint (mas NÃO Reflow)
+
+```
+Repaint-only (mais barato que reflow):
+  - color, background-color, background-image
+  - box-shadow, text-shadow
+  - outline
+  - visibility (hidden/visible)
+  - border-color, border-style
+```
+
+---
+
+## 8. Compositing: Layers e GPU
+
+Compositing é a etapa final — o browser combina as **layers** pintadas numa imagem final usando a GPU.
+
+### 8.1 Layer Promotion
+
+Nem todo elemento tem sua própria layer. O browser promove elementos para uma **compositing layer** quando:
+
+```
+Gatilhos de promoção para GPU layer:
+  - transform 3D (translate3d, rotate3d, etc.)
+  - transform 2D com animação ativa
+  - opacity com animação ativa
+  - will-change: transform, opacity
+  - position: fixed
+  - <video>, <canvas>, <iframe>
+  - Elementos que se sobrepõem a uma layer promovida (implicit promotion)
+```
+
+### 8.2 Compositor Thread
+
+O **compositor thread** é separado da **main thread**. Ele pode animar `transform` e `opacity` sem envolver a main thread:
+
+```
+Main Thread:         ──JS──Layout──Paint──────JS──Layout──Paint──
+Compositor Thread:   ──────────Composite──────────────Composite──
+
+Animação com transform/opacity:
+Main Thread:         ──JS────────────────────JS──────────────────
+Compositor Thread:   ──Anim──Anim──Anim──Anim──Anim──Anim──Anim─
+                     (60fps suave, sem depender da main thread)
+```
+
+```css
+/* LENTO — causa Layout + Paint + Composite a cada frame */
+.box-bad {
+  transition: left 0.3s, top 0.3s, width 0.3s;
+}
+.box-bad:hover {
+  left: 100px;
+  top: 50px;
+  width: 200px;
+}
+
+/* RÁPIDO — só Composite (GPU), main thread livre */
+.box-good {
+  transition: transform 0.3s;
+  will-change: transform;
+}
+.box-good:hover {
+  transform: translate(100px, 50px) scale(1.5);
+}
+```
+
+**Cuidado com `will-change`:** cada layer consome memória de GPU. Usar indiscriminadamente pode causar mais problemas do que resolver.
+
+```css
+/* NÃO faça isso — promove TUDO para GPU */
+* { will-change: transform; }
+
+/* Faça isso — promova só o que realmente precisa */
+.animated-element { will-change: transform; }
+
+/* Ou melhor — ative só quando necessário */
+.card:hover { will-change: transform; }
+.card.animating { transform: scale(1.05); }
+```
+
+---
+
+## 9. Métricas de Performance: Core Web Vitals
+
+As Core Web Vitals medem a experiência real do usuário. Cada métrica é afetada por partes específicas do rendering pipeline:
+
+### 9.1 LCP (Largest Contentful Paint)
+
+Mede quando o **maior elemento visível** (imagem, bloco de texto, vídeo) termina de renderizar.
+
+```
+Afetado por:
+  ├─ TTFB lento (DNS + TCP + TLS + server response time)
+  ├─ CSS render-blocking (atrasa toda renderização)
+  ├─ JS parser-blocking (atrasa construção do DOM)
+  ├─ Imagem do hero carregando tarde (não priorizada)
+  └─ Web fonts bloqueando texto (FOIT)
+
+Otimizações:
+  ├─ preconnect/preload para recursos críticos
+  ├─ Inline critical CSS (acima de ~14KB no primeiro RTT)
+  ├─ fetchpriority="high" na imagem hero
+  ├─ Servir imagens em formato moderno (WebP/AVIF)
+  └─ Font-display: swap (mostra texto imediatamente)
+```
+
+```html
+<!-- Prioridade alta para a imagem hero -->
+<img src="hero.webp" fetchpriority="high" alt="Hero image"
+     width="1200" height="600" decoding="async">
+
+<!-- Preload do font crítico -->
+<link rel="preload" href="/fonts/inter-var.woff2"
+      as="font" type="font/woff2" crossorigin>
+```
+
+### 9.2 CLS (Cumulative Layout Shift)
+
+Mede a soma de **layout shifts inesperados** durante toda a vida da página.
+
+```
+Layout shift score = impact fraction × distance fraction
+
+Causas comuns:
+  ├─ Imagens sem width/height (espaço não reservado)
+  ├─ Ads/embeds sem dimensões definidas
+  ├─ Fontes web causando reflow ao carregar (FOUT)
+  ├─ Conteúdo injetado dinamicamente acima do viewport
+  └─ Animações usando top/left ao invés de transform
+```
+
+```html
+<!-- SEMPRE defina dimensões em imagens -->
+<img src="photo.jpg" width="800" height="600" alt="...">
+
+<!-- Ou use aspect-ratio no CSS -->
+<style>
+  .img-container {
+    aspect-ratio: 16 / 9;
+    width: 100%;
+  }
+</style>
+```
+
+### 9.3 INP (Interaction to Next Paint)
+
+Substitui o FID. Mede a latência **de todas as interações** durante a sessão, reportando o pior caso (p98).
+
+```
+INP = tempo entre o input do usuário e o próximo frame pintado
+
+Input delay   → tempo esperando na fila (main thread ocupada com JS)
+Processing    → tempo executando o event handler
+Presentation  → tempo para layout + paint + composite do resultado
+
+Otimizações:
+  ├─ Quebrar long tasks (> 50ms) com yield: scheduler.yield()
+  ├─ Usar requestIdleCallback para trabalho não urgente
+  ├─ Mover computação pesada para Web Workers
+  ├─ Debounce/throttle em handlers de input/scroll
+  └─ Evitar layout thrashing em event handlers
+```
+
+```javascript
+// Quebrando long tasks para melhorar INP
+async function processLargeList(items) {
+  const CHUNK_SIZE = 50;
+  for (let i = 0; i < items.length; i += CHUNK_SIZE) {
+    const chunk = items.slice(i, i + CHUNK_SIZE);
+    processChunk(chunk);
+
+    // Yield para o browser processar interações pendentes
+    if (navigator.scheduling?.isInputPending()) {
+      await scheduler.yield();
+    }
+  }
+}
+
+// Alternativa com requestIdleCallback para trabalho não urgente
+requestIdleCallback((deadline) => {
+  while (deadline.timeRemaining() > 0 && tasks.length > 0) {
+    performTask(tasks.shift());
+  }
+  if (tasks.length > 0) {
+    requestIdleCallback(processTasks);
+  }
+});
+```
+
+---
+
+## 10. Memória: Garbage Collection e Memory Leaks
+
+### 10.1 Garbage Collection no V8
+
+O V8 (Chrome/Node) usa **generational garbage collection**:
+
+```
+┌─────────────────────────────────────────────────┐
+│                    HEAP                          │
+│                                                  │
+│  ┌──────────────┐    ┌────────────────────────┐ │
+│  │  Young Gen   │    │      Old Gen           │ │
+│  │  (Nursery)   │    │                        │ │
+│  │              │    │  Objetos que            │ │
+│  │  Objetos     │    │  sobreviveram          │ │
+│  │  recém-      │    │  múltiplos GCs         │ │
+│  │  criados     │    │                        │ │
+│  │              │    │  Coletado por:          │ │
+│  │  Coletado    │    │  Mark-Sweep-Compact    │ │
+│  │  por:        │    │  (mais lento, mas      │ │
+│  │  Scavenge    │    │   menos frequente)     │ │
+│  │  (rápido,    │    │                        │ │
+│  │   frequente) │    │  Incremental marking   │ │
+│  └──────────────┘    │  para reduzir pausas   │ │
+│                      └────────────────────────┘ │
+└─────────────────────────────────────────────────┘
+```
+
+- **Scavenge (Young Gen):** cópia de objetos vivos para outro semi-space. Muito rápido (1-2ms), pois a maioria dos objetos morre jovem.
+- **Mark-Sweep-Compact (Old Gen):** marca objetos alcançáveis, varre os não marcados, compacta a memória. Pausas maiores (10-50ms), mas incremental marking reduz o impacto.
+
+### 10.2 Memory Leaks Comuns em SPAs
+
+```javascript
+// LEAK 1: Event listeners não removidos
+class Component {
+  mount() {
+    // Cada mount adiciona um listener, mas nunca remove
+    window.addEventListener('resize', this.handleResize);
+  }
+  // CORREÇÃO: remover no cleanup
+  unmount() {
+    window.removeEventListener('resize', this.handleResize);
+  }
+}
+
+// LEAK 2: Closures mantendo referências grandes
+function createHandler() {
+  const hugeData = new Array(1_000_000).fill('x');
+  return function handler() {
+    // Mesmo que handler() não use hugeData,
+    // a closure PODE manter referência (depende do engine)
+    console.log('clicked');
+  };
+  // CORREÇÃO: anular a referência ou reestruturar o código
+}
+
+// LEAK 3: Timers/intervals esquecidos
+function startPolling() {
+  setInterval(() => {
+    fetch('/api/data').then(res => res.json()).then(updateUI);
+  }, 5000);
+  // CORREÇÃO: guardar o ID e limpar
+  // const id = setInterval(...);
+  // clearInterval(id) no cleanup;
+}
+
+// LEAK 4: Referências a elementos DOM removidos
+const cache = new Map();
+function cacheElement(id) {
+  const el = document.getElementById(id);
+  cache.set(id, el); // Elemento removido do DOM mas não do Map
+  // CORREÇÃO: usar WeakRef ou WeakMap
+  // const cache = new WeakMap();
+}
+
+// LEAK 5: AbortController esquecido em fetch
+useEffect(() => {
+  const controller = new AbortController();
+  fetch('/api/data', { signal: controller.signal })
+    .then(res => res.json())
+    .then(setData);
+  return () => controller.abort(); // ESSENCIAL
+}, []);
+```
+
+**Diagnosticando memory leaks:**
+
+```
+Chrome DevTools → Memory tab:
+1. Heap Snapshot: tire um snapshot, force GC, tire outro
+   → Compare para encontrar objetos que não foram coletados
+2. Allocation Timeline: mostra alocações ao longo do tempo
+   → Barras azuis que nunca diminuem = leak
+3. Performance Monitor: observe JS Heap Size em tempo real
+   → Crescimento contínuo = leak provável
+```
+
+---
+
+## Resumo do Pipeline Completo
+
+```
+URL digitada
+    │
+    ▼
+Browser Process: Navegação
+    ├── DNS Lookup (~20-120ms)
+    ├── TCP Handshake (~1 RTT)
+    ├── TLS Handshake (~1-2 RTT)
+    └── HTTP Request/Response
+    │
+    ▼
+Renderer Process: Parsing
+    ├── HTML Tokenizer → Tokens
+    ├── Tree Constructor → DOM Tree
+    ├── Preload Scanner (paralelo)
+    └── CSS Parser → CSSOM Tree
+    │
+    ▼
+Renderer Process: Rendering
+    ├── Render Tree (DOM + CSSOM)
+    ├── Layout (geometria)
+    ├── Paint (instruções de pintura)
+    └── Layer Tree
+    │
+    ▼
+GPU Process + Compositor Thread
+    └── Compositing → Pixels na tela
+```
+
+A chave para performance é entender **qual parte do pipeline** cada mudança afeta, e minimizar o trabalho nas etapas mais caras (layout e paint), favorecendo propriedades que só precisam de compositing.

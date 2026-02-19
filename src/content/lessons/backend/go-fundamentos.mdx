@@ -1,0 +1,1372 @@
+---
+title: "Go — Fundamentos e Boas Práticas"
+description: "Sintaxe, tipos, goroutines, channels, interfaces, error handling, módulos, toolchain e os idiomas que fazem Go a linguagem preferida para sistemas de alta performance"
+track: "backend"
+order: 6
+section: "Go"
+priority: "high"
+tags: ["go", "golang", "goroutines", "channels", "concorrência", "interfaces", "boas-práticas"]
+prerequisites: []
+keyTakeaways:
+  - "Go foi criada no Google por Rob Pike, Ken Thompson e Robert Griesemer para resolver problemas de compilação lenta, complexidade de C++ e concorrência difícil"
+  - "Goroutines são green threads multiplexadas sobre OS threads pelo Go scheduler (M:N threading) — criar milhões é viável e idiomático"
+  - "Channels são a primitiva de comunicação entre goroutines: 'Don't communicate by sharing memory; share memory by communicating'"
+  - "Interfaces em Go são implícitas (structural typing) — se um tipo implementa os métodos, ele satisfaz a interface, sem declaração explícita"
+  - "Error handling em Go é explícito com 'if err != nil' — não há exceptions, forçando tratamento no ponto onde o erro ocorre"
+---
+
+## Por que Go
+
+Go (ou Golang) nasceu em 2007 dentro do Google, criada por Rob Pike, Ken Thompson e Robert Griesemer. Os três tinham décadas de experiência em sistemas operacionais (Unix, Plan 9, Inferno) e linguagens de programação (UTF-8, Limbo, Java HotSpot). A motivação era direta: **o C++ usado internamente no Google compilava lentamente, era desnecessariamente complexo e tornava a concorrência extremamente difícil**. A primeira versão pública (Go 1.0) saiu em 2012, com a promessa de compatibilidade backward que se mantém até hoje.
+
+A filosofia de design pode ser resumida em três princípios:
+
+1. **Simplicidade radical** — poucas keywords (25), sem herança, sem generics até 1.18, sem operator overloading, sem implicit conversions
+2. **Concorrência como cidadã de primeira classe** — goroutines e channels fazem parte da sintaxe, não são bibliotecas externas
+3. **Toolchain integrada** — formatação, testes, profiling, build, vetting — tudo vem com a linguagem
+
+### Onde Go domina
+
+Go é a linguagem de facto para infraestrutura moderna. A lista de projetos escritos em Go fala por si:
+
+```
+Docker          — containerização
+Kubernetes      — orquestração de containers
+Prometheus      — monitoramento e alertas
+Terraform       — infrastructure as code
+etcd            — key-value store distribuído
+CockroachDB     — banco de dados SQL distribuído
+Caddy           — web server com HTTPS automático
+Hugo            — gerador de sites estáticos
+```
+
+Os domínios onde Go brilha: **microserviços**, **CLIs**, **proxies e load balancers**, **ferramentas de infraestrutura**, **sistemas distribuídos**, **APIs de alta performance**. A combinação de compilação rápida, binário estático sem dependências, baixo consumo de memória e modelo de concorrência eficiente torna Go ideal para esses cenários.
+
+### Compilação e Deploy
+
+Go compila para um **binário estático nativo** — sem VM, sem runtime pesado, sem dependências externas. O tempo de compilação de projetos grandes é medido em segundos, não minutos. Cross-compilation é trivial:
+
+```bash
+# Compilar para Linux a partir de macOS
+GOOS=linux GOARCH=amd64 go build -o myapp ./cmd/server
+
+# Compilar para ARM (Raspberry Pi, AWS Graviton)
+GOOS=linux GOARCH=arm64 go build -o myapp ./cmd/server
+
+# O binário resultante é self-contained — basta copiar e executar
+scp myapp server:/usr/local/bin/
+ssh server 'myapp'
+```
+
+O binário resultante tipicamente tem entre 5-20 MB. Em containers Docker, a imagem final pode usar `scratch` ou `distroless` — sem sistema operacional, sem shell, sem nada além do binário:
+
+```dockerfile
+# Build stage
+FROM golang:1.22-alpine AS builder
+WORKDIR /app
+COPY go.mod go.sum ./
+RUN go mod download
+COPY . .
+RUN CGO_ENABLED=0 go build -ldflags="-s -w" -o /server ./cmd/server
+
+# Final image — ~5MB total
+FROM scratch
+COPY --from=builder /server /server
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+ENTRYPOINT ["/server"]
+```
+
+---
+
+## Sintaxe e Tipos
+
+### Variáveis e Declaração
+
+Go é estaticamente tipada com inferência de tipo. Existem duas formas de declarar variáveis:
+
+```go
+// Declaração explícita com var
+var nome string = "Brewnary"
+var porta int = 8080
+var ativo bool  // zero value: false
+
+// Short declaration com := (apenas dentro de funções)
+nome := "Brewnary"
+porta := 8080
+ativo := true
+
+// Múltiplas variáveis
+var (
+    host    string = "localhost"
+    porta   int    = 8080
+    debug   bool   = false
+)
+
+// Constantes
+const (
+    MaxRetries = 3
+    Timeout    = 30 * time.Second
+)
+
+// iota — enumerações idiomáticas
+type Status int
+
+const (
+    StatusPending  Status = iota // 0
+    StatusActive                 // 1
+    StatusInactive               // 2
+    StatusDeleted                // 3
+)
+```
+
+### Zero Values
+
+Toda variável em Go tem um **zero value** — o valor padrão quando não é inicializada explicitamente. Isto elimina uma classe inteira de bugs de "variável não inicializada":
+
+```
+Tipo            Zero Value
+──────────────  ──────────
+int, float64    0
+string          "" (string vazia)
+bool            false
+pointer         nil
+slice           nil (mas len() == 0, append funciona)
+map             nil (leitura retorna zero value, escrita causa panic)
+channel         nil
+interface       nil
+struct          todos os campos com seus zero values
+```
+
+### Tipos Básicos
+
+```go
+// Inteiros (com e sem sinal)
+var i int       // plataforma-dependente: 32 ou 64 bits
+var i8 int8     // -128 a 127
+var i16 int16   // -32768 a 32767
+var i32 int32   // -2^31 a 2^31 - 1
+var i64 int64   // -2^63 a 2^63 - 1
+var u uint      // 0 a 2^32-1 ou 2^64-1
+var u8 uint8    // 0 a 255 (alias: byte)
+var u32 uint32  // 0 a 2^32 - 1 (alias: rune para Unicode codepoints)
+
+// Ponto flutuante
+var f32 float32
+var f64 float64  // padrão para literais float
+
+// String — imutável, sequência de bytes (geralmente UTF-8)
+var s string = "olá mundo"    // strings são imutáveis
+r := []rune(s)                // converter para slice de runes para manipulação Unicode
+fmt.Println(len(s))           // 10 (bytes, não caracteres — "á" ocupa 2 bytes)
+fmt.Println(utf8.RuneCountInString(s))  // 9 (caracteres Unicode)
+```
+
+### Structs
+
+Structs são o mecanismo principal de composição de dados em Go. Não há classes — Go usa **composição** em vez de herança.
+
+```go
+type Brewery struct {
+    ID        string    `json:"id" db:"id"`
+    Name      string    `json:"name" db:"name"`
+    City      string    `json:"city" db:"city"`
+    State     string    `json:"state" db:"state"`
+    CreatedAt time.Time `json:"created_at" db:"created_at"`
+}
+
+// Inicialização
+b := Brewery{
+    ID:   "b7a3f1e2",
+    Name: "Cervejaria Artesanal",
+    City: "São Paulo",
+}
+
+// Embedding — composição (não herança)
+type Beer struct {
+    ID      string  `json:"id"`
+    Name    string  `json:"name"`
+    ABV     float64 `json:"abv"`
+    IBU     int     `json:"ibu"`
+    Brewery         // embedding — Beer "herda" os campos de Brewery
+}
+
+beer := Beer{
+    ID:   "ipa-001",
+    Name: "West Coast IPA",
+    ABV:  6.8,
+}
+// Campos do embedded struct são acessíveis diretamente
+beer.City = "São Paulo"  // equivale a beer.Brewery.City
+```
+
+### Slices vs Arrays
+
+Arrays em Go têm tamanho fixo e raramente são usados diretamente. Slices são a abstração dinâmica sobre arrays — são referências para uma região de um array subjacente.
+
+```go
+// Array — tamanho fixo, faz parte do tipo
+var arr [5]int             // [0, 0, 0, 0, 0]
+arr2 := [3]string{"a", "b", "c"}
+
+// Slice — tamanho dinâmico, referência para um array
+s := []int{1, 2, 3, 4, 5}
+s2 := make([]int, 0, 100)  // length 0, capacity 100
+
+// Append — pode causar realocação se capacity for insuficiente
+s = append(s, 6, 7, 8)
+
+// Slicing — cria uma nova view sobre o mesmo array subjacente
+sub := s[2:5]  // [3, 4, 5] — compartilha memória com s!
+
+// Cópia segura (sem compartilhamento de memória)
+copia := make([]int, len(sub))
+copy(copia, sub)
+```
+
+```
+Slice internamente:
+
+     slice header
+    ┌──────────────┐
+    │ ptr ──────────┼──► ┌───┬───┬───┬───┬───┬───┬───┬───┐
+    │ len: 5       │    │ 1 │ 2 │ 3 │ 4 │ 5 │   │   │   │
+    │ cap: 8       │    └───┴───┴───┴───┴───┴───┴───┴───┘
+    └──────────────┘     ^                       ^
+                         │                       │
+                         ptr                     ptr + cap
+```
+
+### Maps
+
+```go
+// Declaração e inicialização
+m := map[string]int{
+    "ipa":   65,
+    "stout": 40,
+    "lager": 15,
+}
+
+// Acesso — retorna zero value se a chave não existe
+ibu := m["ipa"]       // 65
+ibu2 := m["pilsner"]  // 0 (zero value de int)
+
+// Verificar existência com o idiom "comma ok"
+ibu, ok := m["pilsner"]
+if !ok {
+    fmt.Println("pilsner não encontrada")
+}
+
+// Deletar
+delete(m, "lager")
+
+// Iterar — ordem NÃO é determinística
+for style, ibu := range m {
+    fmt.Printf("%s: %d IBU\n", style, ibu)
+}
+
+// Map nil vs map vazio
+var nilMap map[string]int    // nil — leitura ok, escrita causa panic
+emptyMap := map[string]int{} // vazio — leitura e escrita ok
+```
+
+### Ponteiros
+
+Ponteiros em Go são **muito mais simples que em C**. Não há aritmética de ponteiros, não há pointer casting unsafe (fora do package `unsafe`). Ponteiros servem para duas coisas: **evitar cópias** e **permitir mutação**.
+
+```go
+func incrementar(n *int) {
+    *n++  // dereference e incrementa
+}
+
+x := 42
+incrementar(&x)  // passa o endereço de x
+fmt.Println(x)   // 43
+
+// Em structs, o "." faz dereference automático
+type Config struct {
+    Port int
+}
+
+cfg := &Config{Port: 8080}
+cfg.Port = 3000  // Go faz (*cfg).Port automaticamente
+```
+
+---
+
+## Funções e Métodos
+
+### Multiple Return Values
+
+Go permite retornar múltiplos valores — o padrão idiomático é retornar `(resultado, error)`:
+
+```go
+func FindBeer(id string) (Beer, error) {
+    if id == "" {
+        return Beer{}, fmt.Errorf("id não pode ser vazio")
+    }
+    // ... busca no banco
+    return beer, nil
+}
+
+// Chamada — sempre verificar o erro
+beer, err := FindBeer("ipa-001")
+if err != nil {
+    log.Fatalf("erro ao buscar cerveja: %v", err)
+}
+```
+
+### Named Returns
+
+```go
+// Named returns — útil para documentar o que cada retorno significa
+func divide(a, b float64) (result float64, err error) {
+    if b == 0 {
+        err = fmt.Errorf("divisão por zero")
+        return  // naked return — retorna result (0.0) e err
+    }
+    result = a / b
+    return
+}
+```
+
+Named returns devem ser usados com moderação. Em funções curtas, melhoram a legibilidade. Em funções longas, naked returns tornam o código mais difícil de acompanhar.
+
+### Métodos (Receiver Functions)
+
+Go não tem classes, mas permite definir **métodos em tipos** usando receivers:
+
+```go
+type Brewery struct {
+    Name  string
+    Beers []Beer
+}
+
+// Value receiver — recebe uma cópia do struct
+func (b Brewery) BeerCount() int {
+    return len(b.Beers)
+}
+
+// Pointer receiver — recebe um ponteiro, pode modificar o struct
+func (b *Brewery) AddBeer(beer Beer) {
+    b.Beers = append(b.Beers, beer)
+}
+
+brewery := Brewery{Name: "Artesanal"}
+brewery.AddBeer(Beer{Name: "IPA"})
+fmt.Println(brewery.BeerCount())  // 1
+```
+
+**Regra prática**: se um método precisa modificar o receiver **ou** se o struct é grande (evitar cópia), use pointer receiver. Caso contrário, value receiver. **Mantenha consistência**: se um método do tipo usa pointer receiver, todos devem usar.
+
+### Function Types e Higher-Order Functions
+
+```go
+// Funções são valores de primeira classe
+type FilterFunc func(Beer) bool
+
+func FilterBeers(beers []Beer, fn FilterFunc) []Beer {
+    var result []Beer
+    for _, b := range beers {
+        if fn(b) {
+            result = append(result, b)
+        }
+    }
+    return result
+}
+
+// Uso com função anônima (closure)
+ipas := FilterBeers(beers, func(b Beer) bool {
+    return b.IBU > 50
+})
+```
+
+### Defer, Panic e Recover
+
+```go
+// defer — executa na saída da função (LIFO)
+func ReadFile(path string) ([]byte, error) {
+    f, err := os.Open(path)
+    if err != nil {
+        return nil, err
+    }
+    defer f.Close()  // garante que o arquivo será fechado
+
+    return io.ReadAll(f)
+}
+
+// Múltiplos defers executam em ordem LIFO (stack)
+func exemplo() {
+    defer fmt.Println("1")
+    defer fmt.Println("2")
+    defer fmt.Println("3")
+    // Output: 3, 2, 1
+}
+
+// panic — aborta a execução (similar a throw, mas NÃO use para controle de fluxo)
+func MustParseConfig(path string) Config {
+    cfg, err := ParseConfig(path)
+    if err != nil {
+        panic(fmt.Sprintf("configuração inválida: %v", err))
+    }
+    return cfg
+}
+
+// recover — captura um panic (apenas dentro de defer)
+func SafeHandler(w http.ResponseWriter, r *http.Request) {
+    defer func() {
+        if r := recover(); r != nil {
+            log.Printf("panic recuperado: %v\n%s", r, debug.Stack())
+            http.Error(w, "Internal Server Error", 500)
+        }
+    }()
+
+    // ... handler que pode dar panic
+    handleRequest(w, r)
+}
+```
+
+---
+
+## Interfaces
+
+Interfaces em Go são **implícitas** (structural typing, também chamado de duck typing). Um tipo satisfaz uma interface automaticamente se implementa todos os métodos declarados — **não há keyword `implements`**.
+
+```go
+// Definição de interface
+type Storage interface {
+    Save(ctx context.Context, beer Beer) error
+    FindByID(ctx context.Context, id string) (Beer, error)
+    List(ctx context.Context, limit, offset int) ([]Beer, error)
+}
+
+// PostgresStorage implementa Storage — sem declaração explícita
+type PostgresStorage struct {
+    db *sql.DB
+}
+
+func (s *PostgresStorage) Save(ctx context.Context, beer Beer) error {
+    _, err := s.db.ExecContext(ctx,
+        "INSERT INTO beers (id, name, abv) VALUES ($1, $2, $3)",
+        beer.ID, beer.Name, beer.ABV,
+    )
+    return err
+}
+
+func (s *PostgresStorage) FindByID(ctx context.Context, id string) (Beer, error) {
+    var beer Beer
+    err := s.db.QueryRowContext(ctx,
+        "SELECT id, name, abv FROM beers WHERE id = $1", id,
+    ).Scan(&beer.ID, &beer.Name, &beer.ABV)
+    return beer, err
+}
+
+func (s *PostgresStorage) List(ctx context.Context, limit, offset int) ([]Beer, error) {
+    // ...implementação
+    return nil, nil
+}
+
+// O service recebe a interface, não a implementação concreta
+type BeerService struct {
+    storage Storage  // qualquer tipo que satisfaça Storage
+}
+
+func NewBeerService(s Storage) *BeerService {
+    return &BeerService{storage: s}
+}
+```
+
+### Empty Interface e any
+
+Antes de Go 1.18, `interface{}` representava "qualquer tipo". Agora existe o alias `any`:
+
+```go
+// any é equivalente a interface{}
+func PrintAnything(v any) {
+    fmt.Printf("tipo: %T, valor: %v\n", v, v)
+}
+
+PrintAnything(42)
+PrintAnything("texto")
+PrintAnything(Beer{Name: "IPA"})
+```
+
+### Type Assertions e Type Switches
+
+```go
+// Type assertion — extrair o tipo concreto de uma interface
+var s Storage = &PostgresStorage{db: db}
+pg, ok := s.(*PostgresStorage)
+if ok {
+    // pg é do tipo *PostgresStorage
+    pg.db.Ping()
+}
+
+// Type switch — pattern matching por tipo
+func describeError(err error) string {
+    switch e := err.(type) {
+    case *NotFoundError:
+        return fmt.Sprintf("recurso %s não encontrado", e.ID)
+    case *ValidationError:
+        return fmt.Sprintf("validação falhou: %s", e.Field)
+    case *net.OpError:
+        return fmt.Sprintf("erro de rede: %v", e)
+    default:
+        return err.Error()
+    }
+}
+```
+
+### Interfaces Comuns da Standard Library
+
+As interfaces mais importantes de Go vivem na standard library e são intencionalmente pequenas:
+
+```go
+// io.Reader — qualquer coisa que pode ser lida
+type Reader interface {
+    Read(p []byte) (n int, err error)
+}
+
+// io.Writer — qualquer coisa que pode ser escrita
+type Writer interface {
+    Write(p []byte) (n int, err error)
+}
+
+// io.Closer — qualquer coisa que pode ser fechada
+type Closer interface {
+    Close() error
+}
+
+// error — a interface mais usada de Go
+type error interface {
+    Error() string
+}
+
+// fmt.Stringer — equivalente ao toString()
+type Stringer interface {
+    String() string
+}
+
+// sort.Interface — para ordenação customizada
+type Interface interface {
+    Len() int
+    Less(i, j int) bool
+    Swap(i, j int)
+}
+
+// http.Handler — handler HTTP
+type Handler interface {
+    ServeHTTP(ResponseWriter, *Request)
+}
+```
+
+O princípio de design por trás dessas interfaces: **interfaces devem ser pequenas**. Uma interface com 1-3 métodos é composável; uma interface com 10 métodos é um contrato rígido. Go incentiva composição de interfaces pequenas:
+
+```go
+// Composição de interfaces
+type ReadWriter interface {
+    io.Reader
+    io.Writer
+}
+
+type ReadWriteCloser interface {
+    io.Reader
+    io.Writer
+    io.Closer
+}
+```
+
+**Regra de ouro**: defina interfaces onde elas são **consumidas**, não onde são implementadas. Em Java, a interface vive junto da implementação. Em Go, o consumidor define a interface que precisa — isso é possível porque a satisfação é implícita.
+
+---
+
+## Concorrência
+
+### Goroutines
+
+Goroutines são **green threads** — funções que executam concorrentemente, multiplexadas sobre um número menor de OS threads pelo Go scheduler (modelo M:N). Uma goroutine começa com ~2KB de stack (cresce dinamicamente), versus ~1MB para uma OS thread. Criar milhões de goroutines é viável.
+
+```go
+// Iniciar uma goroutine — prefixo "go"
+go processOrder(order)
+
+// Goroutine com função anônima
+go func() {
+    result := heavyComputation()
+    fmt.Println(result)
+}()
+```
+
+```
+Go Scheduler — Modelo GMP:
+
+    G = Goroutine
+    M = Machine (OS thread)
+    P = Processor (contexto de execução lógico, GOMAXPROCS)
+
+    ┌──────────────────────────────────────────────────┐
+    │                  Go Runtime Scheduler             │
+    │                                                   │
+    │  ┌─────────────────────────────────────────────┐  │
+    │  │           Global Run Queue                  │  │
+    │  │  [G7] [G8] [G9] ...                         │  │
+    │  └─────────────────────────────────────────────┘  │
+    │                                                   │
+    │  P0                    P1                         │
+    │  ┌────────────────┐   ┌────────────────┐          │
+    │  │ Local Queue    │   │ Local Queue    │          │
+    │  │ [G1] [G2] [G3] │   │ [G4] [G5] [G6] │          │
+    │  │                │   │                │          │
+    │  │  Running: G0   │   │  Running: G10  │          │
+    │  │       │        │   │       │        │          │
+    │  │       ▼        │   │       ▼        │          │
+    │  │      M0        │   │      M1        │          │
+    │  │  (OS thread)   │   │  (OS thread)   │          │
+    │  └────────────────┘   └────────────────┘          │
+    │                                                   │
+    │  Quando P0 fica sem goroutines, faz              │
+    │  "work stealing" da queue de P1                  │
+    └──────────────────────────────────────────────────┘
+```
+
+### Channels
+
+Channels são a primitiva de comunicação entre goroutines. O mantra de Go: **"Don't communicate by sharing memory; share memory by communicating."**
+
+```go
+// Channel unbuffered — bloqueante (sender espera receiver e vice-versa)
+ch := make(chan string)
+
+go func() {
+    ch <- "resultado"  // bloqueia até alguém ler
+}()
+
+msg := <-ch  // bloqueia até alguém escrever
+fmt.Println(msg)  // "resultado"
+
+// Channel buffered — não bloqueia enquanto houver espaço no buffer
+ch := make(chan int, 100)
+ch <- 42  // não bloqueia (buffer tem espaço)
+
+// Channel direcional (restrição em assinatura de função)
+func producer(out chan<- int) {  // só pode enviar
+    out <- 42
+}
+
+func consumer(in <-chan int) {  // só pode receber
+    val := <-in
+    fmt.Println(val)
+}
+
+// Fechar um channel — sinaliza que não haverá mais valores
+close(ch)
+
+// Range sobre channel — itera até o channel ser fechado
+for val := range ch {
+    fmt.Println(val)
+}
+```
+
+### Select
+
+`select` é como um `switch` para operações de channel — espera por múltiplos channels simultaneamente:
+
+```go
+func worker(ctx context.Context, jobs <-chan Job, results chan<- Result) {
+    for {
+        select {
+        case job := <-jobs:
+            result := process(job)
+            results <- result
+
+        case <-ctx.Done():
+            fmt.Println("cancelado:", ctx.Err())
+            return
+
+        case <-time.After(30 * time.Second):
+            fmt.Println("timeout: nenhum job em 30s")
+            return
+        }
+    }
+}
+```
+
+### WaitGroup e Mutex
+
+```go
+// WaitGroup — esperar N goroutines terminarem
+func processOrders(orders []Order) []Result {
+    var wg sync.WaitGroup
+    results := make([]Result, len(orders))
+
+    for i, order := range orders {
+        wg.Add(1)
+        go func(i int, o Order) {
+            defer wg.Done()
+            results[i] = processOrder(o)
+        }(i, order)
+    }
+
+    wg.Wait()  // bloqueia até todas as goroutines chamarem Done()
+    return results
+}
+
+// Mutex — proteger acesso concorrente a dados compartilhados
+type SafeCounter struct {
+    mu    sync.RWMutex
+    count map[string]int
+}
+
+func (c *SafeCounter) Increment(key string) {
+    c.mu.Lock()         // lock exclusivo para escrita
+    defer c.mu.Unlock()
+    c.count[key]++
+}
+
+func (c *SafeCounter) Get(key string) int {
+    c.mu.RLock()         // lock compartilhado para leitura
+    defer c.mu.RUnlock()
+    return c.count[key]
+}
+```
+
+### context.Context
+
+`context.Context` é o mecanismo padrão para propagação de cancelamento, deadlines e valores request-scoped:
+
+```go
+// Criar context com timeout
+ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+defer cancel()  // SEMPRE chamar cancel para liberar recursos
+
+// Passar context para funções downstream
+beer, err := service.FindBeer(ctx, "ipa-001")
+if err != nil {
+    if errors.Is(err, context.DeadlineExceeded) {
+        // timeout de 5 segundos atingido
+    }
+    return err
+}
+
+// Verificar cancelamento em loops longos
+func processItems(ctx context.Context, items []Item) error {
+    for _, item := range items {
+        select {
+        case <-ctx.Done():
+            return ctx.Err()
+        default:
+            if err := process(item); err != nil {
+                return err
+            }
+        }
+    }
+    return nil
+}
+```
+
+**Regra**: `context.Context` deve ser o **primeiro parâmetro** de qualquer função que faz I/O ou pode ser cancelada. Nunca armazene Context em structs.
+
+### Padrões Comuns de Concorrência
+
+#### Fan-Out / Fan-In
+
+```go
+// Fan-out: distribuir trabalho entre N workers
+// Fan-in:  coletar resultados de N workers em um único channel
+func fanOutFanIn(ctx context.Context, urls []string) []Result {
+    numWorkers := 10
+    jobs := make(chan string, len(urls))
+    results := make(chan Result, len(urls))
+
+    // Fan-out: iniciar workers
+    var wg sync.WaitGroup
+    for i := 0; i < numWorkers; i++ {
+        wg.Add(1)
+        go func() {
+            defer wg.Done()
+            for url := range jobs {
+                res := fetch(ctx, url)
+                results <- res
+            }
+        }()
+    }
+
+    // Enviar jobs
+    for _, url := range urls {
+        jobs <- url
+    }
+    close(jobs)
+
+    // Fan-in: coletar resultados
+    go func() {
+        wg.Wait()
+        close(results)
+    }()
+
+    var collected []Result
+    for res := range results {
+        collected = append(collected, res)
+    }
+    return collected
+}
+```
+
+#### Worker Pool
+
+```go
+func workerPool(ctx context.Context, numWorkers int) (chan<- Job, <-chan Result) {
+    jobs := make(chan Job, 100)
+    results := make(chan Result, 100)
+
+    for i := 0; i < numWorkers; i++ {
+        go func(id int) {
+            for job := range jobs {
+                select {
+                case <-ctx.Done():
+                    return
+                default:
+                    result := processJob(job)
+                    results <- result
+                }
+            }
+        }(i)
+    }
+
+    return jobs, results
+}
+```
+
+#### Pipeline
+
+```go
+// Cada estágio lê de um channel e escreve em outro
+func generate(nums ...int) <-chan int {
+    out := make(chan int)
+    go func() {
+        for _, n := range nums {
+            out <- n
+        }
+        close(out)
+    }()
+    return out
+}
+
+func square(in <-chan int) <-chan int {
+    out := make(chan int)
+    go func() {
+        for n := range in {
+            out <- n * n
+        }
+        close(out)
+    }()
+    return out
+}
+
+func filter(in <-chan int, predicate func(int) bool) <-chan int {
+    out := make(chan int)
+    go func() {
+        for n := range in {
+            if predicate(n) {
+                out <- n
+            }
+        }
+        close(out)
+    }()
+    return out
+}
+
+// Uso: pipeline composável
+nums := generate(1, 2, 3, 4, 5, 6, 7, 8, 9, 10)
+squared := square(nums)
+even := filter(squared, func(n int) bool { return n%2 == 0 })
+
+for v := range even {
+    fmt.Println(v)  // 4, 16, 36, 64, 100
+}
+```
+
+---
+
+## Error Handling
+
+Go trata erros como **valores**, não como exceptions. O padrão é explícito e repetitivo por design — o compilador (e a cultura) forçam que cada erro seja tratado no ponto onde ocorre.
+
+### Criando Erros
+
+```go
+// errors.New — erro simples
+var ErrNotFound = errors.New("recurso não encontrado")
+var ErrUnauthorized = errors.New("não autorizado")
+
+// fmt.Errorf — erro com contexto formatado
+func FindBeer(id string) (Beer, error) {
+    beer, err := db.Query("SELECT ... WHERE id = $1", id)
+    if err != nil {
+        return Beer{}, fmt.Errorf("FindBeer(%s): %w", id, err)
+        //                                          ^^ %w wraps o erro original
+    }
+    return beer, nil
+}
+```
+
+### Wrapping e Unwrapping com %w
+
+O verbo `%w` em `fmt.Errorf` cria uma cadeia de erros. Isso permite adicionar contexto sem perder o erro original:
+
+```go
+// Cadeia de erros
+func (s *BeerService) GetBeer(ctx context.Context, id string) (Beer, error) {
+    beer, err := s.storage.FindByID(ctx, id)
+    if err != nil {
+        return Beer{}, fmt.Errorf("BeerService.GetBeer: %w", err)
+    }
+    return beer, nil
+}
+
+// A mensagem completa fica:
+// "BeerService.GetBeer: FindByID: sql: no rows in result set"
+
+// errors.Is — verifica se algum erro na cadeia é igual ao target
+if errors.Is(err, sql.ErrNoRows) {
+    // retornar 404
+}
+
+// errors.As — extrai um tipo específico de erro da cadeia
+var pgErr *pgconn.PgError
+if errors.As(err, &pgErr) {
+    if pgErr.Code == "23505" {
+        // violação de unique constraint
+    }
+}
+```
+
+### Custom Error Types
+
+```go
+type NotFoundError struct {
+    Resource string
+    ID       string
+}
+
+func (e *NotFoundError) Error() string {
+    return fmt.Sprintf("%s com id %s não encontrado", e.Resource, e.ID)
+}
+
+type ValidationError struct {
+    Field   string
+    Message string
+}
+
+func (e *ValidationError) Error() string {
+    return fmt.Sprintf("validação falhou no campo %s: %s", e.Field, e.Message)
+}
+
+// Uso
+func (s *BeerService) CreateBeer(ctx context.Context, beer Beer) error {
+    if beer.Name == "" {
+        return &ValidationError{Field: "name", Message: "obrigatório"}
+    }
+    if beer.ABV < 0 || beer.ABV > 100 {
+        return &ValidationError{Field: "abv", Message: "deve ser entre 0 e 100"}
+    }
+    return s.storage.Save(ctx, beer)
+}
+
+// No handler HTTP — type switch para mapear erro ao status code
+func handleError(w http.ResponseWriter, err error) {
+    var notFound *NotFoundError
+    var validation *ValidationError
+
+    switch {
+    case errors.As(err, &notFound):
+        http.Error(w, notFound.Error(), http.StatusNotFound)
+    case errors.As(err, &validation):
+        http.Error(w, validation.Error(), http.StatusUnprocessableEntity)
+    default:
+        http.Error(w, "erro interno", http.StatusInternalServerError)
+    }
+}
+```
+
+### Sentinel Errors
+
+Sentinel errors são variáveis de erro pré-definidas, exportadas como constantes no nível do package:
+
+```go
+// No package
+var (
+    ErrNotFound      = errors.New("not found")
+    ErrAlreadyExists = errors.New("already exists")
+    ErrForbidden     = errors.New("forbidden")
+)
+
+// No consumidor
+if errors.Is(err, storage.ErrNotFound) {
+    // ...
+}
+```
+
+### Quando usar panic
+
+Panic deve ser usado em situações onde **o programa não pode continuar de forma segura**:
+
+```go
+// OK: inicialização que DEVE funcionar
+func MustCompileRegex(pattern string) *regexp.Regexp {
+    re, err := regexp.Compile(pattern)
+    if err != nil {
+        panic(fmt.Sprintf("regex inválido: %s: %v", pattern, err))
+    }
+    return re
+}
+
+var emailRegex = MustCompileRegex(`^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$`)
+
+// OK: bug no programa (invariant violation)
+func getUser(users []User, index int) User {
+    if index < 0 || index >= len(users) {
+        panic("BUG: índice fora do range — isso não deveria acontecer")
+    }
+    return users[index]
+}
+
+// ERRADO: nunca use panic para erros esperados
+func FindUser(id string) User {
+    user, err := db.FindUser(id)
+    if err != nil {
+        panic(err)  // NÃO! Retorne o erro.
+    }
+    return user
+}
+```
+
+---
+
+## Módulos e Toolchain
+
+### Go Modules
+
+Desde Go 1.11 (estável em 1.13), Go usa **modules** como sistema de gerenciamento de dependências. Um module é definido por um arquivo `go.mod` na raiz do projeto:
+
+```bash
+# Inicializar um novo module
+go mod init github.com/brewnary/api
+
+# Adicionar dependência (basta importar e rodar)
+go mod tidy   # baixa dependências, remove não usadas
+
+# Atualizar dependências
+go get -u ./...                     # todas as dependências
+go get github.com/gin-gonic/gin@latest  # uma específica
+```
+
+```
+go.mod:
+
+module github.com/brewnary/api
+
+go 1.22
+
+require (
+    github.com/gin-gonic/gin v1.9.1
+    github.com/jmoiron/sqlx v1.3.5
+    github.com/lib/pq v1.10.9
+    go.uber.org/zap v1.27.0
+)
+```
+
+O `go.sum` contém checksums criptográficos de todas as dependências — garante integridade e reprodutibilidade. **Sempre commite `go.sum` no repositório.**
+
+### Toolchain Integrada
+
+```bash
+# Compilar e executar
+go build ./cmd/server          # compila binário
+go run ./cmd/server            # compila e executa em um passo
+go install ./cmd/server        # compila e instala em $GOPATH/bin
+
+# Testes
+go test ./...                  # rodar todos os testes
+go test -v ./pkg/beer/...     # verbose, package específico
+go test -race ./...            # detector de race conditions
+go test -cover ./...           # cobertura de testes
+go test -bench=. ./...         # benchmarks
+go test -count=1 ./...         # desabilitar cache de testes
+
+# Qualidade de código
+go fmt ./...                   # formatar código (estilo único, sem discussão)
+go vet ./...                   # análise estática (erros comuns)
+go mod tidy                    # limpar dependências
+go generate ./...              # rodar geradores de código
+
+# Profiling
+go test -cpuprofile=cpu.prof -memprofile=mem.prof ./...
+go tool pprof cpu.prof
+```
+
+### Estrutura de Projeto Convencional
+
+Go não tem uma estrutura obrigatória, mas a comunidade convergiu para convenções:
+
+```
+project/
+├── cmd/
+│   ├── server/          # entrypoint do servidor HTTP
+│   │   └── main.go
+│   └── worker/          # entrypoint do worker de filas
+│       └── main.go
+├── internal/            # código privado (Go impede import externo)
+│   ├── beer/
+│   │   ├── handler.go   # HTTP handlers
+│   │   ├── service.go   # lógica de negócio
+│   │   ├── storage.go   # interface + implementação de persistência
+│   │   └── model.go     # structs do domínio
+│   ├── middleware/
+│   │   ├── auth.go
+│   │   └── logging.go
+│   └── config/
+│       └── config.go
+├── pkg/                 # código que pode ser importado por projetos externos
+│   └── pagination/
+│       └── cursor.go
+├── migrations/
+│   ├── 001_create_beers.up.sql
+│   └── 001_create_beers.down.sql
+├── go.mod
+├── go.sum
+├── Makefile
+└── Dockerfile
+```
+
+O diretório `internal/` tem semântica especial: **o compilador Go proíbe que qualquer package externo importe código dentro de `internal/`**. Isso garante encapsulamento no nível do module.
+
+---
+
+## Boas Práticas e Idiomas
+
+### Accept Interfaces, Return Structs
+
+Este é um dos idiomas mais importantes de Go. Funções devem **aceitar interfaces** (flexibilidade para o caller) e **retornar tipos concretos** (informação completa para o caller):
+
+```go
+// BOM: aceita interface, retorna struct
+func NewBeerService(storage Storage, logger *zap.Logger) *BeerService {
+    return &BeerService{
+        storage: storage,
+        logger:  logger,
+    }
+}
+
+// RUIM: retorna interface (esconde informação desnecessariamente)
+func NewBeerService(storage Storage) Storage {
+    return &PostgresStorage{...}
+}
+```
+
+### Table-Driven Tests
+
+O padrão idiomático para testes em Go é table-driven — define uma tabela de casos e itera sobre eles:
+
+```go
+func TestFindBeer(t *testing.T) {
+    tests := []struct {
+        name    string
+        id      string
+        want    Beer
+        wantErr error
+    }{
+        {
+            name:    "encontra cerveja existente",
+            id:      "ipa-001",
+            want:    Beer{ID: "ipa-001", Name: "West Coast IPA", ABV: 6.8},
+            wantErr: nil,
+        },
+        {
+            name:    "retorna erro para id vazio",
+            id:      "",
+            want:    Beer{},
+            wantErr: ErrInvalidID,
+        },
+        {
+            name:    "retorna not found para id inexistente",
+            id:      "nao-existe",
+            want:    Beer{},
+            wantErr: ErrNotFound,
+        },
+    }
+
+    for _, tt := range tests {
+        t.Run(tt.name, func(t *testing.T) {
+            svc := NewBeerService(newMockStorage())
+            got, err := svc.FindBeer(context.Background(), tt.id)
+
+            if !errors.Is(err, tt.wantErr) {
+                t.Errorf("FindBeer(%q) error = %v, wantErr %v", tt.id, err, tt.wantErr)
+                return
+            }
+            if got != tt.want {
+                t.Errorf("FindBeer(%q) = %v, want %v", tt.id, got, tt.want)
+            }
+        })
+    }
+}
+```
+
+### Dependency Injection sem Framework
+
+Go favorece DI explícita via construtores — sem containers, sem reflexão, sem magia:
+
+```go
+func main() {
+    // Configuração
+    cfg := config.Load()
+
+    // Dependências (wire manual)
+    db, err := sql.Open("postgres", cfg.DatabaseURL)
+    if err != nil {
+        log.Fatal(err)
+    }
+    defer db.Close()
+
+    logger, _ := zap.NewProduction()
+    defer logger.Sync()
+
+    // Storage -> Service -> Handler
+    storage := beer.NewPostgresStorage(db)
+    service := beer.NewBeerService(storage, logger)
+    handler := beer.NewHandler(service, logger)
+
+    // Router
+    mux := http.NewServeMux()
+    mux.HandleFunc("GET /api/beers", handler.List)
+    mux.HandleFunc("GET /api/beers/{id}", handler.GetByID)
+    mux.HandleFunc("POST /api/beers", handler.Create)
+
+    // Server
+    srv := &http.Server{
+        Addr:         ":" + cfg.Port,
+        Handler:      middleware.Chain(mux, middleware.Logger(logger), middleware.Recovery()),
+        ReadTimeout:  10 * time.Second,
+        WriteTimeout: 10 * time.Second,
+        IdleTimeout:  120 * time.Second,
+    }
+
+    log.Printf("servidor iniciado em :%s", cfg.Port)
+    log.Fatal(srv.ListenAndServe())
+}
+```
+
+Para projetos grandes, o Google Wire (compile-time DI) gera o wiring automaticamente a partir de providers.
+
+### Standard Library First
+
+A standard library de Go e extremamente completa. Antes de adicionar uma dependência externa, verifique se a stdlib resolve:
+
+```
+Necessidade               stdlib                 Lib externa (quando justifica)
+────────────────────────  ─────────────────────  ─────────────────────────────
+HTTP server               net/http               gin, fiber, chi (routing complexo)
+JSON                      encoding/json          json-iterator, sonic (performance)
+Logging                   log/slog (Go 1.21+)    zap, zerolog (alta performance)
+SQL                       database/sql           sqlx (scan para structs)
+Templates                 html/template          —
+Testes                    testing                testify (assertions), gomock
+Crypto                    crypto/*               —
+HTTP client               net/http               resty (conveniência)
+Context                   context                —
+Sync primitives           sync                   —
+```
+
+### Bibliotecas do Ecossistema
+
+Quando a stdlib não é suficiente, estas são as escolhas consolidadas:
+
+```go
+// HTTP Frameworks
+import "github.com/gin-gonic/gin"      // mais popular, middleware rico
+import "github.com/gofiber/fiber/v2"    // inspirado no Express, alta performance
+import "github.com/go-chi/chi/v5"      // compatível com net/http, composável
+
+// Banco de Dados
+import "github.com/jmoiron/sqlx"       // extensão do database/sql com scan automático
+import "github.com/jackc/pgx/v5"       // driver PostgreSQL nativo (sem database/sql)
+import "gorm.io/gorm"                  // ORM (use com cautela — prefira SQL explícito)
+
+// Logging
+import "go.uber.org/zap"               // structured logging de alta performance
+import "github.com/rs/zerolog"         // zero-allocation JSON logger
+
+// Configuração
+import "github.com/spf13/viper"        // config files, env vars, flags
+import "github.com/caarlos0/env/v11"   // parse de env vars para structs
+
+// CLI
+import "github.com/spf13/cobra"        // CLI framework (usado por kubectl, hugo, gh)
+import "github.com/urfave/cli/v2"      // alternativa mais simples
+
+// Testes
+import "github.com/stretchr/testify"   // assertions e mocks
+import "go.uber.org/mock"              // geração de mocks a partir de interfaces
+```
+
+### Erros Comuns para Evitar
+
+```go
+// 1. Goroutine leak — goroutine que nunca termina
+func bad() {
+    ch := make(chan int)
+    go func() {
+        val := <-ch  // bloqueia para sempre se ninguém escrever
+        fmt.Println(val)
+    }()
+    // ch nunca recebe valor, goroutine fica presa eternamente
+}
+
+// 2. Race condition — acesso concorrente sem sincronização
+// Use "go test -race" para detectar em testes
+var counter int
+go func() { counter++ }()
+go func() { counter++ }()
+// resultado indefinido — use sync.Mutex ou sync/atomic
+
+// 3. Nil map write
+var m map[string]int
+m["key"] = 1  // panic! Inicialize com make() ou literal
+
+// 4. Slice append gotcha — append pode retornar um novo slice
+s := []int{1, 2, 3}
+s2 := s[:2]
+s2 = append(s2, 99)  // pode modificar s[2] se houver capacity!
+// Solução: usar full slice expression s[:2:2] para limitar capacity
+
+// 5. Defer em loop — defer acumula até a função retornar
+func bad() {
+    for _, file := range files {
+        f, _ := os.Open(file)
+        defer f.Close()  // todos os arquivos ficam abertos até o fim da função!
+    }
+}
+// Solução: extrair para uma função auxiliar
+func processFile(path string) error {
+    f, err := os.Open(path)
+    if err != nil {
+        return err
+    }
+    defer f.Close()
+    // ...
+    return nil
+}
+```
+
+---
+
+## Resumo Operacional
+
+Go é uma linguagem que troca expressividade por **clareza, performance e produtividade de equipe**. Os pontos fundamentais:
+
+1. **Goroutines + channels** são o modelo mental para concorrência — evite shared mutable state; prefira comunicação via channels
+2. **Interfaces implícitas** permitem desacoplamento sem burocracia — defina interfaces pequenas no ponto de consumo
+3. **Error handling explícito** é verboso por design — cada `if err != nil` é um ponto onde o desenvolvedor decide como tratar o erro
+4. **Composição sobre herança** — embedding de structs e interfaces pequenas substituem hierarquias de classes
+5. **Toolchain integrada** elimina debates de formatação (`go fmt`), detecta bugs (`go vet`, `-race`), e empacota tudo em um binário estático
+6. **Standard library robusta** — `net/http`, `encoding/json`, `database/sql`, `context`, `testing` cobrem a maioria dos cenários sem dependências externas
+7. **Simplicidade como feature** — a ausência de features (ternários, generics até 1.18, exceptions) é intencional; código Go é previsível e legível por qualquer membro da equipe

@@ -1,0 +1,570 @@
+---
+title: "Open Source"
+description: "Como contribuir para projetos open source, anatomia de PRs, etiqueta de comunidade, licenças e como iniciar seu próprio projeto"
+track: "career"
+order: 7
+section: "Crescimento"
+priority: "low"
+tags: ["open-source", "github", "contribuição", "comunidade"]
+prerequisites: []
+keyTakeaways:
+  - "Comece pequeno: fix typos em docs, adicione testes faltando, melhore mensagens de erro — ninguém começa com uma feature épica"
+  - "Escolha projetos que você usa no dia a dia — mais motivação e conhecimento do domínio facilita contribuições significativas"
+  - "Contribuições open source são prova concreta de competência que nenhum diploma substitui"
+---
+
+## Por Que Open Source Importa para Sua Carreira
+
+Open source não é caridade — é um **investimento estratégico** na sua carreira. Contribuições demonstram habilidades de forma verificável: qualquer recrutador pode ver seus PRs, a qualidade do seu código, como você se comunica em reviews e como lida com feedback. Nenhum certificado ou diploma oferece esse nível de transparência.
+
+```
+Benefícios concretos de contribuir para open source:
+
+TÉCNICOS:
+  → Ler código de engenheiros de nível mundial
+  → Aprender padrões e práticas de projetos maduros
+  → Expor-se a code review rigoroso
+  → Entender CI/CD, testes e release management em escala
+  → Trabalhar com codebases grandes e diversas
+
+CARREIRA:
+  → Portfolio público e verificável
+  → Networking com engenheiros de Big Tech
+  → Convites para conferências como speaker
+  → Reconhecimento na comunidade
+  → Diferencial em processos seletivos internacionais
+  → Acesso a oportunidades que não são publicadas
+
+SOFT SKILLS:
+  → Comunicação escrita em inglês
+  → Colaboração assíncrona (fusos horários diferentes)
+  → Dar e receber feedback construtivo
+  → Empatia (entender a perspectiva do maintainer)
+  → Paciência (PRs podem levar semanas para merge)
+```
+
+---
+
+## Como Encontrar Projetos para Contribuir
+
+### Estratégia 1: Projetos que Você Já Usa
+
+```
+A melhor forma de contribuir é com projetos que você já
+conhece como usuário. Você tem:
+  → Conhecimento do domínio (sabe o que o software faz)
+  → Motivação pessoal (melhorar uma ferramenta que usa)
+  → Contexto de uso (sabe quais features faltam ou quais bugs existem)
+
+PERGUNTE-SE:
+  "Qual ferramenta eu uso diariamente que poderia ser melhor?"
+  "Qual biblioteca me causou dor recentemente?"
+  "Qual documentação me confundiu na última semana?"
+
+EXEMPLOS:
+  → Usa TypeORM e encontrou um edge case? Abra issue + PR
+  → A documentação do Fastify não cobriu seu caso? Contribua docs
+  → O ESLint não tem uma regra que você precisa? Escreva um plugin
+```
+
+### Estratégia 2: Good First Issues
+
+```bash
+# Encontrar issues marcadas para iniciantes
+# No GitHub:
+# → github.com/<projeto>/issues?q=label:"good+first+issue"
+# → github.com/<projeto>/issues?q=label:"help+wanted"
+
+# Agregadores de good first issues:
+# → goodfirstissue.dev
+# → up-for-grabs.net
+# → firsttimersonly.com
+# → github.com/topics/good-first-issue
+
+# Filtrar por linguagem:
+# → goodfirstissue.dev/language/typescript
+# → goodfirstissue.dev/language/go
+```
+
+### Estratégia 3: Áreas de Contribuição Subestimadas
+
+```
+A maioria dos contribuidores quer escrever features.
+As áreas com menos competição (e muito impacto) são:
+
+1. DOCUMENTAÇÃO
+   → Fix typos, melhorar exemplos, traduzir
+   → Adicionar exemplos para APIs pouco documentadas
+   → Escrever guias de migração entre versões
+   → Melhorar mensagens de erro (error messages são docs!)
+
+2. TESTES
+   → Aumentar cobertura em módulos críticos
+   → Adicionar testes para edge cases conhecidos
+   → Melhorar testes flaky (intermitentes)
+   → Adicionar benchmarks de performance
+
+3. TOOLING
+   → Melhorar CI/CD (build mais rápido, cache melhor)
+   → Adicionar linting rules
+   → Melhorar developer experience (DX)
+   → Criar GitHub Actions reusáveis
+
+4. TRIAGEM DE ISSUES
+   → Reproduzir bugs reportados
+   → Adicionar informações a issues vagas
+   → Fechar issues duplicadas ou obsoletas
+   → Marcar issues com labels corretas
+```
+
+---
+
+## Anatomia de um Pull Request de Qualidade
+
+### Antes de Codar: Comunique a Intenção
+
+```
+REGRA DE OURO: Abra uma issue ou comente em uma existente
+ANTES de começar a codar.
+
+Por quê?
+  1. O maintainer pode dizer que a feature não é desejada
+     (economiza seu tempo)
+  2. O maintainer pode sugerir uma abordagem diferente
+     (economiza retrabalho)
+  3. Evita que duas pessoas trabalhem na mesma coisa
+  4. Mostra respeito pelo tempo do maintainer
+
+EXEMPLO DE COMMENT:
+  "Hi! I'd like to work on this issue. I'm thinking of solving
+   it by [approach]. Does this align with the project's direction?
+   Happy to discuss alternatives."
+```
+
+### O PR Perfeito
+
+```markdown
+## Title: Fix connection pool exhaustion under concurrent load
+
+## Description
+
+### Problem
+When multiple requests arrive simultaneously, the connection
+pool can be exhausted because connections are not released
+after query timeout. This causes subsequent requests to hang
+indefinitely.
+
+Reproduces with: `wrk -t4 -c100 -d10s http://localhost:3000/api/users`
+
+Fixes #1234
+
+### Solution
+- Added connection release in the `finally` block of `query()`
+- Added configurable timeout for connection acquisition (default: 5s)
+- Added metric `db.pool.wait_time` for observability
+
+### Changes
+- `src/database/pool.ts` — Added timeout and cleanup logic
+- `src/database/pool.test.ts` — Added concurrent access tests
+- `docs/configuration.md` — Documented new `DB_POOL_TIMEOUT` env var
+
+### Testing
+- Unit tests for timeout behavior (added)
+- Integration test with concurrent connections (added)
+- Manual test with wrk under load (verified locally)
+- All existing tests pass (CI green)
+
+### Screenshots (if UI change)
+N/A — backend only
+
+### Checklist
+- [x] Tests added/updated
+- [x] Documentation updated
+- [x] Changelog entry added
+- [x] No breaking changes
+- [x] Follows project code style
+```
+
+### Características de um Bom PR
+
+```
+TAMANHO:
+  → Ideal: < 300 linhas de diff (excluindo testes e gerados)
+  → Se for maior, divida em PRs sequenciais
+  → PRs grandes são difíceis de revisar e têm merge conflicts
+
+COMMITS:
+  → Cada commit é atômico e compilável
+  → Mensagens seguem a convenção do projeto
+  → Squash ou não? Siga a convenção do projeto
+
+TESTES:
+  → Todo bug fix vem com teste que reproduzia o bug
+  → Toda feature nova vem com testes unitários e/ou integração
+  → Testes documentam o comportamento esperado
+
+DOCUMENTAÇÃO:
+  → Atualize docs se a interface pública mudou
+  → Atualize CHANGELOG se o projeto usa
+  → Atualize exemplos se a API mudou
+```
+
+---
+
+## Etiqueta Open Source
+
+### A Perspectiva do Maintainer
+
+```
+O que a maioria dos contribuidores NÃO entende:
+
+Maintainers de projetos populares recebem:
+  → 10-50+ issues por dia
+  → 5-20+ PRs por dia
+  → Centenas de notificações por semana
+  → Tudo isso como trabalho VOLUNTÁRIO (na maioria)
+
+REGRAS DE ETIQUETA:
+
+1. Seja paciente
+   → PRs podem levar dias ou semanas para review
+   → Não faça ping repetido ("any update?") antes de 1 semana
+   → Maintainers têm empregos, família e vida
+
+2. Seja conciso
+   → Issues e PRs claros e bem formatados
+   → Não escreva parágrafos quando uma lista resolve
+   → Use templates do projeto (se existirem)
+
+3. Aceite feedback graciosamente
+   → "Please change X" não é ataque pessoal
+   → "We don't want this feature" é decisão legítima
+   → Agradeça o feedback, mesmo se discordar
+
+4. Não abra PRs não solicitados para refatoração grande
+   → Discuta primeiro em uma issue
+   → "Refatorei todo o módulo X" sem aviso é peso para o maintainer
+
+5. Respeite as decisões do projeto
+   → O maintainer pode rejeitar seu PR
+   → Não insista se a decisão foi clara
+   → Fork é sempre uma opção legítima
+```
+
+### Comunicação Construtiva
+
+```
+RUIM:
+  "This code is terrible and needs to be rewritten."
+  "Why hasn't this been merged yet?"
+  "This is a simple fix, just merge it."
+
+BOM:
+  "I noticed this module could benefit from [improvement].
+   Would you be open to a PR that addresses this?"
+  "Thanks for the review feedback! I've addressed all comments.
+   Let me know if there's anything else."
+  "I understand this PR might not align with the project's
+   direction. Happy to close it or adjust the approach."
+```
+
+---
+
+## Licenciamento: O Que Você Precisa Saber
+
+### As Licenças Mais Comuns
+
+```
+PERMISSIVAS (faça quase qualquer coisa):
+
+MIT License:
+  → A mais permissiva e popular
+  → Pode usar, modificar, distribuir, sublicenciar
+  → Pode usar em software proprietário
+  → Única obrigação: manter o copyright notice
+  → Usada por: React, Node.js, jQuery, Rails
+
+Apache License 2.0:
+  → Similar à MIT mas com proteção de patentes
+  → Grant explícito de patentes dos contribuidores
+  → Mudanças devem ser documentadas
+  → Usada por: Kubernetes, Android, Swift, TensorFlow
+
+BSD (2-clause e 3-clause):
+  → Muito similar à MIT
+  → 3-clause adiciona: não usar o nome do projeto para endosso
+  → Usada por: FreeBSD, Nginx, Django
+
+COPYLEFT (mudanças devem ser open source):
+
+GPL v3 (GNU General Public License):
+  → Software derivado DEVE ser GPL também
+  → Código fonte DEVE ser disponibilizado
+  → Não pode ser usado em software proprietário
+  → "Viral" — contamina tudo que linka diretamente
+  → Usada por: Linux kernel, GCC, WordPress
+
+LGPL (Lesser GPL):
+  → GPL mas permite linking dinâmico com software proprietário
+  → Mudanças na biblioteca LGPL devem ser open source
+  → Seu software que USA a biblioteca pode ser proprietário
+  → Usada por: FFmpeg, Qt (parcialmente)
+
+AGPL (Affero GPL):
+  → GPL + obrigação de disponibilizar código se servir via rede
+  → Se você modificar e rodar como SaaS, deve liberar o código
+  → Usada por: MongoDB (anteriormente), Grafana, Nextcloud
+```
+
+### Implicações Práticas
+
+```
+CENÁRIO: Você trabalha em uma empresa e quer usar uma biblioteca
+
+MIT / Apache / BSD:
+  → Use livremente, mesmo em produto proprietário
+  → Mantenha os copyright notices
+  → Verifique com o jurídico por formalidade
+
+GPL:
+  → CUIDADO: Se linkar diretamente, seu software vira GPL
+  → Consulte o jurídico ANTES de usar
+  → Alternativas: buscar lib com licença permissiva
+
+AGPL:
+  → MUITO CUIDADO para SaaS: se modificar e servir via rede,
+    deve liberar seu código
+  → Muitas empresas proíbem AGPL internamente
+  → MongoDB mudou para Server Side Public License (SSPL)
+    por causa de provedores cloud
+
+DUAL LICENSE:
+  → Alguns projetos oferecem GPL + licença comercial
+  → Open source gratuito (GPL), uso comercial pago
+  → Exemplo: Qt, MySQL (Oracle)
+
+DICA: Use ferramentas como `license-checker` ou `fossa` para
+      auditar licenças de todas as dependências do projeto.
+```
+
+---
+
+## Iniciando Seu Próprio Projeto Open Source
+
+### Arquivos Essenciais
+
+```
+meu-projeto/
+├── README.md              # O que é, como usar, como contribuir
+├── LICENSE                 # Licença escolhida (MIT para maioria)
+├── CONTRIBUTING.md         # Como contribuir (setup, guidelines)
+├── CODE_OF_CONDUCT.md      # Código de conduta (Contributor Covenant)
+├── CHANGELOG.md            # Histórico de mudanças por versão
+├── .github/
+│   ├── ISSUE_TEMPLATE/
+│   │   ├── bug_report.md       # Template para bugs
+│   │   └── feature_request.md  # Template para features
+│   ├── PULL_REQUEST_TEMPLATE.md  # Template para PRs
+│   └── workflows/
+│       ├── ci.yml              # CI: lint, test, build
+│       └── release.yml         # Automatizar releases
+├── src/                   # Código fonte
+├── tests/                 # Testes
+├── docs/                  # Documentação adicional
+└── package.json           # (ou equivalente da linguagem)
+```
+
+### README que Atrai Contribuidores
+
+```markdown
+# Project Name
+
+One-line description of what it does and why it exists.
+
+[![CI](badge-url)](ci-url)
+[![npm](badge-url)](npm-url)
+[![License: MIT](badge-url)](license-url)
+
+## Features
+- Feature 1 with brief description
+- Feature 2 with brief description
+- Feature 3 with brief description
+
+## Quick Start
+
+  npm install my-project
+
+  import { something } from 'my-project';
+  // Example usage in 3-5 lines
+
+## Documentation
+Link to full docs (if separate site).
+
+## Contributing
+We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md)
+for guidelines.
+
+## License
+MIT. See [LICENSE](LICENSE) for details.
+```
+
+### Semantic Versioning (SemVer)
+
+```
+Formato: MAJOR.MINOR.PATCH
+
+MAJOR (1.0.0 → 2.0.0):
+  → Breaking changes na API pública
+  → Remoção de features ou mudança de interface
+  → Usuários PRECISAM adaptar código
+
+MINOR (1.0.0 → 1.1.0):
+  → Nova feature backwards-compatible
+  → Nova função/método adicionado
+  → Usuários NÃO precisam mudar nada
+
+PATCH (1.0.0 → 1.0.1):
+  → Bug fix backwards-compatible
+  → Correção de segurança
+  → Melhoria de performance sem mudança de API
+
+PRE-RELEASE:
+  → 1.0.0-alpha.1 → build instável, API pode mudar
+  → 1.0.0-beta.1 → feature-complete, testando
+  → 1.0.0-rc.1 → release candidate, quase pronto
+
+REGRAS IMPORTANTES:
+  → 0.x.y: API instável, breaking changes podem ocorrer em MINOR
+  → Não faça breaking changes em PATCH (frustra usuários)
+  → Documente TODA mudança no CHANGELOG
+  → Use Conventional Commits + standard-version/release-please
+    para automatizar versionamento
+```
+
+### CI/CD para Projetos Open Source
+
+```yaml
+# .github/workflows/ci.yml — CI mínimo para qualquer projeto
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        node-version: [18, 20, 22]  # Testar múltiplas versões
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'npm'
+      - run: npm ci
+      - run: npm run lint
+      - run: npm test -- --coverage
+      - run: npm run build
+
+# .github/workflows/release.yml — Release automatizado
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: 'https://registry.npmjs.org'
+      - run: npm ci
+      - run: npm test
+      - run: npm publish
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+```
+
+---
+
+## Corporate Open Source e Inner Source
+
+### Inner Source: Open Source Dentro da Empresa
+
+```
+Inner Source aplica práticas de open source em projetos internos:
+
+PRINCÍPIOS:
+  → Código acessível a todos na empresa (não apenas ao time dono)
+  → Contribuições de qualquer time são bem-vindas
+  → Code review transparente
+  → Documentação como em open source (README, CONTRIBUTING)
+  → Issues e roadmap públicos (internamente)
+
+BENEFÍCIOS:
+  → Reduz duplicação de esforço entre times
+  → Melhora qualidade do código (mais olhos = menos bugs)
+  → Facilita mobilidade interna (devs já conhecem outros projetos)
+  → Cria cultura de colaboração
+
+COMO IMPLEMENTAR:
+  1. Escolha 1-2 projetos internos como piloto
+  2. Documente como se fosse open source
+  3. Aceite e revise PRs de outros times
+  4. Meça: PRs cross-team, tempo de review, satisfação
+  5. Escale para mais projetos baseado em resultados
+```
+
+### Construindo Portfolio Através de OSS
+
+```
+ESTRATÉGIA DE PORTFOLIO:
+
+Nível 1 — Contribuições pontuais (meses 1-3):
+  → Fix docs, typos, mensagens de erro
+  → Adicionar testes faltando
+  → Resolver good first issues
+  → Objetivo: aprender o processo
+
+Nível 2 — Contribuições regulares (meses 3-6):
+  → Resolver bugs não-triviais
+  → Implementar features pequenas
+  → Revisar PRs de outros contribuidores
+  → Objetivo: ser reconhecido como contribuidor regular
+
+Nível 3 — Maintainer de projeto próprio (meses 6-12):
+  → Criar projeto que resolve um problema real
+  → Documentar bem, CI completo, testes
+  → Promover em comunidades relevantes
+  → Responder issues e revisar PRs
+  → Objetivo: demonstrar liderança técnica
+
+Nível 4 — Committer/maintainer de projeto grande (12+ meses):
+  → Contribuir consistentemente para um projeto relevante
+  → Ser convidado como maintainer
+  → Participar de decisões arquiteturais
+  → Objetivo: reputação na comunidade
+```
+
+---
+
+## Referências
+
+```
+- "Working in Public: The Making and Maintenance of OSS" — Nadia Eghbal
+- "Producing Open Source Software" — Karl Fogel (gratuito online)
+- choosealicense.com — Guia para escolher licenças
+- opensource.guide — Guia do GitHub para open source
+- Contributor Covenant: https://www.contributor-covenant.org
+- Semantic Versioning: https://semver.org
+- Conventional Commits: https://www.conventionalcommits.org
+- Inner Source Commons: https://innersourcecommons.org
+```

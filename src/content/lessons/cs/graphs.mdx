@@ -1,0 +1,898 @@
+---
+title: "Graphs (Grafos)"
+description: "Definição formal, representações, BFS, DFS, shortest path, MST, ciclos, SCCs e aplicações reais em redes, mapas e dependency resolution"
+track: "cs"
+order: 12
+section: "Estruturas de Dados"
+priority: "high"
+tags: ["grafos", "BFS", "DFS", "dijkstra", "topological-sort", "estruturas-de-dados", "adjacency-list", "shortest-path"]
+prerequisites: ["stacks-e-queues", "trees"]
+keyTakeaways:
+  - "Grafos modelam relações arbitrárias entre entidades — redes sociais, mapas, dependências de pacotes, garbage collection"
+  - "BFS (fila) encontra o caminho mais curto em grafos não-ponderados em O(V+E); Dijkstra resolve o caso ponderado em O((V+E) log V)"
+  - "DFS (stack/recursão) classifica arestas em tree/back/forward/cross — base para detecção de ciclos, ordenação topológica e SCCs"
+  - "Escolha de representação importa: adjacency matrix O(V²) espaço vs adjacency list O(V+E) — grafos esparsos dominam na prática"
+---
+
+# Graphs (Grafos)
+
+## 1. Definição Formal
+
+Um **grafo** é um par ordenado **G = (V, E)** onde:
+
+- **V** é um conjunto finito de **vértices** (ou nós)
+- **E ⊆ V × V** é um conjunto de **arestas** (ou arcos) que conectam pares de vértices
+
+### Taxonomia de grafos
+
+| Propriedade | Variante A | Variante B |
+|---|---|---|
+| Direção | **Não-dirigido**: (u, v) = (v, u) | **Dirigido (dígrafo)**: (u, v) ≠ (v, u) |
+| Peso | **Não-ponderado**: todas as arestas têm custo uniforme | **Ponderado**: w: E → ℝ associa peso a cada aresta |
+| Ciclos | **Acíclico**: não contém ciclos (DAG se dirigido) | **Cíclico**: contém ao menos um ciclo |
+| Densidade | **Esparso**: \|E\| ≈ O(V) | **Denso**: \|E\| ≈ O(V²) |
+| Conexidade | **Conexo**: existe caminho entre todo par de vértices | **Desconexo**: existem componentes isolados |
+
+**Terminologia essencial:**
+- **Grau** de um vértice: número de arestas incidentes. Em dígrafos: **in-degree** (arestas entrando) e **out-degree** (arestas saindo).
+- **Caminho**: sequência de vértices v₁, v₂, ..., vₖ onde cada (vᵢ, vᵢ₊₁) ∈ E.
+- **Ciclo**: caminho onde v₁ = vₖ e k > 2.
+- **Componente conexo**: subgrafo maximal onde todo par de vértices é mutuamente alcançável.
+
+**Handshaking Lemma:** Em qualquer grafo não-dirigido, a soma dos graus de todos os vértices é exatamente 2|E|. Isso decorre do fato de que cada aresta contribui com +1 para o grau de cada uma das suas duas extremidades.
+
+---
+
+## 2. Representações e Trade-offs
+
+### 2.1 Adjacency Matrix (Matriz de Adjacência)
+
+Uma matriz **A** de dimensão |V| × |V| onde A[i][j] = 1 (ou o peso w(i,j)) se a aresta (i, j) ∈ E, e 0 caso contrário.
+
+```typescript
+class AdjacencyMatrix {
+  private matrix: number[][];
+  private size: number;
+
+  constructor(vertices: number) {
+    this.size = vertices;
+    this.matrix = Array.from({ length: vertices }, () =>
+      new Array(vertices).fill(0)
+    );
+  }
+
+  addEdge(u: number, v: number, weight: number = 1): void {
+    this.matrix[u][v] = weight;
+    this.matrix[v][u] = weight; // remover para dígrafo
+  }
+
+  hasEdge(u: number, v: number): boolean {
+    return this.matrix[u][v] !== 0;
+  }
+
+  getNeighbors(u: number): number[] {
+    const neighbors: number[] = [];
+    for (let v = 0; v < this.size; v++) {
+      if (this.matrix[u][v] !== 0) neighbors.push(v);
+    }
+    return neighbors; // O(V) sempre — mesmo que o vértice tenha poucos vizinhos
+  }
+}
+```
+
+### 2.2 Adjacency List (Lista de Adjacência)
+
+Cada vértice mantém uma lista dos seus vizinhos. Representação padrão na prática.
+
+```typescript
+type Edge = { to: number; weight: number };
+
+class AdjacencyList {
+  private adj: Map<number, Edge[]>;
+
+  constructor() {
+    this.adj = new Map();
+  }
+
+  addVertex(v: number): void {
+    if (!this.adj.has(v)) this.adj.set(v, []);
+  }
+
+  addEdge(u: number, v: number, weight: number = 1): void {
+    this.adj.get(u)!.push({ to: v, weight });
+    this.adj.get(v)!.push({ to: u, weight }); // remover para dígrafo
+  }
+
+  hasEdge(u: number, v: number): boolean {
+    return this.adj.get(u)?.some((e) => e.to === v) ?? false;
+  }
+
+  getNeighbors(u: number): Edge[] {
+    return this.adj.get(u) ?? [];
+  }
+}
+```
+
+### 2.3 Análise Comparativa
+
+| Operação | Adjacency Matrix | Adjacency List |
+|---|---|---|
+| Espaço | O(V²) | O(V + E) |
+| Verificar aresta (u,v) | **O(1)** | O(degree(u)) |
+| Iterar vizinhos de u | O(V) | **O(degree(u))** |
+| Adicionar aresta | O(1) | O(1) |
+| Remover aresta | O(1) | O(degree(u)) |
+
+**Quando usar matrix:** grafos densos (|E| ≈ V²), quando lookup O(1) de aresta é crítico (ex: Floyd-Warshall). **Quando usar list:** grafos esparsos (a maioria dos grafos reais — redes sociais, web graphs, dependency graphs), quando você itera sobre vizinhos com frequência (BFS, DFS, Dijkstra).
+
+Na prática, a maioria dos grafos do mundo real é esparsa. O Facebook tem ~3 bilhões de usuários (V) mas cada um tem ~300-400 amigos em média. |E| ≈ O(V), não O(V²). Uma adjacency matrix seria inviável: 3×10⁹ × 3×10⁹ = 9×10¹⁸ entries.
+
+---
+
+## 3. BFS — Breadth-First Search
+
+### Algoritmo formal
+
+BFS explora o grafo em **ondas concêntricas** a partir de um vértice fonte s. Ele visita todos os vértices à distância d antes de visitar qualquer vértice à distância d+1.
+
+**Propriedade fundamental:** Em grafos não-ponderados, BFS calcula o **caminho mais curto** (em número de arestas) de s para todos os vértices alcançáveis.
+
+**Complexidade:** O(V + E) — cada vértice é enfileirado/desenfileirado no máximo uma vez, e cada aresta é examinada no máximo uma vez (duas vezes em grafos não-dirigidos).
+
+```typescript
+function bfs(
+  graph: Map<number, number[]>,
+  source: number
+): { dist: Map<number, number>; parent: Map<number, number | null> } {
+  const dist = new Map<number, number>();
+  const parent = new Map<number, number | null>();
+  const queue: number[] = [];
+
+  dist.set(source, 0);
+  parent.set(source, null);
+  queue.push(source);
+
+  while (queue.length > 0) {
+    const u = queue.shift()!; // O(1) amortizado com deque; O(V) com array — cuidado!
+    const currentDist = dist.get(u)!;
+
+    for (const v of graph.get(u) ?? []) {
+      if (!dist.has(v)) {
+        dist.set(v, currentDist + 1);
+        parent.set(v, u);
+        queue.push(v);
+      }
+    }
+  }
+
+  return { dist, parent };
+}
+
+// Reconstrução do caminho mais curto s → t
+function reconstructPath(
+  parent: Map<number, number | null>,
+  target: number
+): number[] {
+  const path: number[] = [];
+  let current: number | null = target;
+
+  while (current !== null) {
+    path.push(current);
+    current = parent.get(current) ?? null;
+  }
+
+  return path.reverse();
+}
+```
+
+> **Nota de performance:** `Array.shift()` em JavaScript é O(n) porque re-indexa o array. Para BFS em grafos grandes, use um deque implementado com linked list ou um índice de leitura que avança sem remover elementos:
+
+```typescript
+// BFS com índice de leitura — evita O(V²) total do shift()
+function bfsOptimized(graph: Map<number, number[]>, source: number): Map<number, number> {
+  const dist = new Map<number, number>();
+  const queue: number[] = [source];
+  let head = 0;
+  dist.set(source, 0);
+
+  while (head < queue.length) {
+    const u = queue[head++]; // "dequeue" em O(1)
+    for (const v of graph.get(u) ?? []) {
+      if (!dist.has(v)) {
+        dist.set(v, dist.get(u)! + 1);
+        queue.push(v);
+      }
+    }
+  }
+
+  return dist;
+}
+```
+
+### Aplicação: Menor número de saltos entre dois nós
+
+BFS é o algoritmo por trás da feature "graus de separação" em redes sociais. O experimento de Milgram (1967) sugeriu que qualquer pessoa está a ~6 saltos de qualquer outra — o famoso "six degrees of separation". O Facebook confirmou empiricamente em 2016 que a distância média entre dois usuários é ~3.57.
+
+---
+
+## 4. DFS — Depth-First Search
+
+### Algoritmo formal
+
+DFS explora o grafo indo o **mais fundo possível** antes de retroceder (backtrack). Mantém dois timestamps para cada vértice: **discovery time** (d[v]) e **finish time** (f[v]).
+
+**Complexidade:** O(V + E) — idêntica a BFS, mas o padrão de exploração é completamente diferente.
+
+```typescript
+enum Color {
+  WHITE = "white", // não descoberto
+  GRAY = "gray",   // descoberto, processando (na stack de recursão)
+  BLACK = "black",  // finalizado, todos os descendentes processados
+}
+
+interface DFSResult {
+  discovery: Map<number, number>;
+  finish: Map<number, number>;
+  parent: Map<number, number | null>;
+  edgeTypes: Map<string, "tree" | "back" | "forward" | "cross">;
+}
+
+function dfs(graph: Map<number, number[]>): DFSResult {
+  const color = new Map<number, Color>();
+  const discovery = new Map<number, number>();
+  const finish = new Map<number, number>();
+  const parent = new Map<number, number | null>();
+  const edgeTypes = new Map<string, "tree" | "back" | "forward" | "cross">();
+  let time = 0;
+
+  for (const v of graph.keys()) {
+    color.set(v, Color.WHITE);
+    parent.set(v, null);
+  }
+
+  function dfsVisit(u: number): void {
+    time++;
+    discovery.set(u, time);
+    color.set(u, Color.GRAY);
+
+    for (const v of graph.get(u) ?? []) {
+      const key = `${u}->${v}`;
+
+      if (color.get(v) === Color.WHITE) {
+        edgeTypes.set(key, "tree");
+        parent.set(v, u);
+        dfsVisit(v);
+      } else if (color.get(v) === Color.GRAY) {
+        edgeTypes.set(key, "back"); // ciclo detectado!
+      } else {
+        // v é BLACK
+        if (discovery.get(u)! < discovery.get(v)!) {
+          edgeTypes.set(key, "forward");
+        } else {
+          edgeTypes.set(key, "cross");
+        }
+      }
+    }
+
+    color.set(u, Color.BLACK);
+    time++;
+    finish.set(u, time);
+  }
+
+  for (const v of graph.keys()) {
+    if (color.get(v) === Color.WHITE) {
+      dfsVisit(v);
+    }
+  }
+
+  return { discovery, finish, parent, edgeTypes };
+}
+```
+
+### Classificação de arestas (fundamental para teoria de grafos)
+
+| Tipo | Condição | Significado |
+|---|---|---|
+| **Tree edge** | v é WHITE quando explorado | Aresta da árvore DFS |
+| **Back edge** | v é GRAY quando explorado | Aponta para um ancestral → **indica ciclo** |
+| **Forward edge** | v é BLACK e d[u] < d[v] | Aponta para um descendente (atalho na árvore) |
+| **Cross edge** | v é BLACK e d[u] > d[v] | Liga subárvores diferentes |
+
+**Teorema do parêntesis:** Para quaisquer dois vértices u e v, exatamente uma das três condições é verdadeira: (1) [d[u], f[u]] e [d[v], f[v]] são disjuntos, (2) [d[u], f[u]] ⊂ [d[v], f[v]], ou (3) [d[v], f[v]] ⊂ [d[u], f[u]]. A estrutura de aninhamento desses intervalos é o que permite a classificação de arestas.
+
+**Teorema do caminho branco:** v é descendente de u na floresta DFS se e somente se, no momento d[u], existe um caminho de u a v composto inteiramente de vértices brancos.
+
+---
+
+## 5. Topological Sort (Ordenação Topológica)
+
+**Definição:** Uma ordenação topológica de um DAG (Directed Acyclic Graph) G = (V, E) é uma ordenação linear de todos os vértices tal que, se existe aresta (u, v) ∈ E, então u aparece antes de v na ordenação.
+
+**Pré-requisito:** O grafo **deve ser um DAG**. Se houver ciclo, ordenação topológica não existe.
+
+### 5.1 Algoritmo de Kahn (BFS-based)
+
+Baseado na remoção iterativa de vértices com in-degree 0. Se ao final nem todos os vértices foram processados, o grafo contém ciclo.
+
+```typescript
+function kahnTopologicalSort(graph: Map<number, number[]>): number[] | null {
+  const inDegree = new Map<number, number>();
+  for (const v of graph.keys()) inDegree.set(v, 0);
+
+  for (const [, neighbors] of graph) {
+    for (const v of neighbors) {
+      inDegree.set(v, (inDegree.get(v) ?? 0) + 1);
+    }
+  }
+
+  const queue: number[] = [];
+  for (const [v, deg] of inDegree) {
+    if (deg === 0) queue.push(v);
+  }
+
+  const order: number[] = [];
+  let head = 0;
+
+  while (head < queue.length) {
+    const u = queue[head++];
+    order.push(u);
+
+    for (const v of graph.get(u) ?? []) {
+      const newDeg = inDegree.get(v)! - 1;
+      inDegree.set(v, newDeg);
+      if (newDeg === 0) queue.push(v);
+    }
+  }
+
+  // Se nem todos os vértices foram processados → ciclo existe
+  if (order.length !== graph.size) return null;
+  return order;
+}
+```
+
+### 5.2 DFS-based
+
+Ordena os vértices pelo **finish time decrescente**. Funciona porque, em um DAG, se (u, v) ∈ E, então f[u] > f[v].
+
+```typescript
+function dfsTopologicalSort(graph: Map<number, number[]>): number[] | null {
+  const visited = new Set<number>();
+  const inStack = new Set<number>(); // para detecção de ciclo
+  const result: number[] = [];
+  let hasCycle = false;
+
+  function visit(u: number): void {
+    if (hasCycle) return;
+    if (inStack.has(u)) {
+      hasCycle = true;
+      return;
+    }
+    if (visited.has(u)) return;
+
+    inStack.add(u);
+
+    for (const v of graph.get(u) ?? []) {
+      visit(v);
+    }
+
+    inStack.delete(u);
+    visited.add(u);
+    result.push(u); // adiciona ao "terminar" (post-order)
+  }
+
+  for (const v of graph.keys()) {
+    if (!visited.has(v)) visit(v);
+  }
+
+  if (hasCycle) return null;
+  return result.reverse(); // finish time decrescente
+}
+```
+
+**Aplicação direta:** Resolução de dependências em package managers (npm, yarn, cargo). Cada pacote é um vértice, cada dependência é uma aresta dirigida. A ordenação topológica determina a ordem de instalação/build. Se `topSort()` retorna null, existe dependência circular — exatamente o erro que o npm reporta.
+
+---
+
+## 6. Shortest Path (Caminhos Mais Curtos)
+
+### 6.1 Dijkstra — O((V + E) log V)
+
+Para grafos com **pesos não-negativos**. Usa uma min-heap (priority queue) para sempre expandir o vértice não-visitado com menor distância estimada.
+
+**Invariante:** Quando um vértice u é extraído da min-heap, dist[u] é a distância mínima definitiva.
+
+**Correção:** Baseia-se na propriedade de subestrutura ótima e no fato de que pesos não-negativos garantem que nenhum caminho futuro pode melhorar a distância de um vértice já processado.
+
+```typescript
+class MinHeap<T> {
+  private heap: { key: T; priority: number }[] = [];
+
+  push(key: T, priority: number): void {
+    this.heap.push({ key, priority });
+    this.bubbleUp(this.heap.length - 1);
+  }
+
+  pop(): { key: T; priority: number } | undefined {
+    if (this.heap.length === 0) return undefined;
+    const min = this.heap[0];
+    const last = this.heap.pop()!;
+    if (this.heap.length > 0) {
+      this.heap[0] = last;
+      this.sinkDown(0);
+    }
+    return min;
+  }
+
+  get size(): number {
+    return this.heap.length;
+  }
+
+  private bubbleUp(i: number): void {
+    while (i > 0) {
+      const parent = Math.floor((i - 1) / 2);
+      if (this.heap[parent].priority <= this.heap[i].priority) break;
+      [this.heap[parent], this.heap[i]] = [this.heap[i], this.heap[parent]];
+      i = parent;
+    }
+  }
+
+  private sinkDown(i: number): void {
+    const n = this.heap.length;
+    while (true) {
+      let smallest = i;
+      const left = 2 * i + 1;
+      const right = 2 * i + 2;
+      if (left < n && this.heap[left].priority < this.heap[smallest].priority) smallest = left;
+      if (right < n && this.heap[right].priority < this.heap[smallest].priority) smallest = right;
+      if (smallest === i) break;
+      [this.heap[smallest], this.heap[i]] = [this.heap[i], this.heap[smallest]];
+      i = smallest;
+    }
+  }
+}
+
+type WeightedEdge = { to: number; weight: number };
+
+function dijkstra(
+  graph: Map<number, WeightedEdge[]>,
+  source: number
+): { dist: Map<number, number>; parent: Map<number, number | null> } {
+  const dist = new Map<number, number>();
+  const parent = new Map<number, number | null>();
+  const visited = new Set<number>();
+  const pq = new MinHeap<number>();
+
+  for (const v of graph.keys()) {
+    dist.set(v, Infinity);
+  }
+  dist.set(source, 0);
+  parent.set(source, null);
+  pq.push(source, 0);
+
+  while (pq.size > 0) {
+    const { key: u } = pq.pop()!;
+
+    if (visited.has(u)) continue; // lazy deletion — crucial para correção
+    visited.add(u);
+
+    for (const { to: v, weight: w } of graph.get(u) ?? []) {
+      const newDist = dist.get(u)! + w;
+      if (newDist < dist.get(v)!) {
+        dist.set(v, newDist);
+        parent.set(v, u);
+        pq.push(v, newDist); // pode duplicar v na heap — ok com lazy deletion
+      }
+    }
+  }
+
+  return { dist, parent };
+}
+```
+
+**Por que falha com pesos negativos:** Se uma aresta (u, v) tem peso negativo, é possível que depois de "finalizar" u, um caminho passando por v e voltando melhore a distância. A invariante de que vértices extraídos têm distância definitiva quebra.
+
+### 6.2 Bellman-Ford — O(V × E)
+
+Funciona com **arestas de peso negativo** e detecta **ciclos de peso negativo** (onde a distância é -∞).
+
+**Princípio:** Qualquer caminho mais curto tem no máximo |V| - 1 arestas (sem ciclos negativos). Relaxar todas as arestas |V| - 1 vezes garante convergência. Uma |V|-ésima iteração que ainda relaxa indica ciclo negativo.
+
+```typescript
+type DirectedEdge = { from: number; to: number; weight: number };
+
+function bellmanFord(
+  vertices: number[],
+  edges: DirectedEdge[],
+  source: number
+): { dist: Map<number, number>; hasNegativeCycle: boolean } {
+  const dist = new Map<number, number>();
+
+  for (const v of vertices) dist.set(v, Infinity);
+  dist.set(source, 0);
+
+  // Relaxar todas as arestas |V| - 1 vezes
+  for (let i = 0; i < vertices.length - 1; i++) {
+    let updated = false;
+    for (const { from: u, to: v, weight: w } of edges) {
+      if (dist.get(u)! !== Infinity && dist.get(u)! + w < dist.get(v)!) {
+        dist.set(v, dist.get(u)! + w);
+        updated = true;
+      }
+    }
+    if (!updated) break; // otimização: convergiu cedo
+  }
+
+  // Verificar ciclo negativo: se ainda é possível relaxar, existe ciclo
+  let hasNegativeCycle = false;
+  for (const { from: u, to: v, weight: w } of edges) {
+    if (dist.get(u)! !== Infinity && dist.get(u)! + w < dist.get(v)!) {
+      hasNegativeCycle = true;
+      break;
+    }
+  }
+
+  return { dist, hasNegativeCycle };
+}
+```
+
+### 6.3 Floyd-Warshall — O(V³)
+
+Calcula o caminho mais curto entre **todos os pares** de vértices. Usa programação dinâmica sobre o conjunto de vértices intermediários.
+
+**Recorrência:** dist(i, j, k) = min(dist(i, j, k-1), dist(i, k, k-1) + dist(k, j, k-1))
+
+Onde k é o índice do vértice intermediário sendo considerado.
+
+```typescript
+function floydWarshall(matrix: number[][]): number[][] {
+  const n = matrix.length;
+  // Clonar a matriz para não modificar a original
+  const dist = matrix.map((row) => [...row]);
+
+  // k é o vértice intermediário
+  for (let k = 0; k < n; k++) {
+    for (let i = 0; i < n; i++) {
+      for (let j = 0; j < n; j++) {
+        if (dist[i][k] + dist[k][j] < dist[i][j]) {
+          dist[i][j] = dist[i][k] + dist[k][j];
+        }
+      }
+    }
+  }
+
+  return dist;
+}
+
+// Inicialização: dist[i][j] = peso da aresta se existe, Infinity se não, 0 se i === j
+```
+
+### Comparação de algoritmos de shortest path
+
+| Algoritmo | Complexidade | Pesos negativos | All-pairs | Detecção de ciclo negativo |
+|---|---|---|---|---|
+| BFS | O(V + E) | Não aplicável (não-ponderado) | Não | Não |
+| Dijkstra | O((V+E) log V) | **Não** | Não | Não |
+| Bellman-Ford | O(V × E) | **Sim** | Não | **Sim** |
+| Floyd-Warshall | O(V³) | **Sim** | **Sim** | **Sim** (diagonal negativa) |
+
+---
+
+## 7. Minimum Spanning Tree (Árvore Geradora Mínima)
+
+**Definição:** Dado um grafo conexo e não-dirigido G = (V, E) com pesos, uma MST é um subconjunto T ⊆ E que conecta todos os vértices, não forma ciclo, e minimiza a soma total dos pesos.
+
+**Propriedade de corte (Cut Property):** Para qualquer corte (S, V\S) do grafo, a aresta de menor peso cruzando o corte pertence a toda MST (assumindo pesos únicos).
+
+### 7.1 Kruskal com Union-Find (Disjoint Set)
+
+Ordena todas as arestas por peso e adiciona greedily, pulando arestas que criariam ciclo (detectado via Union-Find).
+
+**Complexidade:** O(E log E) para ordenar + O(E × α(V)) para operações Union-Find ≈ O(E log V), pois log E ≤ 2 log V.
+
+```typescript
+class UnionFind {
+  private parent: number[];
+  private rank: number[];
+
+  constructor(size: number) {
+    this.parent = Array.from({ length: size }, (_, i) => i);
+    this.rank = new Array(size).fill(0);
+  }
+
+  find(x: number): number {
+    if (this.parent[x] !== x) {
+      this.parent[x] = this.find(this.parent[x]); // path compression
+    }
+    return this.parent[x];
+  }
+
+  union(x: number, y: number): boolean {
+    const rx = this.find(x);
+    const ry = this.find(y);
+    if (rx === ry) return false; // já estão no mesmo conjunto → aresta criaria ciclo
+
+    // union by rank
+    if (this.rank[rx] < this.rank[ry]) {
+      this.parent[rx] = ry;
+    } else if (this.rank[rx] > this.rank[ry]) {
+      this.parent[ry] = rx;
+    } else {
+      this.parent[ry] = rx;
+      this.rank[rx]++;
+    }
+
+    return true;
+  }
+}
+
+function kruskal(
+  numVertices: number,
+  edges: { from: number; to: number; weight: number }[]
+): { mstEdges: typeof edges; totalWeight: number } {
+  edges.sort((a, b) => a.weight - b.weight);
+  const uf = new UnionFind(numVertices);
+  const mstEdges: typeof edges = [];
+  let totalWeight = 0;
+
+  for (const edge of edges) {
+    if (uf.union(edge.from, edge.to)) {
+      mstEdges.push(edge);
+      totalWeight += edge.weight;
+      if (mstEdges.length === numVertices - 1) break; // MST completa
+    }
+  }
+
+  return { mstEdges, totalWeight };
+}
+```
+
+### 7.2 Prim
+
+Começa com um vértice arbitrário e expande a árvore adicionando a aresta de menor peso que conecta um vértice na árvore a um vértice fora dela. Conceitualmente similar a Dijkstra.
+
+**Complexidade:** O((V + E) log V) com min-heap.
+
+```typescript
+function prim(
+  graph: Map<number, WeightedEdge[]>,
+  start: number
+): { mstEdges: { from: number; to: number; weight: number }[]; totalWeight: number } {
+  const inMST = new Set<number>();
+  const pq = new MinHeap<{ from: number; to: number }>();
+  const mstEdges: { from: number; to: number; weight: number }[] = [];
+  let totalWeight = 0;
+
+  inMST.add(start);
+  for (const { to, weight } of graph.get(start) ?? []) {
+    pq.push({ from: start, to }, weight);
+  }
+
+  while (pq.size > 0 && inMST.size < graph.size) {
+    const { key: edge, priority: weight } = pq.pop()!;
+
+    if (inMST.has(edge.to)) continue;
+
+    inMST.add(edge.to);
+    mstEdges.push({ from: edge.from, to: edge.to, weight });
+    totalWeight += weight;
+
+    for (const { to: next, weight: w } of graph.get(edge.to) ?? []) {
+      if (!inMST.has(next)) {
+        pq.push({ from: edge.to, to: next }, w);
+      }
+    }
+  }
+
+  return { mstEdges, totalWeight };
+}
+```
+
+**Kruskal vs Prim:** Kruskal é melhor para grafos esparsos (E ≈ V) e quando as arestas já estão disponíveis em lista. Prim é melhor para grafos densos (E ≈ V²), especialmente com adjacency matrix onde pode rodar em O(V²) sem heap.
+
+---
+
+## 8. Detecção de Ciclo
+
+### 8.1 Em grafos dirigidos — DFS com coloração (três estados)
+
+A presença de uma **back edge** durante DFS indica ciclo. Usamos a coloração WHITE/GRAY/BLACK descrita na seção 4.
+
+```typescript
+function hasCycleDirected(graph: Map<number, number[]>): boolean {
+  const color = new Map<number, Color>();
+  for (const v of graph.keys()) color.set(v, Color.WHITE);
+
+  function dfsVisit(u: number): boolean {
+    color.set(u, Color.GRAY);
+    for (const v of graph.get(u) ?? []) {
+      if (color.get(v) === Color.GRAY) return true;  // back edge → ciclo
+      if (color.get(v) === Color.WHITE && dfsVisit(v)) return true;
+    }
+    color.set(u, Color.BLACK);
+    return false;
+  }
+
+  for (const v of graph.keys()) {
+    if (color.get(v) === Color.WHITE && dfsVisit(v)) return true;
+  }
+  return false;
+}
+```
+
+### 8.2 Em grafos não-dirigidos — Union-Find
+
+Para cada aresta (u, v): se find(u) === find(v), ambos já estão no mesmo componente → adicionar essa aresta cria ciclo.
+
+```typescript
+function hasCycleUndirected(
+  numVertices: number,
+  edges: { from: number; to: number }[]
+): boolean {
+  const uf = new UnionFind(numVertices);
+
+  for (const { from, to } of edges) {
+    if (uf.find(from) === uf.find(to)) return true;
+    uf.union(from, to);
+  }
+
+  return false;
+}
+```
+
+> **Por que não usar apenas DFS para grafos não-dirigidos?** Você pode, mas precisa ter cuidado com a aresta "pai". Em um grafo não-dirigido, ao visitar v a partir de u, a aresta (v, u) existe de volta. Sem rastrear o pai, você detectaria falsamente essa aresta de retorno como ciclo. Union-Find é mais limpo e evita esse problema.
+
+---
+
+## 9. Strongly Connected Components (SCCs)
+
+**Definição:** Um SCC de um dígrafo é um subconjunto maximal de vértices C ⊆ V tal que, para todo par u, v ∈ C, existem caminhos de u para v **e** de v para u. O **grafo de condensação** (DAG dos SCCs) é fundamental para análise de dependências.
+
+### 9.1 Algoritmo de Kosaraju — O(V + E)
+
+1. Executar DFS no grafo original G, registrando finish times.
+2. Construir o grafo transposto Gᵀ (inverter todas as arestas).
+3. Executar DFS em Gᵀ na ordem decrescente de finish time. Cada árvore DFS resultante é um SCC.
+
+```typescript
+function kosaraju(graph: Map<number, number[]>): number[][] {
+  const vertices = [...graph.keys()];
+
+  // Passo 1: DFS no grafo original, coletando finish order
+  const visited = new Set<number>();
+  const finishOrder: number[] = [];
+
+  function dfs1(u: number): void {
+    visited.add(u);
+    for (const v of graph.get(u) ?? []) {
+      if (!visited.has(v)) dfs1(v);
+    }
+    finishOrder.push(u);
+  }
+
+  for (const v of vertices) {
+    if (!visited.has(v)) dfs1(v);
+  }
+
+  // Passo 2: Construir grafo transposto
+  const transposed = new Map<number, number[]>();
+  for (const v of vertices) transposed.set(v, []);
+  for (const [u, neighbors] of graph) {
+    for (const v of neighbors) {
+      transposed.get(v)!.push(u);
+    }
+  }
+
+  // Passo 3: DFS no grafo transposto em ordem reversa de finish
+  visited.clear();
+  const sccs: number[][] = [];
+
+  function dfs2(u: number, component: number[]): void {
+    visited.add(u);
+    component.push(u);
+    for (const v of transposed.get(u) ?? []) {
+      if (!visited.has(v)) dfs2(v, component);
+    }
+  }
+
+  for (let i = finishOrder.length - 1; i >= 0; i--) {
+    const v = finishOrder[i];
+    if (!visited.has(v)) {
+      const component: number[] = [];
+      dfs2(v, component);
+      sccs.push(component);
+    }
+  }
+
+  return sccs;
+}
+```
+
+### 9.2 Algoritmo de Tarjan — O(V + E)
+
+Usa uma única passagem DFS com uma stack auxiliar. Cada SCC é identificado quando encontramos um vértice raiz (low[u] === disc[u]).
+
+```typescript
+function tarjanSCC(graph: Map<number, number[]>): number[][] {
+  let timer = 0;
+  const disc = new Map<number, number>();
+  const low = new Map<number, number>();
+  const onStack = new Set<number>();
+  const stack: number[] = [];
+  const sccs: number[][] = [];
+
+  function strongConnect(u: number): void {
+    disc.set(u, timer);
+    low.set(u, timer);
+    timer++;
+    stack.push(u);
+    onStack.add(u);
+
+    for (const v of graph.get(u) ?? []) {
+      if (!disc.has(v)) {
+        strongConnect(v);
+        low.set(u, Math.min(low.get(u)!, low.get(v)!));
+      } else if (onStack.has(v)) {
+        low.set(u, Math.min(low.get(u)!, disc.get(v)!));
+      }
+    }
+
+    // Se u é raiz de um SCC
+    if (low.get(u) === disc.get(u)) {
+      const component: number[] = [];
+      let w: number;
+      do {
+        w = stack.pop()!;
+        onStack.delete(w);
+        component.push(w);
+      } while (w !== u);
+      sccs.push(component);
+    }
+  }
+
+  for (const v of graph.keys()) {
+    if (!disc.has(v)) strongConnect(v);
+  }
+
+  return sccs;
+}
+```
+
+**Tarjan vs Kosaraju:** Tarjan faz apenas uma DFS (vs duas de Kosaraju) e não precisa construir o grafo transposto. Na prática, Tarjan é mais eficiente em memória. Kosaraju é conceitualmente mais simples de entender e provar.
+
+---
+
+## 10. Aplicações Reais
+
+### Redes Sociais — BFS e graus de separação
+LinkedIn usa BFS para "People you may know" e mostrar a distância de conexão (1st, 2nd, 3rd). Facebook/Meta usa BFS bidirecional para otimizar busca de caminho entre dois usuários — ao invés de explorar O(bᵈ) nós (b = branching factor, d = distância), explora O(2 × b^(d/2)), uma redução exponencial.
+
+### Google Maps — Dijkstra e A*
+Navegação GPS usa variantes de Dijkstra. Na prática, usa **A*** (Dijkstra + heurística admissível) e **Contraction Hierarchies** que pré-processam o grafo para responder queries em milissegundos em grafos com centenas de milhões de nós.
+
+### Dependency Resolution — Topological Sort
+npm, yarn, cargo, pip, Maven — todos resolvem dependências com topological sort. Quando você roda `npm install`, o grafo de dependências é construído e ordenado topologicamente para determinar a ordem de instalação. Dependências circulares são detectadas quando o topological sort falha.
+
+### Garbage Collection — Reachability via DFS/BFS
+Mark-and-sweep GC (usado no V8/Node.js) trata a memória como um grafo: objetos são vértices, referências são arestas. DFS a partir das raízes (stack, variáveis globais) marca todos os objetos alcançáveis. Objetos não-marcados são coletados. Isso é literalmente um problema de alcançabilidade em grafos.
+
+### PageRank — Random Walks em grafos dirigidos
+O algoritmo original do Google modela a web como um dígrafo (páginas = vértices, links = arestas). PageRank calcula a probabilidade estacionária de um random walk, equivalente ao autovetor dominante da matriz de adjacência normalizada. A fórmula: PR(v) = (1-d)/N + d × Σ(PR(u)/out-degree(u)) para todo u com aresta para v, onde d ≈ 0.85 é o damping factor.
+
+### Compiladores — Análise de fluxo de controle
+O CFG (Control Flow Graph) de um programa é um dígrafo onde cada nó é um basic block e arestas representam possíveis transferências de controle. Dominators, loops, e otimizações como dead code elimination são computados usando DFS, dominance frontiers, e SCCs sobre esse grafo.
+
+---
+
+## Exercícios
+
+1. **BFS Shortest Path:** Dado um grafo não-ponderado e dois vértices s e t, retorne o caminho mais curto entre eles (não apenas a distância, mas o caminho completo).
+
+2. **Detecção de ciclo em dependências:** Dado um mapeamento de pacotes e suas dependências, determine se existe dependência circular e, se sim, retorne o ciclo.
+
+3. **Topological Sort com múltiplas ordenações válidas:** Modifique o algoritmo de Kahn para retornar a ordenação **lexicograficamente menor** (dica: use min-heap ao invés de fila simples).
+
+4. **Bipartite Check:** Use BFS com 2-coloração para verificar se um grafo é bipartido. Um grafo é bipartido se e somente se não contém ciclo de comprimento ímpar.
+
+5. **Islands Count (LeetCode #200):** Dada uma grid m×n de '1' (terra) e '0' (água), conte o número de ilhas. Cada célula é um vértice conectado aos 4 vizinhos adjacentes — isso é BFS/DFS em um grafo implícito.
+
+6. **Course Schedule (LeetCode #207 / #210):** Dados n cursos e pré-requisitos como pares [a, b] significando "para fazer a, precisa de b", determine se é possível completar todos os cursos (detecção de ciclo) e retorne uma ordem válida (topological sort).

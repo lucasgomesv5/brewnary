@@ -1,0 +1,18 @@
+---
+import MainLayout from '../../layouts/MainLayout.astro';
+import YouTubeArchitectureDiagram from '../../components/react/diagrams/YouTubeArchitectureDiagram';
+---
+
+<MainLayout
+  title="Arquitetura do YouTube"
+  description="Diagrama interativo da arquitetura simplificada do YouTube: ingestão, transcodificação, CDN e recomendação."
+>
+  <div class="mx-auto max-w-7xl px-4 py-8 sm:px-6">
+    <div class="mb-6">
+      <a href="/diagramas" class="text-sm text-(--color-text-muted) transition-colors hover:text-(--color-text)"
+        >← Voltar aos diagramas</a
+      >
+    </div>
+    <YouTubeArchitectureDiagram client:visible />
+  </div>
+</MainLayout>

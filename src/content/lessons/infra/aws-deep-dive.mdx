@@ -1,0 +1,591 @@
+---
+title: "AWS Deep Dive"
+description: "Arquitetura avançada na AWS: VPC design, compute moderno, S3 internals, banco de dados gerenciado, mensageria, segurança e otimização de custos"
+track: "infra"
+order: 5
+section: "Orquestração e Cloud"
+priority: "high"
+tags: ["aws", "vpc", "ecs", "s3", "rds", "dynamodb", "segurança", "custos"]
+prerequisites: []
+keyTakeaways:
+  - "O design de VPC com subnets públicas/privadas, Transit Gateway e PrivateLink define a postura de segurança de toda a arquitetura"
+  - "A escolha entre ECS Fargate, EKS e Lambda depende do padrão de tráfego, requisitos de controle e competência da equipe"
+  - "Otimização de custos é contínua: Savings Plans + Spot + right-sizing + revisão de storage tiers podem reduzir 30-60% da fatura"
+---
+
+## Networking: VPC Design Avançado
+
+### Arquitetura de VPC Multi-Tier
+
+```
+┌── VPC (10.0.0.0/16) ─────────────────────────────────────────────┐
+│                                                                    │
+│  ┌── Public Subnets (10.0.0.0/22 por AZ) ─────────────────────┐ │
+│  │  AZ-a: 10.0.0.0/24  │ AZ-b: 10.0.1.0/24 │ AZ-c: 10.0.2.0/24│
+│  │  ALB, NAT Gateway, Bastion                                   │ │
+│  │  Route: 0.0.0.0/0 → Internet Gateway                         │ │
+│  └───────────────────────────────────────────────────────────────┘ │
+│           │ NAT Gateway                                            │
+│  ┌── Private Subnets (App) ────────────────────────────────────┐ │
+│  │  AZ-a: 10.0.10.0/24 │ AZ-b: 10.0.11.0/24│ AZ-c: 10.0.12.0/24│
+│  │  ECS Tasks, EKS Pods, EC2 instances                          │ │
+│  │  Route: 0.0.0.0/0 → NAT Gateway (saída para internet)       │ │
+│  └───────────────────────────────────────────────────────────────┘ │
+│           │                                                        │
+│  ┌── Private Subnets (Data) ───────────────────────────────────┐ │
+│  │  AZ-a: 10.0.20.0/24 │ AZ-b: 10.0.21.0/24│ AZ-c: 10.0.22.0/24│
+│  │  RDS, ElastiCache, DocumentDB                                │ │
+│  │  SEM rota para internet (isolamento total)                   │ │
+│  └───────────────────────────────────────────────────────────────┘ │
+│                                                                    │
+│  VPC Endpoints (PrivateLink):                                     │
+│  ├── com.amazonaws.us-east-1.s3 (Gateway endpoint, gratuito)     │
+│  ├── com.amazonaws.us-east-1.ecr.api (Interface endpoint)        │
+│  ├── com.amazonaws.us-east-1.ecr.dkr                              │
+│  ├── com.amazonaws.us-east-1.logs                                  │
+│  └── com.amazonaws.us-east-1.secretsmanager                       │
+└────────────────────────────────────────────────────────────────────┘
+```
+
+### Transit Gateway e Conectividade
+
+```
+┌── Transit Gateway ──────────────────────────────────────────┐
+│                                                              │
+│  VPC Prod ──────┐                                           │
+│  VPC Staging ───┤                                           │
+│  VPC Dev ───────┼──→ Transit Gateway ──→ On-Premises        │
+│  VPC Shared ────┤         │              (Direct Connect    │
+│  VPC Security ──┘         │               ou Site-to-Site    │
+│                           │               VPN)               │
+│                           ▼                                  │
+│                    Route Tables                              │
+│                    (isolamento entre VPCs)                    │
+└──────────────────────────────────────────────────────────────┘
+
+# VPC Peering: ponto-a-ponto, sem transitividade
+# Transit Gateway: hub central, suporta transitividade e routing
+# PrivateLink: expor serviço de uma VPC para outra sem peering
+# Direct Connect: conexão física dedicada (não passa pela internet)
+```
+
+### Security Groups e NACLs
+
+```hcl
+# Security Groups — stateful (resposta automática)
+# Princípio: deny all, allow explicitly
+
+# ALB SG: aceita tráfego da internet
+resource "aws_security_group" "alb" {
+  ingress {
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+}
+
+# App SG: aceita APENAS do ALB
+resource "aws_security_group" "app" {
+  ingress {
+    from_port       = 3000
+    to_port         = 3000
+    protocol        = "tcp"
+    security_groups = [aws_security_group.alb.id]  # Referência por SG, não por IP
+  }
+}
+
+# DB SG: aceita APENAS do App
+resource "aws_security_group" "db" {
+  ingress {
+    from_port       = 5432
+    to_port         = 5432
+    protocol        = "tcp"
+    security_groups = [aws_security_group.app.id]
+  }
+}
+
+# Cadeia de confiança: Internet → ALB → App → DB
+# Nenhuma camada aceita tráfego de quem não deveria
+```
+
+## Compute: ECS vs EKS vs Lambda
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                │ ECS Fargate    │ EKS            │ Lambda        │
+├────────────────┼────────────────┼────────────────┼───────────────┤
+│ Abstração      │ Containers     │ Kubernetes     │ Funções       │
+│                │ serverless     │ completo       │ serverless    │
+│ Controle       │ Médio          │ Total          │ Mínimo        │
+│ Operação       │ Baixa          │ Alta           │ Quase zero    │
+│ Escala         │ Task-level     │ Pod-level      │ Request-level │
+│ Cold start     │ ~30-60s        │ ~15-30s (pod)  │ ~100ms-10s    │
+│ Custo mínimo   │ ~$30/mês       │ ~$73/mês (CP)  │ $0 (free tier)│
+│ Networking     │ awsvpc (ENI)   │ VPC CNI        │ VPC opcional  │
+│ Max execução   │ Ilimitado      │ Ilimitado      │ 15 minutos    │
+├────────────────┼────────────────┼────────────────┼───────────────┤
+│ Ideal para     │ Microserviços  │ Equipes com    │ Event-driven  │
+│                │ sem overhead K8s│ expertise K8s  │ Glue code     │
+│                │ 2-20 serviços  │ >20 serviços   │ APIs leves    │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+### ECS Fargate — Configuração Completa
+
+```hcl
+# Task definition — define o container
+resource "aws_ecs_task_definition" "api" {
+  family                   = "api"
+  requires_compatibilities = ["FARGATE"]
+  network_mode             = "awsvpc"
+  cpu                      = 512     # 0.5 vCPU
+  memory                   = 1024    # 1 GB
+  execution_role_arn       = aws_iam_role.ecs_execution.arn
+  task_role_arn            = aws_iam_role.ecs_task.arn
+
+  runtime_platform {
+    operating_system_family = "LINUX"
+    cpu_architecture        = "ARM64"  # Graviton: ~20% mais barato
+  }
+
+  container_definitions = jsonencode([{
+    name      = "api"
+    image     = "${aws_ecr_repository.api.repository_url}:${var.image_tag}"
+    essential = true
+
+    portMappings = [{
+      containerPort = 3000
+      protocol      = "tcp"
+    }]
+
+    environment = [
+      { name = "NODE_ENV", value = "production" },
+      { name = "LOG_LEVEL", value = "info" }
+    ]
+
+    secrets = [
+      {
+        name      = "DATABASE_URL"
+        valueFrom = aws_secretsmanager_secret.db_url.arn
+      },
+      {
+        name      = "JWT_SECRET"
+        valueFrom = "${aws_secretsmanager_secret.app.arn}:jwt_secret::"
+      }
+    ]
+
+    logConfiguration = {
+      logDriver = "awslogs"
+      options = {
+        "awslogs-group"         = aws_cloudwatch_log_group.api.name
+        "awslogs-region"        = "us-east-1"
+        "awslogs-stream-prefix" = "api"
+      }
+    }
+
+    healthCheck = {
+      command     = ["CMD-SHELL", "wget -qO- http://localhost:3000/health || exit 1"]
+      interval    = 15
+      timeout     = 5
+      retries     = 3
+      startPeriod = 30
+    }
+  }])
+}
+
+# Auto-scaling baseado em métricas
+resource "aws_appautoscaling_target" "api" {
+  max_capacity       = 20
+  min_capacity       = 3
+  resource_id        = "service/${aws_ecs_cluster.main.name}/${aws_ecs_service.api.name}"
+  scalable_dimension = "ecs:service:DesiredCount"
+  service_namespace  = "ecs"
+}
+
+resource "aws_appautoscaling_policy" "cpu" {
+  name               = "api-cpu-scaling"
+  policy_type        = "TargetTrackingScaling"
+  resource_id        = aws_appautoscaling_target.api.resource_id
+  scalable_dimension = aws_appautoscaling_target.api.scalable_dimension
+  service_namespace  = aws_appautoscaling_target.api.service_namespace
+
+  target_tracking_scaling_policy_configuration {
+    predefined_metric_specification {
+      predefined_metric_type = "ECSServiceAverageCPUUtilization"
+    }
+    target_value       = 70.0
+    scale_in_cooldown  = 300
+    scale_out_cooldown = 60
+  }
+}
+```
+
+### Graviton (ARM64)
+
+Instâncias Graviton oferecem ~20% melhor relação preço-performance. Disponíveis em EC2 (t4g, m7g, c7g), ECS Fargate, Lambda e RDS.
+
+```bash
+# Build multi-plataforma para suportar Graviton
+docker buildx build --platform linux/amd64,linux/arm64 -t app:v1 --push .
+
+# Na task definition, use runtime_platform com ARM64
+# Economia típica: ~20% no compute
+```
+
+## Storage: S3 Internals
+
+### Modelo de Consistência e Performance
+
+```
+S3 oferece strong read-after-write consistency desde 2020:
+- PUT novo objeto → GET imediato retorna o objeto
+- PUT overwrite → GET imediato retorna a versão nova
+- DELETE → GET imediato retorna 404
+
+Performance:
+- 5.500 GET/s e 3.500 PUT/s POR PREFIXO
+- Prefixo = parte do path antes do objeto
+- Para alto throughput: distribua objetos em múltiplos prefixos
+
+# ❌ Hotspot em um prefixo:
+s3://bucket/uploads/2024-01-15/file1.jpg    # Todas as escritas em uploads/2024-01-15/
+
+# ✅ Distribuição por hash:
+s3://bucket/a3f2/uploads/2024-01-15/file1.jpg  # Prefixo = hash
+s3://bucket/7b1c/uploads/2024-01-15/file2.jpg
+```
+
+### Classes de Storage e Lifecycle
+
+```hcl
+# Lifecycle policy — otimização automática de custos
+resource "aws_s3_bucket_lifecycle_configuration" "uploads" {
+  bucket = aws_s3_bucket.uploads.id
+
+  rule {
+    id     = "optimize-storage"
+    status = "Enabled"
+
+    transition {
+      days          = 30
+      storage_class = "STANDARD_IA"      # $0.0125/GB (50% mais barato)
+    }
+
+    transition {
+      days          = 90
+      storage_class = "INTELLIGENT_TIERING"  # Automático
+    }
+
+    transition {
+      days          = 365
+      storage_class = "GLACIER_IR"       # Retrieval em ms, $0.004/GB
+    }
+
+    transition {
+      days          = 730
+      storage_class = "DEEP_ARCHIVE"     # Retrieval em 12h, $0.00099/GB
+    }
+
+    noncurrent_version_expiration {
+      noncurrent_days = 30               # Versões antigas: 30 dias
+    }
+  }
+}
+
+# Cross-Region Replication
+resource "aws_s3_bucket_replication_configuration" "dr" {
+  bucket = aws_s3_bucket.primary.id
+  role   = aws_iam_role.replication.arn
+
+  rule {
+    status = "Enabled"
+    destination {
+      bucket        = aws_s3_bucket.replica.arn
+      storage_class = "STANDARD_IA"
+    }
+  }
+}
+```
+
+## Bancos de Dados Gerenciados
+
+### RDS Multi-AZ e Aurora
+
+```
+RDS Multi-AZ:
+┌─── AZ-a ──────────┐    ┌─── AZ-b ──────────┐
+│  Primary (RW)      │───→│  Standby (sync)    │
+│  Endpoint: write   │    │  Failover automático│
+└────────────────────┘    └────────────────────┘
+                          Failover: 60-120s
+
+Aurora:
+┌─── Shared Storage Layer (6 cópias em 3 AZs) ──────┐
+│  ┌── AZ-a ─────┐  ┌── AZ-b ─────┐  ┌── AZ-c ─┐  │
+│  │ Copy 1      │  │ Copy 3      │  │ Copy 5  │   │
+│  │ Copy 2      │  │ Copy 4      │  │ Copy 6  │   │
+│  └─────────────┘  └─────────────┘  └─────────┘   │
+└────────────────────────────────────────────────────┘
+      ↑                    ↑
+  Writer Instance     Reader Instance(s)
+  (1 por cluster)     (até 15 réplicas)
+
+Aurora vs RDS PostgreSQL:
+- 3x throughput do PostgreSQL padrão
+- Storage auto-scaling até 128 TB
+- Failover em <30s (vs 60-120s do RDS Multi-AZ)
+- Backtrack: voltar o banco no tempo sem restore
+- Global Database: replicação cross-region em <1s
+```
+
+### DynamoDB: Single-Table Design
+
+```javascript
+// DynamoDB favorece single-table design para minimizar requests
+
+// Exemplo: aplicação com Users, Orders e Products
+// Tudo na MESMA tabela com PK/SK genéricos
+
+const TABLE_NAME = 'MyApp';
+
+// User: PK=USER#123, SK=PROFILE
+// User's orders: PK=USER#123, SK=ORDER#2024-01-15#abc
+// Order details: PK=ORDER#abc, SK=DETAIL
+// Product: PK=PRODUCT#xyz, SK=METADATA
+
+// Access patterns:
+// 1. Get user profile: Query PK=USER#123, SK=PROFILE
+// 2. Get user's orders: Query PK=USER#123, SK begins_with ORDER#
+// 3. Get orders by date: GSI1 PK=DATE#2024-01-15, SK=ORDER#
+// 4. Get order details: Query PK=ORDER#abc
+
+const params = {
+  TableName: TABLE_NAME,
+  KeyConditionExpression: 'PK = :pk AND begins_with(SK, :sk_prefix)',
+  ExpressionAttributeValues: {
+    ':pk': 'USER#123',
+    ':sk_prefix': 'ORDER#',
+  },
+};
+
+// Capacidade:
+// On-Demand: pague por request (~$1.25 por milhão de escritas)
+// Provisioned: defina RCU/WCU (mais barato se tráfego previsível)
+// Reserved: 1 ou 3 anos, até 76% desconto
+
+// DAX (DynamoDB Accelerator): cache in-memory, <1ms latência
+// Global Tables: replicação multi-região ativa-ativa
+```
+
+### ElastiCache: Redis vs Memcached
+
+```
+Redis (ElastiCache):                    Memcached:
+- Estruturas de dados ricas             - Simples key-value
+- Persistência (RDB/AOF)               - Sem persistência
+- Replicação e failover automático      - Sem replicação
+- Pub/Sub, Streams, Lua scripting       - Multi-threaded
+- Cluster mode (sharding)              - Sharding manual
+- Backup automático                     - Sem backup
+
+Recomendação: Redis para 95% dos casos. Memcached apenas
+para cache puro simples com múltiplas threads.
+```
+
+## Mensageria e Eventos
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│ Serviço      │ Modelo          │ Caso de Uso                     │
+├──────────────┼─────────────────┼─────────────────────────────────┤
+│ SQS          │ Queue (pull)    │ Desacoplamento, work queues,    │
+│              │ At-least-once   │ buffer entre serviços           │
+│              │ FIFO disponível │ Processamento assíncrono        │
+├──────────────┼─────────────────┼─────────────────────────────────┤
+│ SNS          │ Pub/Sub (push)  │ Fan-out para múltiplos          │
+│              │ Topic-based     │ subscribers (SQS, Lambda, HTTP) │
+├──────────────┼─────────────────┼─────────────────────────────────┤
+│ EventBridge  │ Event bus       │ Event-driven architecture,      │
+│              │ Rules + targets │ integração entre serviços AWS,  │
+│              │ Schema registry │ SaaS events (Stripe, Auth0)     │
+├──────────────┼─────────────────┼─────────────────────────────────┤
+│ Kinesis      │ Stream (ordered)│ Real-time analytics, log        │
+│              │ Múltiplos       │ aggregation, IoT data           │
+│              │ consumers       │ (mantém ordem por shard)        │
+└──────────────┴─────────────────┴─────────────────────────────────┘
+```
+
+```
+Padrão comum: SNS + SQS (Fan-out)
+
+  Serviço A publica evento "OrderCreated" no SNS Topic
+       │
+  ┌────┴─────────────┐
+  ▼                  ▼
+SQS Queue           SQS Queue           SQS Queue
+(Billing)           (Notification)      (Analytics)
+  │                  │                   │
+  ▼                  ▼                   ▼
+Lambda              Lambda              Kinesis Firehose
+(processar          (enviar email)      (S3 → Athena)
+ pagamento)
+
+Benefícios:
+- Cada consumer processa no seu ritmo
+- Falha em um consumer não afeta outros
+- SQS DLQ captura mensagens com falha
+- Retry automático com backoff exponencial
+```
+
+## Segurança AWS
+
+### KMS e Criptografia
+
+```hcl
+# CMK (Customer Master Key) para criptografia
+resource "aws_kms_key" "app" {
+  description             = "Chave de criptografia da aplicação"
+  deletion_window_in_days = 30
+  enable_key_rotation     = true  # Rotação automática anual
+  policy                  = data.aws_iam_policy_document.kms_policy.json
+}
+
+# Envelope encryption:
+# 1. KMS gera Data Key (plaintext + encrypted)
+# 2. App usa Data Key plaintext para criptografar dados
+# 3. App armazena Data Key encrypted junto dos dados
+# 4. Para descriptografar: KMS decripta Data Key, app usa para decriptar dados
+# Benefício: KMS nunca vê seus dados, apenas a chave
+```
+
+### WAF e Shield
+
+```hcl
+# WAF com regras gerenciadas pela AWS
+resource "aws_wafv2_web_acl" "api" {
+  name  = "api-waf"
+  scope = "REGIONAL"
+
+  default_action { allow {} }
+
+  rule {
+    name     = "AWS-AWSManagedRulesCommonRuleSet"
+    priority = 1
+    override_action { none {} }
+    statement {
+      managed_rule_group_statement {
+        vendor_name = "AWS"
+        name        = "AWSManagedRulesCommonRuleSet"
+      }
+    }
+    visibility_config {
+      sampled_requests_enabled   = true
+      cloudwatch_metrics_enabled = true
+      metric_name                = "CommonRuleSet"
+    }
+  }
+
+  rule {
+    name     = "rate-limit"
+    priority = 2
+    action { block {} }
+    statement {
+      rate_based_statement {
+        limit              = 2000  # Requests por 5 minutos por IP
+        aggregate_key_type = "IP"
+      }
+    }
+    visibility_config {
+      sampled_requests_enabled   = true
+      cloudwatch_metrics_enabled = true
+      metric_name                = "RateLimit"
+    }
+  }
+}
+```
+
+### GuardDuty e Security Hub
+
+```
+GuardDuty: detecção de ameaças com ML
+- Analisa VPC Flow Logs, CloudTrail, DNS logs
+- Detecta: crypto mining, credentials comprometidas,
+  comunicação com IPs maliciosos, exfiltração de dados
+
+Security Hub: painel centralizado de segurança
+- Agrega findings de GuardDuty, Inspector, Macie, Config
+- Compliance checks: CIS Benchmarks, PCI DSS, SOC2
+- Automated remediation com EventBridge + Lambda
+```
+
+## Otimização de Custos
+
+```
+┌── Estratégias de Economia ──────────────────────────────────────┐
+│                                                                   │
+│  1. Savings Plans (Compute):                                     │
+│     Compromisso de $/hora por 1 ou 3 anos                        │
+│     Economia: até 72% vs on-demand                               │
+│     Flexível: aplica em EC2, Fargate, Lambda                     │
+│                                                                   │
+│  2. Spot Instances:                                               │
+│     Capacidade ociosa da AWS com 60-90% desconto                 │
+│     Pode ser interrompida com 2 min de aviso                     │
+│     Ideal para: workers, batch, CI/CD, treinamento ML            │
+│     Nunca para: bancos de dados, serviços stateful               │
+│                                                                   │
+│  3. Right-sizing:                                                │
+│     AWS Compute Optimizer analisa utilização                      │
+│     Típico: 30-40% das instâncias são oversized                  │
+│     Graviton (ARM): 20% mais barato com mesma performance        │
+│                                                                   │
+│  4. Storage Tiering:                                              │
+│     S3 Intelligent-Tiering: automático                           │
+│     EBS gp3 vs gp2: 20% mais barato, mais IOPS de base          │
+│     Deletar snapshots antigos e volumes não usados               │
+│                                                                   │
+│  5. Networking:                                                   │
+│     VPC Endpoints: eliminam NAT Gateway costs ($0.045/GB)        │
+│     CloudFront: reduz transferência de dados                     │
+│     Regional: manter serviços na mesma AZ quando possível        │
+│                                                                   │
+└───────────────────────────────────────────────────────────────────┘
+```
+
+## Well-Architected Framework
+
+```
+Os 6 pilares:
+
+1. Excelência Operacional
+   - IaC, observabilidade, runbooks, game days
+   - "Como responder a incidentes?"
+
+2. Segurança
+   - IAM least privilege, criptografia, detecção de ameaças
+   - "Como proteger dados e workloads?"
+
+3. Confiabilidade
+   - Multi-AZ, backups, chaos engineering, disaster recovery
+   - "Como recuperar de falhas?"
+
+4. Eficiência de Performance
+   - Right-sizing, caching, CDN, auto-scaling
+   - "Como usar recursos eficientemente?"
+
+5. Otimização de Custos
+   - Savings Plans, spot, tagging, budget alerts
+   - "Como eliminar gastos desnecessários?"
+
+6. Sustentabilidade
+   - Graviton, regiões com energia limpa, right-sizing
+   - "Como minimizar impacto ambiental?"
+
+Ferramenta: AWS Well-Architected Tool
+- Review guiado por pilar
+- Gera plano de melhorias priorizado
+- Execute trimestralmente para manter qualidade
+```
+
+Arquitetar na AWS é sobre composição de serviços gerenciados com design consciente de segurança, custo e resiliência. Cada decisão tem tradeoffs — a diferença entre uma conta de $500/mês e $5.000/mês para a mesma carga pode estar em decisões de arquitetura tomadas no início do projeto.

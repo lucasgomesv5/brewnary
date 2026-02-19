@@ -1,0 +1,168 @@
+---
+
+---
+
+<section class="relative overflow-hidden">
+  <!-- Subtle dot grid background -->
+  <div
+    class="absolute inset-0 opacity-[0.04]"
+    style="background-image: radial-gradient(circle, currentColor 1px, transparent 1px); background-size: 20px 20px;"
+  >
+  </div>
+
+  <div class="relative mx-auto max-w-6xl px-4 py-20 sm:px-6 sm:py-28">
+    <div class="grid grid-cols-1 items-center gap-12 lg:grid-cols-2">
+      <!-- Text -->
+      <div>
+        <p class="mb-4 font-mono text-sm tracking-wide text-[var(--color-text-muted)]">// engenharia de software</p>
+        <h1 class="mb-6 text-4xl leading-[1.05] font-bold tracking-tighter sm:text-5xl lg:text-6xl">
+          Conhecimento<br />
+          <span class="text-[var(--color-accent)]">técnico</span>,<br />
+          organizado.
+        </h1>
+
+        <p class="mb-8 max-w-md text-base leading-relaxed text-[var(--color-text-muted)]">
+          Fundamentos de computação, arquitetura de sistemas, infraestrutura e boas práticas. Conteúdo denso, exemplos
+          práticos, visualizações de conceitos.
+        </p>
+
+        <div class="flex items-center gap-4">
+          <a
+            href="#topicos"
+            class="inline-flex items-center gap-2 rounded-lg bg-[var(--color-accent)] px-5 py-2.5 text-sm font-semibold text-[var(--color-bg)] transition-opacity hover:opacity-90"
+          >
+            Explorar tópicos
+            <svg class="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 14l-7 7m0 0l-7-7m7 7V3"
+              ></path>
+            </svg>
+          </a>
+        </div>
+      </div>
+
+      <!-- Technical illustration: graph/network diagram -->
+      <div class="hidden items-center justify-center lg:flex">
+        <svg viewBox="0 0 400 360" class="w-full max-w-sm" fill="none">
+          <!-- Edges -->
+          <line x1="200" y1="60" x2="100" y2="160" stroke="var(--color-border)" stroke-width="1"></line>
+          <line x1="200" y1="60" x2="300" y2="140" stroke="var(--color-border)" stroke-width="1"></line>
+          <line x1="100" y1="160" x2="160" y2="260" stroke="var(--color-border)" stroke-width="1"></line>
+          <line x1="100" y1="160" x2="60" y2="280" stroke="var(--color-border)" stroke-width="1" stroke-dasharray="4 3"
+          ></line>
+          <line x1="300" y1="140" x2="320" y2="250" stroke="var(--color-border)" stroke-width="1"></line>
+          <line x1="300" y1="140" x2="200" y2="180" stroke="var(--color-border)" stroke-width="1" stroke-dasharray="4 3"
+          ></line>
+          <line x1="200" y1="180" x2="160" y2="260" stroke="var(--color-border)" stroke-width="1"></line>
+          <line x1="160" y1="260" x2="260" y2="310" stroke="var(--color-border)" stroke-width="1" stroke-dasharray="4 3"
+          ></line>
+          <line x1="320" y1="250" x2="260" y2="310" stroke="var(--color-border)" stroke-width="1"></line>
+
+          <!-- Nodes -->
+          <circle cx="200" cy="60" r="22" stroke="var(--color-accent)" stroke-width="1.5" fill="var(--color-bg)"
+          ></circle>
+          <circle cx="100" cy="160" r="18" stroke="var(--color-border)" stroke-width="1" fill="var(--color-bg)"
+          ></circle>
+          <circle cx="300" cy="140" r="18" stroke="var(--color-border)" stroke-width="1" fill="var(--color-bg)"
+          ></circle>
+          <circle cx="200" cy="180" r="14" stroke="var(--color-border)" stroke-width="1" fill="var(--color-bg)"
+          ></circle>
+          <circle cx="160" cy="260" r="16" stroke="var(--color-border)" stroke-width="1" fill="var(--color-bg)"
+          ></circle>
+          <circle
+            cx="60"
+            cy="280"
+            r="12"
+            stroke="var(--color-border)"
+            stroke-width="1"
+            fill="var(--color-bg)"
+            stroke-dasharray="3 2"></circle>
+          <circle cx="320" cy="250" r="16" stroke="var(--color-border)" stroke-width="1" fill="var(--color-bg)"
+          ></circle>
+          <circle cx="260" cy="310" r="14" stroke="var(--color-accent)" stroke-width="1" fill="var(--color-bg)"
+          ></circle>
+
+          <!-- Node labels -->
+          <text
+            x="200"
+            y="64"
+            text-anchor="middle"
+            font-family="var(--font-mono)"
+            font-size="11"
+            fill="var(--color-accent)">f(n)</text
+          >
+          <text
+            x="100"
+            y="164"
+            text-anchor="middle"
+            font-family="var(--font-mono)"
+            font-size="9"
+            fill="var(--color-text-muted)">O(n)</text
+          >
+          <text
+            x="300"
+            y="144"
+            text-anchor="middle"
+            font-family="var(--font-mono)"
+            font-size="9"
+            fill="var(--color-text-muted)">TCP</text
+          >
+          <text
+            x="200"
+            y="184"
+            text-anchor="middle"
+            font-family="var(--font-mono)"
+            font-size="8"
+            fill="var(--color-text-muted)">{'{}'}</text
+          >
+          <text
+            x="160"
+            y="264"
+            text-anchor="middle"
+            font-family="var(--font-mono)"
+            font-size="9"
+            fill="var(--color-text-muted)">SQL</text
+          >
+          <text
+            x="60"
+            y="284"
+            text-anchor="middle"
+            font-family="var(--font-mono)"
+            font-size="7"
+            fill="var(--color-text-muted)">...</text
+          >
+          <text
+            x="320"
+            y="254"
+            text-anchor="middle"
+            font-family="var(--font-mono)"
+            font-size="9"
+            fill="var(--color-text-muted)">K8s</text
+          >
+          <text
+            x="260"
+            y="314"
+            text-anchor="middle"
+            font-family="var(--font-mono)"
+            font-size="9"
+            fill="var(--color-accent)">→</text
+          >
+
+          <!-- Axis marks -->
+          <line x1="20" y1="340" x2="380" y2="340" stroke="var(--color-border)" stroke-width="0.5" opacity="0.3"></line>
+          <line x1="20" y1="20" x2="20" y2="340" stroke="var(--color-border)" stroke-width="0.5" opacity="0.3"></line>
+          <text
+            x="390"
+            y="344"
+            font-family="var(--font-mono)"
+            font-size="7"
+            fill="var(--color-text-muted)"
+            opacity="0.4">n</text
+          >
+          <text x="14" y="14" font-family="var(--font-mono)" font-size="7" fill="var(--color-text-muted)" opacity="0.4"
+            >t</text
+          >
+        </svg>
+      </div>
+    </div>
+  </div>
+</section>

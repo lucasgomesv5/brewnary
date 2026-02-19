@@ -1,0 +1,493 @@
+---
+title: "Large Language Models (LLMs)"
+description: "Tokenizacao, embeddings, pre-treino, fine-tuning, RLHF, inferencia e scaling laws -- como LLMs funcionam por dentro"
+track: "ia"
+order: 6
+section: "LLMs & Aplicacoes"
+priority: "high"
+tags: ["llm", "gpt", "tokenizacao", "embeddings", "fine-tuning", "rlhf"]
+prerequisites: []
+keyTakeaways:
+  - "LLMs sao Transformers decoder-only treinados com next token prediction em trilhoes de tokens -- o objetivo de treinamento e simples, mas a escala gera capacidades emergentes"
+  - "Tokenizacao (BPE) quebra texto em sub-palavras, embeddings mapeiam tokens para vetores densos, e a saida e uma distribuicao de probabilidade sobre o vocabulario inteiro para o proximo token"
+  - "RLHF alinha o modelo com preferencias humanas apos o pre-treino: primeiro supervised fine-tuning com dados de instrucao, depois treinamento de reward model e otimizacao com PPO ou DPO"
+---
+
+# Large Language Models (LLMs)
+
+LLMs sao modelos de linguagem baseados na arquitetura **Transformer decoder-only**, treinados em enormes volumes de texto com o objetivo de prever o proximo token. O que os torna extraordinarios e a **escala**: bilhoes de parametros, trilhoes de tokens de treinamento e milhares de GPUs.
+
+---
+
+## 1. Tokenizacao
+
+LLMs nao processam texto como caracteres ou palavras -- eles processam **tokens**, que sao sub-palavras. O algoritmo mais usado e **BPE** (Byte Pair Encoding).
+
+### BPE (Byte Pair Encoding)
+
+BPE comeca com caracteres individuais e iterativamente **merge** os pares mais frequentes.
+
+```
+Corpus: "low lower newest widest"
+
+Passo 0 (caracteres):
+  l o w _ l o w e r _ n e w e s t _ w i d e s t
+
+Passo 1: par mais frequente = (e, s) → merge em "es"
+  l o w _ l o w e r _ n e w es t _ w i d es t
+
+Passo 2: par mais frequente = (es, t) → merge em "est"
+  l o w _ l o w e r _ n e w est _ w i d est
+
+Passo 3: par mais frequente = (l, o) → merge em "lo"
+  lo w _ lo w e r _ n e w est _ w i d est
+
+...continua ate atingir tamanho de vocabulario desejado
+
+Resultado: um vocabulario de sub-palavras que equilibra
+entre caracteres (muito granular) e palavras (vocabulario enorme).
+```
+
+### Na Pratica
+
+```python
+# Usando tiktoken (tokenizador do GPT)
+import tiktoken
+
+enc = tiktoken.encoding_for_model("gpt-4")
+
+texto = "Inteligencia Artificial e fascinante"
+tokens = enc.encode(texto)
+print(f"Tokens: {tokens}")
+# [34674, 22208, 3603, 76039, 68, 10193, 14442, 2722]
+
+print(f"Numero de tokens: {len(tokens)}")  # 8
+
+# Decodificar cada token individualmente
+for t in tokens:
+    print(f"  {t} -> '{enc.decode([t])}'")
+# 34674 -> 'Int'
+# 22208 -> 'elig'
+# 3603  -> 'encia'
+# 76039 -> ' Artific'
+# 68    -> 'ial'
+# 10193 -> ' e'
+# 14442 -> ' fascin'
+# 2722  -> 'ante'
+```
+
+**Implicacoes praticas da tokenizacao:**
+- O custo de API e medido em tokens (nao palavras ou caracteres)
+- Palavras raras/tecnicas podem ser divididas em muitos tokens (mais caro)
+- Idiomas nao-ingleses geralmente requerem mais tokens por palavra
+- O tamanho do vocabulario tipico e ~32k-100k tokens
+
+---
+
+## 2. Embeddings
+
+Cada token do vocabulario e mapeado para um **vetor denso** de dimensao fixa. Esses vetores sao parametros aprendidos durante o treinamento.
+
+```
+Vocabulario: {gato: 0, cachorro: 1, rei: 2, rainha: 3, ...}
+
+Embedding matrix (vocab_size x d_model):
+
+token     embedding (simplificado para 4 dimensoes)
+────────────────────────────────────────────────────
+gato      [0.23, -0.45, 0.78, 0.12]
+cachorro  [0.25, -0.42, 0.75, 0.15]    ← similar a "gato"
+rei       [0.80, 0.50, -0.20, 0.90]
+rainha    [0.75, 0.55, -0.15, 0.85]    ← similar a "rei"
+
+Relacoes aprendidas:
+  vec("rei") - vec("homem") + vec("mulher") ≈ vec("rainha")
+
+Na pratica: d_model = 4096-12288 (GPT-4 usa ~12288 dimensoes)
+```
+
+### Tipos de Embedding em um Transformer
+
+```
+Token embedding:       ID do token → vetor (aprendido)
+Position embedding:    Posicao na sequencia → vetor (aprendido ou sinusoidal)
+
+Entrada final = Token embedding + Position embedding
+
+Para o texto "O gato":
+  "O"    → embed("O")    + pos(0) = [0.1, 0.2, ...] + [0.01, 0.02, ...] = input_0
+  "gato" → embed("gato") + pos(1) = [0.3, 0.4, ...] + [0.03, 0.04, ...] = input_1
+```
+
+---
+
+## 3. Pre-Treinamento: Next Token Prediction
+
+O objetivo de pre-treino de LLMs decoder-only e simples: dado uma sequencia de tokens, prever o **proximo token**.
+
+```
+Texto de treinamento: "A capital do Brasil e Brasilia"
+
+Exemplos de treinamento gerados automaticamente:
+  Input: "A"                    → Target: "capital"
+  Input: "A capital"            → Target: "do"
+  Input: "A capital do"         → Target: "Brasil"
+  Input: "A capital do Brasil"  → Target: "e"
+  Input: "A capital do Brasil e" → Target: "Brasilia"
+
+O modelo nunca recebe rotulos humanos -- os rotulos sao
+extraidos da propria estrutura do texto (self-supervised).
+```
+
+### Forward Pass em um LLM
+
+```
+Input: "O gato sentou no"
+
+1. Tokenizar: [O, gato, sent, ou, no]
+
+2. Embeddings: cada token → vetor de dimensao d_model
+
+3. Passar por N camadas de Transformer:
+   Cada camada: Masked Self-Attention → Add & Norm → FFN → Add & Norm
+
+   "Masked" = cada token so pode atender tokens ANTERIORES
+   (causal mask -- nao pode ver o futuro)
+
+4. Saida da ultima camada: vetor de dimensao d_model para cada posicao
+
+5. Projecao linear: vetor → logits (score para cada token do vocabulario)
+   Shape: (seq_len, vocab_size)
+   Ex: [0.1, -2.3, 5.7, 1.2, ...] para 100k tokens
+
+6. Softmax: logits → probabilidades
+   P("tapete") = 0.35
+   P("chao")   = 0.15
+   P("sofa")   = 0.12
+   P("muro")   = 0.08
+   ...
+
+7. Loss = cross-entropy entre probabilidade predita e token real
+```
+
+### Escala de Treinamento
+
+```
+┌─────────────┬───────────┬──────────┬──────────────────────┐
+│ Modelo      │ Parametros│ Tokens   │ Compute (estimado)   │
+├─────────────┼───────────┼──────────┼──────────────────────┤
+│ GPT-2      │ 1.5B      │ ~40B     │ ~50 petaFLOP-days    │
+│ GPT-3      │ 175B      │ ~300B    │ ~3,640 petaFLOP-days │
+│ LLaMA 2    │ 70B       │ 2T       │ ~1,720 petaFLOP-days │
+│ GPT-4      │ ~1.8T*    │ ~13T*    │ ~21,000 petaFLOP-days│
+│ LLaMA 3    │ 405B      │ 15T      │ ~30,000 petaFLOP-days│
+└─────────────┴───────────┴──────────┴──────────────────────┘
+  * Estimativas nao confirmadas oficialmente
+
+Custo: treinar um modelo como o GPT-4 custa estimados
+$50-100 milhoes so em compute (GPUs).
+```
+
+---
+
+## 4. Fine-Tuning
+
+Apos o pre-treino (que aprende linguagem geral), o modelo e ajustado para tarefas especificas.
+
+### Supervised Fine-Tuning (SFT)
+
+```
+Dados de SFT: pares (instrucao, resposta desejada) curados por humanos
+
+Exemplo:
+  Instrucao: "Resuma o seguinte texto em 3 pontos: [texto]"
+  Resposta:  "1. ... 2. ... 3. ..."
+
+  Instrucao: "Traduza para ingles: O gato sentou no tapete"
+  Resposta:  "The cat sat on the mat"
+
+O modelo e treinado com os mesmos objetivos (next token prediction),
+mas agora nos exemplos de instrucao-resposta.
+Tipicamente 10k-100k exemplos de alta qualidade.
+```
+
+### LoRA (Low-Rank Adaptation)
+
+Fine-tuning completo de um modelo de 70B parametros requer memoria e compute enormes. **LoRA** resolve isso treinando apenas **adaptadores de baixo rank** adicionados aos pesos existentes.
+
+```
+Peso original (congelado):  W ∈ R^(d x d)     (ex: 4096 x 4096)
+Adaptador LoRA:             ΔW = B @ A
+                            A ∈ R^(d x r)     (ex: 4096 x 16)
+                            B ∈ R^(r x d)     (ex: 16 x 4096)
+
+Peso efetivo: W + ΔW = W + B @ A
+
+Parametros treinaveis: 2 * d * r = 2 * 4096 * 16 = 131k
+vs peso original: d * d = 4096 * 4096 = 16.7M
+
+Reducao: ~99.2% menos parametros treinaveis!
+```
+
+---
+
+## 5. RLHF (Reinforcement Learning from Human Feedback)
+
+RLHF e o processo que transforma um modelo de linguagem pre-treinado (que apenas completa texto) em um assistente util, seguro e honesto.
+
+### Pipeline de 3 Etapas
+
+```
+ETAPA 1: Supervised Fine-Tuning (SFT)
+─────────────────────────────────────
+  Treinar o modelo em dados de instrucao-resposta
+  curados por humanos. O modelo aprende o FORMATO
+  de responder perguntas, seguir instrucoes, etc.
+
+  Resultado: modelo que responde, mas nem sempre bem.
+
+
+ETAPA 2: Reward Model (RM)
+──────────────────────────
+  1. Gerar multiplas respostas para cada prompt
+  2. Humanos ORDENAM as respostas (melhor → pior)
+  3. Treinar um modelo separado para prever a
+     preferencia humana (reward model)
+
+  Prompt: "Explique recursao"
+  Resposta A: [explicacao clara com exemplo]
+  Resposta B: [explicacao confusa e longa]
+  Resposta C: [explicacao errada]
+  Ranking humano: A > B > C
+  Reward model aprende: score(A) > score(B) > score(C)
+
+
+ETAPA 3: Otimizacao com PPO (ou DPO)
+─────────────────────────────────────
+  1. O modelo gera respostas para prompts
+  2. O reward model avalia cada resposta
+  3. PPO (Proximal Policy Optimization) ajusta o
+     modelo para maximizar o reward, com penalidade
+     KL para nao divergir muito do modelo SFT
+
+  ┌──────────┐  prompt   ┌────────────┐  resposta  ┌──────────┐
+  │  Prompt  │──────────→│  LLM (SFT) │───────────→│  Reward  │
+  │  Dataset │           │  (politica)│            │  Model   │
+  └──────────┘           └─────┬──────┘            └────┬─────┘
+                               │                        │
+                               │    reward score        │
+                               │←───────────────────────┘
+                               │
+                               ▼
+                         Atualizar LLM
+                         via PPO para
+                         maximizar reward
+```
+
+### DPO (Direct Preference Optimization)
+
+DPO e uma alternativa ao RLHF que elimina o reward model separado. Em vez de treinar um reward model e depois usar PPO, DPO otimiza diretamente o modelo de linguagem a partir dos dados de preferencia.
+
+```
+RLHF: Dados de preferencia → Reward Model → PPO → Modelo ajustado
+DPO:  Dados de preferencia → Otimizacao direta → Modelo ajustado
+
+DPO e mais simples de implementar e mais estavel no treinamento.
+Usado em modelos como LLaMA 2 e Claude.
+```
+
+---
+
+## 6. Inferencia: Gerando Texto
+
+### O Processo de Geracao (Autoregressive)
+
+```
+Prompt: "A capital do"
+
+Passo 1: Modelo processa "A capital do"
+         Saida: P(proximo token | "A capital do")
+         P("Brasil") = 0.4, P("Japao") = 0.1, P("pais") = 0.08, ...
+         Seleciona: "Brasil"
+
+Passo 2: Modelo processa "A capital do Brasil"
+         Saida: P(proximo token | "A capital do Brasil")
+         P("e") = 0.85, P(",") = 0.05, ...
+         Seleciona: "e"
+
+Passo 3: Modelo processa "A capital do Brasil e"
+         Saida: P(proximo token | "A capital do Brasil e")
+         P("Brasilia") = 0.92, ...
+         Seleciona: "Brasilia"
+
+...continua ate gerar token de parada (EOS) ou atingir max_tokens.
+```
+
+### Estrategias de Amostragem
+
+```python
+# Temperature: controla a "criatividade" da geracao
+# Modifica os logits ANTES do softmax
+
+def apply_temperature(logits, temperature):
+    return logits / temperature
+
+# temperature = 0: deterministico (sempre o token mais provavel)
+# temperature = 1: distribuicao original
+# temperature > 1: mais aleatorio/criativo
+# temperature < 1: mais focado/deterministico
+```
+
+```
+Exemplo com logits [5.0, 3.0, 1.0, 0.5]:
+
+temperature = 0.1:  probs = [0.99, 0.01, 0.00, 0.00]  (quase greedy)
+temperature = 1.0:  probs = [0.72, 0.15, 0.08, 0.05]  (balanceado)
+temperature = 2.0:  probs = [0.42, 0.24, 0.18, 0.16]  (mais uniforme)
+```
+
+### Top-k e Top-p (Nucleus) Sampling
+
+```
+Top-k: considerar apenas os k tokens mais provaveis
+
+  k = 3:
+  Token     Prob original → Prob redistribuida
+  Brasil    0.40          → 0.57
+  Japao     0.20          → 0.29
+  pais      0.10          → 0.14
+  mundo     0.08          → (descartado)
+  ...
+
+Top-p (Nucleus): considerar o menor conjunto de tokens
+cuja probabilidade acumulada >= p
+
+  p = 0.9:
+  Token     Prob     Acumulada
+  Brasil    0.40     0.40
+  Japao     0.20     0.60
+  pais      0.10     0.70
+  mundo     0.08     0.78
+  povo      0.07     0.85
+  estado    0.06     0.91  ← parou aqui (>= 0.9)
+  ...                      (descartados)
+```
+
+### KV Cache
+
+Otimizacao fundamental para inferencia. Como a geracao e autoregressiva (token por token), os key/value vetores dos tokens ja processados nao mudam. O **KV Cache** armazena esses vetores para reutilizar, evitando recomputacao.
+
+```
+Sem KV Cache: a cada novo token, reprocessar TODA a sequencia
+  Passo 1: processar [A]                    → 1 token
+  Passo 2: processar [A, capital]           → 2 tokens
+  Passo 3: processar [A, capital, do]       → 3 tokens
+  Total: 1 + 2 + 3 = 6 computacoes        → O(n²)
+
+Com KV Cache: processar apenas o NOVO token, reusar K/V anteriores
+  Passo 1: processar [A], cachear K/V      → 1 token
+  Passo 2: processar [capital], usar cache  → 1 token
+  Passo 3: processar [do], usar cache       → 1 token
+  Total: 1 + 1 + 1 = 3 computacoes        → O(n)
+```
+
+---
+
+## 7. Scaling Laws
+
+Kaplan et al. (2020) e Hoffmann et al. (Chinchilla, 2022) estabeleceram leis de escala que preveeem o desempenho de LLMs.
+
+```
+Loss ≈ (C / N)^α + (C / D)^β + constante
+
+Onde:
+  N = numero de parametros
+  D = numero de tokens de treinamento
+  C = compute total (FLOPs)
+  α, β = expoentes empiricos
+
+Descoberta do Chinchilla:
+  Para compute fixo, o modelo OTIMO tem:
+    N_otimo ∝ C^0.5
+    D_otimo ∝ C^0.5
+
+  Ou seja: para dobrar o compute, dobre AMBOS
+  parametros E dados (nao apenas parametros).
+
+Antes do Chinchilla:
+  GPT-3 (175B params, 300B tokens) — subtrained
+
+Apos Chinchilla:
+  LLaMA (65B params, 1.4T tokens) — melhor que GPT-3
+  com MENOS parametros mas MAIS dados
+```
+
+---
+
+## 8. Capacidades Emergentes
+
+Capacidades que surgem em modelos grandes e que nao existiam em modelos menores:
+
+```
+┌────────────────────────┬──────────────────────────────────┐
+│ Capacidade             │ Descricao                        │
+├────────────────────────┼──────────────────────────────────┤
+│ In-context learning    │ Resolver tarefas a partir de     │
+│                        │ exemplos no prompt (few-shot)    │
+├────────────────────────┼──────────────────────────────────┤
+│ Chain-of-thought       │ Raciocinar passo a passo quando  │
+│                        │ solicitado                       │
+├────────────────────────┼──────────────────────────────────┤
+│ Traducao               │ Traduzir entre idiomas sem       │
+│                        │ treinamento especifico           │
+├────────────────────────┼──────────────────────────────────┤
+│ Code generation        │ Gerar codigo funcional a partir  │
+│                        │ de descricoes em linguagem natural│
+├────────────────────────┼──────────────────────────────────┤
+│ Instruction following  │ Seguir instrucoes complexas      │
+│                        │ (apos RLHF/SFT)                 │
+└────────────────────────┴──────────────────────────────────┘
+```
+
+Essas capacidades nao foram explicitamente programadas -- elas emergiram do treinamento em escala. O quanto sao "genuinas" vs "pattern matching sofisticado" e um debate ativo na comunidade.
+
+---
+
+## Resumo do Pipeline Completo
+
+```
+1. DADOS
+   Web scraping (Common Crawl, Wikipedia, livros, codigo)
+   Filtragem e deduplicacao
+   ~15 trilhoes de tokens
+
+2. TOKENIZACAO
+   BPE: texto → sequencia de IDs de tokens
+   Vocabulario: ~32k-100k tokens
+
+3. PRE-TREINO
+   Objetivo: next token prediction
+   Arquitetura: Transformer decoder-only
+   Hardware: milhares de GPUs por meses
+   Custo: $10M-$100M+
+
+4. FINE-TUNING (SFT)
+   Dados: instrucao-resposta curados
+   ~10k-100k exemplos de alta qualidade
+
+5. ALINHAMENTO (RLHF/DPO)
+   Dados: preferencias humanas (ranking)
+   Resultado: modelo util, seguro, honesto
+
+6. INFERENCIA
+   Input: prompt (tokens)
+   Geracao: autoregressiva, token por token
+   Controle: temperature, top-k, top-p
+   Otimizacao: KV cache, quantizacao
+
+7. DEPLOY
+   APIs, rate limiting, caching, custos
+   Monitoramento de qualidade e seguranca
+```
+
+Este pipeline -- de dados brutos a um assistente de IA funcional -- representa o estado da arte da engenharia de ML moderna. As proximas licoes exploram como **usar** esses modelos: agentes, prompt engineering e integracao em aplicacoes reais.

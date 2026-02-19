@@ -1,0 +1,147 @@
+---
+import { getCollection } from 'astro:content';
+import { getTrack, toSlug } from '../../lib/tracks';
+import Icon from '../ui/Icon.astro';
+
+interface Props {
+  track: string;
+  currentLesson?: string;
+}
+
+const { track, currentLesson } = Astro.props;
+const trackInfo = getTrack(track);
+
+const allLessons = await getCollection('lessons');
+const trackLessons = allLessons.filter((l) => l.data.track === track).sort((a, b) => a.data.order - b.data.order);
+
+const hasSections = trackLessons.some((l) => l.data.section);
+
+type Section = { name: string; lessons: typeof trackLessons };
+const sections: Section[] = [];
+
+if (hasSections) {
+  for (const lesson of trackLessons) {
+    const sectionName = lesson.data.section ?? '';
+    const last = sections[sections.length - 1];
+    if (last && last.name === sectionName) {
+      last.lessons.push(lesson);
+    } else {
+      sections.push({ name: sectionName, lessons: [lesson] });
+    }
+  }
+}
+---
+
+<aside
+  class="fixed top-14 bottom-0 left-0 z-40 hidden w-72 overflow-y-auto border-r border-[var(--color-border)] bg-[var(--color-bg-alt)] lg:block"
+>
+  <div class="p-5">
+    <!-- Track header -->
+    <a href={`/trilha/${track}`} class="group mb-4 flex items-center gap-2">
+      <Icon name={trackInfo?.icon ?? 'circle'} size={20} />
+      <h2 class="text-lg font-bold transition-opacity group-hover:opacity-80">
+        {trackInfo?.shortTitle}
+      </h2>
+    </a>
+
+    <!-- Lessons list -->
+    {
+      hasSections ? (
+        <nav class="space-y-4">
+          {sections.map((section) => {
+            const firstIndex = trackLessons.indexOf(section.lessons[0]);
+            return (
+              <div>
+                <p class="mb-1 px-3 font-mono text-[10px] font-semibold tracking-wider text-[var(--color-text-muted)] uppercase">
+                  {section.name}
+                </p>
+                <div class="space-y-0.5">
+                  {section.lessons.map((lesson, j) => {
+                    const slug = toSlug(lesson.id);
+                    const isActive = currentLesson === slug;
+                    return (
+                      <a
+                        href={`/trilha/${track}/${slug}`}
+                        data-lesson-id={`${track}/${slug}`}
+                        class:list={[
+                          'flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors',
+                          isActive
+                            ? 'font-medium'
+                            : 'text-[var(--color-text-muted)] hover:bg-[var(--color-border)]/30 hover:text-[var(--color-text)]',
+                        ]}
+                        style={isActive ? `border-left: 2px solid ${trackInfo?.color}; padding-left: 10px;` : ''}
+                      >
+                        <span class="sidebar-lesson-num w-5 shrink-0 text-right text-xs text-[var(--color-text-muted)]">
+                          {firstIndex + j + 1}
+                        </span>
+                        <span class="truncate">{lesson.data.title}</span>
+                      </a>
+                    );
+                  })}
+                </div>
+              </div>
+            );
+          })}
+        </nav>
+      ) : (
+        <nav class="space-y-0.5">
+          {trackLessons.map((lesson, i) => {
+            const slug = toSlug(lesson.id);
+            const isActive = currentLesson === slug;
+            return (
+              <a
+                href={`/trilha/${track}/${slug}`}
+                data-lesson-id={`${track}/${slug}`}
+                class:list={[
+                  'flex items-center gap-3 rounded-lg px-3 py-2 text-sm transition-colors',
+                  isActive
+                    ? 'font-medium'
+                    : 'text-[var(--color-text-muted)] hover:bg-[var(--color-border)]/30 hover:text-[var(--color-text)]',
+                ]}
+                style={isActive ? `border-left: 2px solid ${trackInfo?.color}; padding-left: 10px;` : ''}
+              >
+                <span class="sidebar-lesson-num w-5 shrink-0 text-right text-xs text-[var(--color-text-muted)]">
+                  {i + 1}
+                </span>
+                <span class="truncate">{lesson.data.title}</span>
+              </a>
+            );
+          })}
+        </nav>
+      )
+    }
+  </div>
+</aside>
+
+<script is:inline>
+  (function () {
+    try {
+      const progress = JSON.parse(localStorage.getItem('brewnary-progress') || '{}');
+      const completed = progress.completed || [];
+      document.querySelectorAll('aside [data-lesson-id]').forEach(function (el) {
+        const id = el.getAttribute('data-lesson-id');
+        if (completed.indexOf(id) !== -1) {
+          const num = el.querySelector('.sidebar-lesson-num');
+          if (num) {
+            const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+            svg.setAttribute('width', '12');
+            svg.setAttribute('height', '12');
+            svg.setAttribute('viewBox', '0 0 24 24');
+            svg.setAttribute('fill', 'none');
+            svg.setAttribute('stroke', '#10B981');
+            svg.setAttribute('stroke-width', '2');
+            svg.setAttribute('stroke-linecap', 'round');
+            svg.setAttribute('stroke-linejoin', 'round');
+            const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+            path.setAttribute('d', 'M20 6 9 17l-5-5');
+            svg.appendChild(path);
+            num.textContent = '';
+            num.appendChild(svg);
+          }
+        }
+      });
+    } catch {
+      /* localStorage unavailable */
+    }
+  })();
+</script>

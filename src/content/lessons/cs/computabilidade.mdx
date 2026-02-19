@@ -1,0 +1,253 @@
+---
+title: "Computabilidade e Autômatos"
+description: "Autômatos finitos, expressões regulares, linguagens livres de contexto, máquinas de Turing, decidibilidade, classes P e NP — os limites fundamentais da computação"
+track: "cs"
+order: 18
+section: "Teoria da Computação"
+priority: "medium"
+tags: ["autômatos", "computabilidade", "turing", "regex", "NP", "decidibilidade", "teoria-da-computação", "chomsky"]
+prerequisites: ["logica-e-matematica", "matematica-discreta", "graphs"]
+keyTakeaways:
+  - "A Hierarquia de Chomsky classifica linguagens em 4 níveis — regulares (regex), livres de contexto (parsers), sensíveis ao contexto e recursivamente enumeráveis"
+  - "Autômatos finitos (DFA/NFA) reconhecem linguagens regulares e são a base de regex engines, lexers e validadores de protocolos"
+  - "Gramáticas livres de contexto e pushdown automata modelam linguagens de programação — é por isso que parsers existem"
+  - "A Máquina de Turing é o modelo formal de computação — tudo que um computador pode fazer, uma MT pode fazer (Tese de Church-Turing)"
+  - "O Halting Problem (Turing, 1936) prova que é impossível criar um programa que decide se qualquer programa termina — existem limites fundamentais para o que software pode resolver"
+  - "P vs NP é o maior problema aberto em CS: P são problemas com solução eficiente; NP são problemas com verificação eficiente — não sabemos se P = NP"
+---
+
+# Computabilidade e Autômatos
+
+Teoria da computação responde à pergunta mais fundamental da ciência da computação: **o que é possível computar?** Antes de perguntar "como implemento isso?", precisamos saber se "isso" é sequer computável. Esta lição cobre os modelos formais que definem os limites da computação — desde autômatos simples que fundamentam regex, até a Máquina de Turing que define o que qualquer computador pode fazer, até os problemas que provamos ser impossíveis de resolver.
+
+---
+
+## 1. Hierarquia de Chomsky
+
+Noam Chomsky (1956) classificou as linguagens formais em quatro níveis hierárquicos. Cada nível é estritamente mais poderoso que o anterior:
+
+| Tipo | Linguagem | Autômato | Exemplo |
+|------|-----------|----------|---------|
+| **Tipo 3** | Regular | Autômato Finito (DFA/NFA) | `[a-z]+@[a-z]+\.com` |
+| **Tipo 2** | Livre de Contexto | Autômato com Pilha (PDA) | HTML, JSON, linguagens de programação |
+| **Tipo 1** | Sensível ao Contexto | Autômato Linearmente Limitado | Linguagens naturais (parcialmente) |
+| **Tipo 0** | Recursivamente Enumerável | Máquina de Turing | Qualquer programa de computador |
+
+```
+Recursivamente Enumeráveis (Tipo 0)
+  ⊃ Sensíveis ao Contexto (Tipo 1)
+    ⊃ Livres de Contexto (Tipo 2)
+      ⊃ Regulares (Tipo 3)
+```
+
+Cada nível "acima" pode reconhecer tudo que o nível "abaixo" reconhece, mais algo extra. Regex não pode contar parênteses balanceados (precisa de Tipo 2). Parsers LL/LR não podem decidir o Halting Problem (precisa de Tipo 0, e mesmo assim não resolve).
+
+---
+
+## 2. Autômatos Finitos e Linguagens Regulares
+
+### 2.1 Definição Formal de DFA
+
+Um **autômato finito determinístico (DFA)** é uma tupla (Q, Σ, δ, q₀, F):
+
+- **Q:** conjunto finito de estados
+- **Σ:** alfabeto (conjunto finito de símbolos de entrada)
+- **δ:** função de transição Q × Σ → Q
+- **q₀:** estado inicial
+- **F:** conjunto de estados finais (aceitação)
+
+### 2.2 Exemplo: Validar Números Binários Pares
+
+Um binário par termina em 0. O DFA que reconhece isso:
+
+```
+Estados: {q0, q1}
+Alfabeto: {0, 1}
+Transições:
+  q0 --0--> q0  (par, leu 0)
+  q0 --1--> q1  (ímpar, leu 1)
+  q1 --0--> q0  (par de novo)
+  q1 --1--> q1  (ainda ímpar)
+Estado inicial: q0
+Estados finais: {q0}
+```
+
+```javascript
+// Implementação em código
+function isBinaryEven(input) {
+  let state = 'q0'; // Estado inicial
+
+  for (const char of input) {
+    if (state === 'q0') {
+      state = char === '0' ? 'q0' : 'q1';
+    } else {
+      state = char === '0' ? 'q0' : 'q1';
+    }
+  }
+
+  return state === 'q0'; // Estado final de aceitação
+}
+
+isBinaryEven("1100"); // true (12 é par)
+isBinaryEven("1011"); // false (11 é ímpar)
+```
+
+### 2.3 NFA e Equivalência com DFA
+
+Um **NFA (Non-deterministic Finite Automaton)** permite:
+- Múltiplas transições para o mesmo símbolo
+- Transições ε (sem consumir input)
+
+O **Teorema da Equivalência** (Rabin & Scott, 1959) prova que todo NFA pode ser convertido em um DFA equivalente. A conversão pode causar explosão exponencial de estados (um NFA com n estados pode gerar um DFA com até 2ⁿ estados), mas o poder computacional é idêntico.
+
+### 2.4 Regex = Autômatos Finitos
+
+O **Teorema de Kleene** (1956) estabelece a equivalência fundamental:
+
+> **Linguagens Regulares = DFA = NFA = Expressões Regulares**
+
+Quando você escreve `/^[a-z]+$/`, a regex engine constrói um autômato finito. Regex engines modernas (PCRE, JavaScript) adicionam features além de linguagens regulares (backreferences, lookahead), mas o core é teoria de autômatos.
+
+**Limitação fundamental:** regex não pode reconhecer **parênteses balanceados** ou **palíndromos**. Não é limitação da implementação — é um teorema (Pumping Lemma para linguagens regulares). É por isso que não se deve parsear HTML com regex.
+
+---
+
+## 3. Linguagens Livres de Contexto
+
+### 3.1 Gramáticas Livres de Contexto (CFG)
+
+Uma CFG é definida por (V, Σ, R, S):
+- **V:** variáveis (não-terminais)
+- **Σ:** terminais
+- **R:** regras de produção A → α
+- **S:** símbolo inicial
+
+Exemplo — parênteses balanceados (impossível com regex):
+
+```
+S → (S)    // parênteses ao redor
+S → SS     // concatenação
+S → ε      // string vazia
+```
+
+Esta gramática gera: `()`, `(())`, `()()`, `((()))`, `()(())`, etc.
+
+### 3.2 Pushdown Automata (PDA)
+
+O PDA é um autômato finito com uma **pilha** (memória infinita LIFO). A pilha é exatamente o que permite contar — empilhar `(` e desempilhar ao encontrar `)`.
+
+**Conexão prática:** todo parser de linguagem de programação é essencialmente um PDA. A call stack durante recursive descent parsing é literalmente a pilha do autômato.
+
+---
+
+## 4. Máquinas de Turing
+
+### 4.1 Definição
+
+Uma **Máquina de Turing** (Turing, 1936) consiste em:
+- Uma **fita infinita** dividida em células, cada uma contendo um símbolo
+- Um **cabeçote** que lê e escreve na fita, movendo-se para esquerda ou direita
+- Um **conjunto de estados** com regras de transição
+- Um **estado de aceitação** e um **estado de rejeição**
+
+É o modelo de computação mais poderoso que conhecemos.
+
+### 4.2 Tese de Church-Turing
+
+> Qualquer função que pode ser computada por algum procedimento mecânico pode ser computada por uma Máquina de Turing.
+
+Isso significa que **todo computador, toda linguagem de programação, todo algoritmo** é equivalente em poder a uma Máquina de Turing. Python, C, JavaScript, seu laptop, um supercomputador — todos computam exatamente o mesmo conjunto de funções. Diferem em velocidade e conveniência, não em poder fundamental.
+
+### 4.3 Turing Completeness
+
+Uma linguagem ou sistema é **Turing-completo** se pode simular uma Máquina de Turing. Requisitos mínimos: condicionais, loops (ou recursão), e memória arbitrária.
+
+Linguagens Turing-completas: C, JavaScript, Python, SQL (com CTEs recursivas), CSS (com hacks), Excel, Minecraft Redstone, PowerPoint (sim, sério).
+
+---
+
+## 5. Decidibilidade e o Halting Problem
+
+### 5.1 Problemas Decidíveis vs Indecidíveis
+
+- **Decidível:** existe um algoritmo que sempre termina e dá a resposta correta
+- **Indecidível:** nenhum algoritmo pode resolver para todas as instâncias
+
+### 5.2 O Halting Problem (Turing, 1936)
+
+> **Não existe um programa que, dado qualquer programa P e entrada I, decide se P(I) termina ou entra em loop infinito.**
+
+A prova é por **contradição** (diagonalização):
+
+1. Suponha que existe `halts(program, input)` que retorna `true` se o programa termina
+2. Construa um programa paradoxal:
+
+```javascript
+function paradox(program) {
+  if (halts(program, program)) {
+    while (true) {} // Loop infinito se halts diz que para
+  } else {
+    return; // Para se halts diz que não para
+  }
+}
+
+// O que acontece com paradox(paradox)?
+// Se halts(paradox, paradox) = true → paradox entra em loop → contradição
+// Se halts(paradox, paradox) = false → paradox termina → contradição
+```
+
+3. Contradição nos dois casos. Logo, `halts` não pode existir.
+
+**Implicações práticas:**
+- Nenhum compilador pode detectar todos os loops infinitos
+- Nenhum antivírus pode detectar todos os malwares
+- Nenhum type checker pode ser completo e sound ao mesmo tempo (Teorema de Rice)
+- Ferramentas de análise estática são necessariamente aproximações
+
+---
+
+## 6. Complexidade Computacional: P vs NP
+
+### 6.1 A Classe P
+
+**P** (Polynomial Time) contém problemas que podem ser **resolvidos** em tempo polinomial O(nᵏ):
+- Ordenação → O(n log n)
+- Busca binária → O(log n)
+- Shortest path (Dijkstra) → O((V+E) log V)
+- Multiplicação de matrizes → O(n³)
+
+### 6.2 A Classe NP
+
+**NP** (Nondeterministic Polynomial Time) contém problemas cuja **solução pode ser verificada** em tempo polinomial:
+- **Traveling Salesman (TSP):** dado um tour, verificar se o custo total ≤ k é O(n). Mas encontrar o tour ótimo? Nenhum algoritmo polinomial conhecido.
+- **SAT (Satisfatibilidade):** dada uma atribuição de variáveis, verificar se a fórmula booleana é verdadeira é O(n). Encontrar a atribuição? Força bruta é O(2ⁿ).
+- **Graph Coloring:** verificar uma coloração é O(V+E). Encontrar a coloração mínima? NP-hard.
+
+### 6.3 NP-Completude
+
+Um problema é **NP-completo** se:
+1. Está em NP (solução verificável em tempo polinomial)
+2. Todo problema em NP pode ser reduzido a ele em tempo polinomial
+
+O **Teorema de Cook-Levin** (1971) provou que SAT é NP-completo. A partir daí, dezenas de outros problemas foram provados NP-completos por redução.
+
+Se alguém encontrar um algoritmo polinomial para **qualquer** problema NP-completo, então P = NP e **todos** os problemas NP-completos terão solução eficiente. Isso revolucionaria criptografia, otimização, IA e praticamente toda a computação.
+
+### 6.4 Na Prática: Lidando com NP
+
+Quando você encontra um problema NP-hard na prática:
+
+1. **Heurísticas:** soluções aproximadas rápidas (greedy, simulated annealing)
+2. **Aproximação:** algoritmos com garantia de estar a um fator da solução ótima
+3. **Parametrização:** se o parâmetro é pequeno, pode ser tratável (FPT)
+4. **Instâncias reais:** muitos problemas NP-completos têm instâncias práticas que são resolvíveis (SAT solvers modernos resolvem instâncias com milhões de variáveis)
+
+---
+
+## 7. Referências e Aprofundamento
+
+- **"Introduction to the Theory of Computation"** (Michael Sipser) — o livro-texto padrão, claro e rigoroso
+- **CS 154 (Stanford)** — Automata and Complexity Theory
+- **MIT 18.404 (Sipser)** — Theory of Computation, aulas disponíveis no OCW
+- **"Gödel, Escher, Bach"** (Douglas Hofstadter) — exploração filosófica de autorreferência e computabilidade
+- **"The Annotated Turing"** (Charles Petzold) — explicação linha por linha do paper original de Turing (1936)

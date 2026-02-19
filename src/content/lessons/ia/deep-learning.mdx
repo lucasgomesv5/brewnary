@@ -1,0 +1,549 @@
+---
+title: "Deep Learning"
+description: "CNNs, RNNs, LSTMs e Transformers -- as arquiteturas que definem o estado da arte em visao computacional, NLP e IA generativa"
+track: "ia"
+order: 5
+section: "Modelos"
+priority: "high"
+tags: ["deep-learning", "cnn", "rnn", "transformers", "attention"]
+prerequisites: []
+keyTakeaways:
+  - "CNNs exploram hierarquia espacial com filtros de convolucao que detectam features locais (bordas, texturas, objetos) e pooling que reduz dimensionalidade -- a arquitetura dominante para visao computacional"
+  - "RNNs processam sequencias mantendo estado oculto, mas sofrem de vanishing gradient; LSTMs resolvem isso com gates (forget, input, output) que controlam o fluxo de informacao na memoria"
+  - "Transformers substituiram RNNs usando self-attention pura: cada token 'olha' para todos os outros com complexidade O(n²), mas com paralelizacao total -- e a arquitetura base de BERT, GPT e todos os LLMs modernos"
+---
+
+# Deep Learning
+
+Deep Learning e o subconjunto de Machine Learning que utiliza redes neurais com **muitas camadas** (profundas) para aprender representacoes hierarquicas dos dados. Tres arquiteturas fundamentais dominaram as ultimas decadas: CNNs para dados espaciais, RNNs/LSTMs para sequencias e Transformers para praticamente tudo.
+
+---
+
+## 1. CNNs (Convolutional Neural Networks)
+
+CNNs sao projetadas para processar dados com **estrutura espacial** -- imagens, audio (espectrogramas) e ate texto (1D). A ideia central: em vez de conectar cada neuronio a todos os pixels, usamos **filtros** (kernels) que escaneiam a imagem detectando padroes locais.
+
+### Operacao de Convolucao
+
+```
+Imagem de entrada (5x5):        Filtro/Kernel (3x3):
+
+┌─────────────────────┐         ┌───────────┐
+│  1  0  1  0  1      │         │  1  0  1  │
+│  0  1  0  1  0      │         │  0  1  0  │
+│  1  0  1  0  1      │         │  1  0  1  │
+│  0  1  0  1  0      │         └───────────┘
+│  1  0  1  0  1      │
+└─────────────────────┘
+
+Convolucao: deslizar o filtro sobre a imagem,
+calculando o dot product em cada posicao.
+
+Posicao (0,0):                   Posicao (0,1):
+┌───┬───┬───┐                    ┌───┬───┬───┐
+│ 1 │ 0 │ 1 │ * filtro           │ 0 │ 1 │ 0 │ * filtro
+│ 0 │ 1 │ 0 │ = 1+0+1            │ 1 │ 0 │ 1 │ = 0+0+0
+│ 1 │ 0 │ 1 │   +0+1+0           │ 0 │ 1 │ 0 │   +0+0+0
+└───┴───┴───┘   +1+0+1 = 5       └───┴───┴───┘   +0+0+0 = 0
+
+Feature map resultante (3x3):
+┌─────────┐
+│ 5  0  5 │
+│ 0  5  0 │
+│ 5  0  5 │
+└─────────┘
+```
+
+**Parametros da convolucao:**
+- **Kernel size**: tamanho do filtro (3x3 e o padrao)
+- **Stride**: quantos pixels o filtro avanca a cada passo (1 = padrao)
+- **Padding**: adicionar zeros nas bordas para manter a dimensao espacial
+- **Numero de filtros**: cada filtro detecta um padrao diferente
+
+### Pooling
+
+Pooling reduz a **dimensionalidade espacial** do feature map, mantendo as features mais importantes.
+
+```
+Max Pooling (2x2, stride 2):
+
+┌───┬───┬───┬───┐         ┌───┬───┐
+│ 1 │ 3 │ 2 │ 1 │         │ 4 │ 6 │
+│ 4 │ 2 │ 6 │ 1 │  ──→    │ 8 │ 5 │
+│ 7 │ 8 │ 3 │ 5 │         └───┴───┘
+│ 2 │ 1 │ 4 │ 2 │
+└───┴───┴───┴───┘
+
+Cada regiao 2x2 e substituida pelo valor maximo.
+Reduz dimensao pela metade em cada direcao.
+Efeito: invariancia a pequenas translacoes.
+```
+
+### Hierarquia de Features
+
+```
+Camadas iniciais         Camadas medias           Camadas finais
+(features simples)       (features compostas)     (conceitos)
+
+┌───────────────┐       ┌───────────────┐       ┌───────────────┐
+│  ─  │  \      │       │  Olho    Orelha│       │    Gato       │
+│  |  /         │       │  Boca    Nariz │       │    Cachorro   │
+│  Bordas       │       │  Partes        │       │    Objetos    │
+│  Texturas     │       │  de objetos    │       │    completos  │
+└───────────────┘       └───────────────┘       └───────────────┘
+```
+
+### Arquiteturas Classicas
+
+```
+┌────────────┬──────┬────────────┬──────────────────────────────┐
+│ Arquitetura│ Ano  │ Camadas    │ Inovacao                      │
+├────────────┼──────┼────────────┼──────────────────────────────┤
+│ LeNet-5    │ 1998 │ 5          │ CNN para digitos (MNIST)      │
+│ AlexNet    │ 2012 │ 8          │ ReLU, Dropout, GPU training   │
+│ VGGNet     │ 2014 │ 16-19      │ Filtros 3x3 empilhados       │
+│ GoogLeNet  │ 2014 │ 22         │ Inception modules (paralelos) │
+│ ResNet     │ 2015 │ 50-152     │ Residual connections (skip)   │
+│ EfficientNet│2019 │ variavel   │ Scaling balanceado (NAS)      │
+│ ViT        │ 2020 │ Transformer│ Vision Transformer (patches)  │
+└────────────┴──────┴────────────┴──────────────────────────────┘
+```
+
+### Residual Connections (ResNet)
+
+O problema de redes muito profundas: o gradiente se torna tao pequeno que camadas iniciais mal aprendem (**vanishing gradient** ou **degradation problem**). ResNet resolve isso com **skip connections**:
+
+```
+Bloco residual:
+
+  x ─────────────────────────────┐
+  │                              │ (skip/identity)
+  ▼                              │
+  [Conv → BN → ReLU]            │
+  │                              │
+  ▼                              │
+  [Conv → BN]                   │
+  │                              │
+  ▼                              │
+  [   +   ] ← soma x + F(x)    │
+  │       ←──────────────────────┘
+  ▼
+  [ReLU]
+  │
+  ▼
+  saida = ReLU(F(x) + x)
+
+O modelo aprende a funcao RESIDUAL F(x) = saida_desejada - x.
+Se a camada ideal fosse identidade, F(x) = 0 e facil de aprender.
+Sem skip connection, aprender identidade e surpreendentemente dificil.
+```
+
+```python
+import torch
+import torch.nn as nn
+
+class ResidualBlock(nn.Module):
+    def __init__(self, channels):
+        super().__init__()
+        self.conv1 = nn.Conv2d(channels, channels, kernel_size=3, padding=1)
+        self.bn1 = nn.BatchNorm2d(channels)
+        self.conv2 = nn.Conv2d(channels, channels, kernel_size=3, padding=1)
+        self.bn2 = nn.BatchNorm2d(channels)
+        self.relu = nn.ReLU()
+
+    def forward(self, x):
+        residual = x                    # salvar entrada
+        out = self.relu(self.bn1(self.conv1(x)))
+        out = self.bn2(self.conv2(out))
+        out = out + residual            # skip connection
+        out = self.relu(out)
+        return out
+```
+
+---
+
+## 2. RNNs (Recurrent Neural Networks)
+
+RNNs processam **sequencias** mantendo um **estado oculto** (hidden state) que funciona como memoria do que ja foi processado.
+
+```
+RNN desdobrada no tempo:
+
+  x1          x2          x3          x4
+  │           │           │           │
+  ▼           ▼           ▼           ▼
+┌─────┐    ┌─────┐    ┌─────┐    ┌─────┐
+│     │───→│     │───→│     │───→│     │
+│ h1  │    │ h2  │    │ h3  │    │ h4  │
+└─────┘    └─────┘    └─────┘    └─────┘
+  │           │           │           │
+  ▼           ▼           ▼           ▼
+  y1          y2          y3          y4
+
+A cada passo t:
+  h_t = tanh(W_hh * h_(t-1) + W_xh * x_t + b_h)
+  y_t = W_hy * h_t + b_y
+
+O estado oculto h_t carrega informacao de TODOS os passos anteriores.
+```
+
+### O Problema do Vanishing Gradient
+
+Quando a sequencia e longa, os gradientes que fluem de volta no tempo (backpropagation through time - BPTT) sao multiplicados repetidamente pela mesma matriz de pesos. Se os valores proprios dessa matriz forem < 1, os gradientes encolhem exponencialmente -- o modelo **esquece** informacoes distantes.
+
+```
+Gradiente fluindo de h_100 ate h_1:
+
+  ∂L/∂h_1 = ∂L/∂h_100 * ∂h_100/∂h_99 * ∂h_99/∂h_98 * ... * ∂h_2/∂h_1
+                          └──── 99 multiplicacoes ────────────────────┘
+
+Se cada fator < 1:  0.9^99 ≈ 0.00003 (gradiente praticamente zero)
+Se cada fator > 1:  1.1^99 ≈ 12527   (gradiente explode)
+```
+
+---
+
+## 3. LSTM (Long Short-Term Memory)
+
+LSTM (Hochreiter & Schmidhuber, 1997) resolve o vanishing gradient com um mecanismo de **gates** que controlam o fluxo de informacao.
+
+```
+Celula LSTM:
+
+                    ┌──────────────────────────────────────┐
+                    │              Cell State (C_t)          │
+  C_(t-1) ─────────┤──→[×]──────→[+]──────────────────────┤──→ C_t
+                    │    ↑         ↑                        │
+                    │  forget    input gate × candidato     │
+                    │   gate                                │
+                    │    ↑         ↑       ↑                │
+     ┌──────────────┤  ┌───┐    ┌───┐   ┌───┐              │
+     │              │  │ f │    │ i │   │ C~│              │
+     │              │  │   │    │   │   │   │              │
+     │              │  └─σ─┘    └─σ─┘   └tanh┘             │
+     │              │    ↑         ↑       ↑                │
+  h_(t-1) ──────┐   │  [h_(t-1), x_t]                      │
+                │   │                                       │
+                │   │              ┌───┐                    │
+                │   │              │ o │  ← output gate     │
+                │   │              └─σ─┘                    │
+                │   │                ↑                      │
+                │   │           [h_(t-1), x_t]             │
+                │   │                │                      │
+                │   │    tanh(C_t) × o_t ──────────────────┤──→ h_t
+                │   └──────────────────────────────────────┘
+                │
+  x_t ──────────┘
+```
+
+### Os Tres Gates
+
+```python
+import numpy as np
+
+def lstm_cell(x_t, h_prev, c_prev, Wf, Wi, Wc, Wo, bf, bi, bc, bo):
+    # Concatenar input e hidden state anterior
+    combined = np.concatenate([h_prev, x_t])
+
+    # Forget gate: decide o que ESQUECER do cell state
+    f_t = sigmoid(Wf @ combined + bf)       # valores entre 0 e 1
+
+    # Input gate: decide o que ADICIONAR ao cell state
+    i_t = sigmoid(Wi @ combined + bi)       # quais valores atualizar
+    c_candidate = np.tanh(Wc @ combined + bc)  # candidatos
+
+    # Atualizar cell state
+    c_t = f_t * c_prev + i_t * c_candidate  # esquecer + adicionar
+
+    # Output gate: decide o que EMITIR do cell state
+    o_t = sigmoid(Wo @ combined + bo)
+    h_t = o_t * np.tanh(c_t)               # hidden state atualizado
+
+    return h_t, c_t
+```
+
+**Por que LSTM funciona:** o cell state `C_t` e uma "esteira transportadora" que flui ao longo de toda a sequencia. O forget gate pode manter informacoes inalteradas (multiplicando por 1), eliminando o problema de vanishing gradient. A informacao pode persistir por centenas de passos.
+
+---
+
+## 4. Transformers
+
+### O Paper que Mudou Tudo
+
+*"Attention Is All You Need"* (Vaswani et al., 2017) eliminou recorrencia e convolucao, usando apenas mecanismos de **self-attention**. O resultado: paralelizacao total e desempenho superior em NLP.
+
+### Self-Attention (Scaled Dot-Product Attention)
+
+A ideia central: para cada token na sequencia, calcular quao relevantes sao **todos os outros tokens** para entende-lo.
+
+```
+Entrada: "O gato sentou no tapete"
+
+Para o token "sentou":
+  - "gato" e muito relevante (quem sentou?)       → peso alto
+  - "tapete" e relevante (onde sentou?)            → peso medio
+  - "O" e pouco relevante                         → peso baixo
+  - "no" e pouco relevante                        → peso baixo
+```
+
+### Mecanismo Matematico
+
+Cada token gera tres vetores a partir de seus embeddings:
+
+```
+Query (Q): "O que estou procurando?"
+Key (K):   "O que tenho a oferecer?"
+Value (V): "Qual informacao carrego?"
+
+Attention(Q, K, V) = softmax(Q * K^T / sqrt(d_k)) * V
+
+Onde d_k e a dimensao dos vetores (para estabilidade numerica).
+```
+
+```
+Passo a passo para uma sequencia de 4 tokens:
+
+1. Projetar cada token em Q, K, V:
+   Q = X @ W_Q    (cada token vira um query vector)
+   K = X @ W_K    (cada token vira um key vector)
+   V = X @ W_V    (cada token vira um value vector)
+
+2. Calcular scores de atencao:
+   Scores = Q @ K^T / sqrt(d_k)
+
+   ┌──────────────────────────┐
+   │         K1   K2   K3   K4│
+   │   Q1 [ 0.8  0.1  0.3  0.2]
+   │   Q2 [ 0.2  0.7  0.1  0.4]    ← cada linha:
+   │   Q3 [ 0.1  0.3  0.9  0.1]       quanto cada token
+   │   Q4 [ 0.3  0.2  0.1  0.8]       "olha" para os outros
+   └──────────────────────────┘
+
+3. Aplicar softmax (normalizar para probabilidades):
+   Weights = softmax(Scores)
+
+4. Calcular saida ponderada:
+   Output = Weights @ V
+   (cada token recebe uma combinacao ponderada dos Values)
+```
+
+```python
+import numpy as np
+
+def scaled_dot_product_attention(Q, K, V, mask=None):
+    """
+    Q: (seq_len, d_k) - queries
+    K: (seq_len, d_k) - keys
+    V: (seq_len, d_v) - values
+    """
+    d_k = Q.shape[-1]
+
+    # Calcular scores
+    scores = Q @ K.T / np.sqrt(d_k)   # (seq_len, seq_len)
+
+    # Aplicar mask (opcional, para decoders)
+    if mask is not None:
+        scores = scores + mask  # mask com -inf bloqueia posicoes futuras
+
+    # Softmax
+    weights = np.exp(scores - scores.max(axis=-1, keepdims=True))
+    weights = weights / weights.sum(axis=-1, keepdims=True)
+
+    # Saida ponderada
+    output = weights @ V               # (seq_len, d_v)
+    return output, weights
+
+# Exemplo com 4 tokens, dimensao 8
+seq_len, d_model = 4, 8
+X = np.random.randn(seq_len, d_model)
+
+# Projecoes (em uma rede real, sao parametros aprendidos)
+W_Q = np.random.randn(d_model, d_model)
+W_K = np.random.randn(d_model, d_model)
+W_V = np.random.randn(d_model, d_model)
+
+Q = X @ W_Q
+K = X @ W_K
+V = X @ W_V
+
+output, weights = scaled_dot_product_attention(Q, K, V)
+print(f"Weights shape: {weights.shape}")  # (4, 4) - cada token olha para 4
+print(f"Output shape: {output.shape}")    # (4, 8) - saida mesma dimensao
+```
+
+### Multi-Head Attention
+
+Em vez de um unico mecanismo de atencao, o Transformer usa **multiplas "cabecas"** em paralelo, cada uma aprendendo a prestar atencao a aspectos diferentes da sequencia.
+
+```
+Multi-Head Attention (h = 8 cabecas):
+
+                    ┌──→ Head 1: Attention(Q1, K1, V1) ──→ O1 ──┐
+                    │                                             │
+  X ──→ [Projecoes] ──→ Head 2: Attention(Q2, K2, V2) ──→ O2 ──┼──→ [Concat] ──→ [Linear] ──→ Saida
+                    │                                             │
+                    ├──→ ...                                ──→ ...│
+                    │                                             │
+                    └──→ Head 8: Attention(Q8, K8, V8) ──→ O8 ──┘
+
+  Cada cabeca opera em uma sub-dimensao: d_k = d_model / h
+  Se d_model = 512 e h = 8, cada cabeca tem d_k = 64
+
+  Uma cabeca pode aprender relacoes sintaticas (sujeito-verbo),
+  outra relacoes semanticas (sinonimos), outra posicionais, etc.
+```
+
+### Positional Encoding
+
+Self-attention e invariante a ordem -- nao sabe se "gato comeu rato" e diferente de "rato comeu gato". Positional Encoding adiciona informacao de posicao:
+
+```
+PE(pos, 2i)   = sin(pos / 10000^(2i/d_model))
+PE(pos, 2i+1) = cos(pos / 10000^(2i/d_model))
+
+Cada posicao recebe um vetor unico baseado em senos e cossenos
+de diferentes frequencias. Isso permite ao modelo aprender
+relacoes posicionais relativas.
+```
+
+### Arquitetura Completa do Transformer
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                     TRANSFORMER                              │
+│                                                              │
+│  ┌────────────────────┐      ┌──────────────────────────┐   │
+│  │      ENCODER       │      │        DECODER            │   │
+│  │                    │      │                           │   │
+│  │  Input Embedding   │      │  Output Embedding         │   │
+│  │  + Positional Enc  │      │  + Positional Enc         │   │
+│  │        │           │      │        │                  │   │
+│  │        ▼           │      │        ▼                  │   │
+│  │  ┌───────────────┐│      │  ┌──────────────────┐     │   │
+│  │  │ Multi-Head    ││      │  │ Masked Multi-Head│     │   │
+│  │  │ Self-Attention││      │  │ Self-Attention   │     │   │
+│  │  └───────┬───────┘│      │  └──────┬───────────┘     │   │
+│  │  [Add & Norm]     │      │  [Add & Norm]              │   │
+│  │        │           │      │        │                  │   │
+│  │  ┌───────────────┐│      │  ┌──────────────────┐     │   │
+│  │  │ Feed Forward  ││  ──→ │  │ Cross-Attention  │     │   │
+│  │  │ Network       ││      │  │ (Q=decoder,      │     │   │
+│  │  └───────┬───────┘│      │  │  K,V=encoder)    │     │   │
+│  │  [Add & Norm]     │      │  └──────┬───────────┘     │   │
+│  │        │           │      │  [Add & Norm]              │   │
+│  │     (Nx layers)   │      │        │                  │   │
+│  └────────────────────┘      │  ┌──────────────────┐     │   │
+│                              │  │ Feed Forward     │     │   │
+│                              │  │ Network          │     │   │
+│                              │  └──────┬───────────┘     │   │
+│                              │  [Add & Norm]              │   │
+│                              │     (Nx layers)           │   │
+│                              │        │                  │   │
+│                              │  [Linear + Softmax]       │   │
+│                              │        │                  │   │
+│                              │    Predicao              │   │
+│                              └──────────────────────────┘   │
+└─────────────────────────────────────────────────────────────┘
+```
+
+**Componentes-chave:**
+- **Add & Norm**: residual connection + layer normalization (estabilidade)
+- **Feed Forward Network**: MLP com 2 camadas (expansao 4x + projecao)
+- **Masked Self-Attention no decoder**: mascara tokens futuros (autoregressive)
+- **Cross-Attention**: decoder "olha" para a saida do encoder
+
+---
+
+## 5. Por que Transformers Venceram
+
+```
+┌─────────────────┬──────────────────┬──────────────────────┐
+│                 │ RNN/LSTM          │ Transformer           │
+├─────────────────┼──────────────────┼──────────────────────┤
+│ Paralelizacao   │ Sequencial (lento)│ Totalmente paralelo  │
+│                 │ Token por token   │ Todos tokens de uma  │
+│                 │                  │ vez na GPU            │
+├─────────────────┼──────────────────┼──────────────────────┤
+│ Dependencias    │ Dificuldade com  │ Acesso direto a      │
+│ de longo alcance│ sequencias longas│ qualquer posicao     │
+│                 │ (vanishing grad) │ via attention         │
+├─────────────────┼──────────────────┼──────────────────────┤
+│ Escalabilidade  │ Dificil escalar  │ Escala com mais      │
+│                 │ alem de ~1000    │ dados, parametros e  │
+│                 │ tokens           │ compute (scaling laws)│
+├─────────────────┼──────────────────┼──────────────────────┤
+│ Treinamento     │ Backprop through │ Gradientes fluem     │
+│                 │ time (longo)     │ diretamente (rapido) │
+├─────────────────┼──────────────────┼──────────────────────┤
+│ Complexidade    │ O(n) por camada  │ O(n²) por camada     │
+│ computacional   │                  │ (custo de attention)  │
+│                 │                  │ Mas paralelizavel!    │
+└─────────────────┴──────────────────┴──────────────────────┘
+```
+
+O custo O(n^2) do self-attention e o principal limitador dos Transformers -- e por isso que modelos tem "context window" (limite de tokens). Pesquisa ativa busca atencao sub-quadratica (Sparse Attention, Linear Attention, Flash Attention para eficiencia de memoria).
+
+### Variantes de Transformers
+
+```
+Encoder-only:   BERT, RoBERTa
+                Bom para: classificacao, NER, similarity
+                Pre-treino: masked language model (bidirecional)
+
+Decoder-only:   GPT-1/2/3/4, Claude, LLaMA, Mistral
+                Bom para: geracao de texto, conversacao
+                Pre-treino: next token prediction (autoregressive)
+
+Encoder-Decoder: T5, BART, modelo original
+                 Bom para: traducao, sumarizacao
+                 Pre-treino: reconstrucao de texto corrompido
+```
+
+---
+
+## 6. Vision Transformers (ViT)
+
+Em 2020, *An Image is Worth 16x16 Words* mostrou que Transformers podiam ser aplicados diretamente a imagens, dividindo-as em **patches** tratados como tokens.
+
+```
+Imagem (224x224) → dividir em patches de 16x16 → 196 patches
+
+┌────┬────┬────┬────┐
+│ p1 │ p2 │ p3 │... │     Cada patch e achatado em um vetor,
+├────┼────┼────┼────┤     projetado linearmente e alimentado
+│ p5 │ p6 │ p7 │... │     ao Transformer como uma "sequencia
+├────┼────┼────┼────┤     de tokens de imagem".
+│... │... │... │... │
+└────┴────┴────┴────┘
+
+[CLS] [p1] [p2] ... [p196] + Positional Embeddings
+  │
+  ▼
+Transformer Encoder (12 camadas)
+  │
+  ▼
+Classificacao (usando o token [CLS])
+```
+
+Isso unificou visao e linguagem sob a mesma arquitetura, levando a modelos multimodais como GPT-4V e Gemini.
+
+---
+
+## Resumo: Evolucao das Arquiteturas
+
+```
+1998  LeNet (CNN)      →  Visao computacional emerge
+2012  AlexNet (CNN)    →  Deep learning revoluciona CV
+2014  Seq2Seq + Attn   →  Atencao melhora RNNs
+2015  ResNet (CNN)     →  Redes muito profundas viaveis
+2017  Transformer      →  Atencao pura, sem recorrencia
+2018  BERT             →  Encoder Transformer para NLP
+2018  GPT              →  Decoder Transformer para geracao
+2020  ViT              →  Transformers para visao
+2020+ GPT-3/4, Claude  →  LLMs com bilhoes de parametros
+
+A tendencia e clara: Transformers se tornaram a arquitetura
+universal para praticamente toda tarefa de deep learning.
+```
+
+Com o entendimento de como CNNs, RNNs e Transformers funcionam, a proxima licao mergulha nos **Large Language Models** -- que sao essencialmente Transformers massivos treinados em escala sem precedentes.

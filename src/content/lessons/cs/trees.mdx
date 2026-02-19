@@ -1,0 +1,866 @@
+---
+title: "Trees (Árvores)"
+description: "Estruturas hierárquicas, BSTs, árvores balanceadas, B-Trees, Tries e Segment Trees: a espinha dorsal de bancos de dados, compiladores e sistemas de busca"
+track: "cs"
+order: 11
+section: "Estruturas de Dados"
+priority: "high"
+tags: ["trees", "BST", "estruturas-de-dados", "binary-search-tree", "índices", "AVL", "red-black-tree", "B-tree", "trie", "segment-tree"]
+prerequisites: ["big-o-notation", "recursao-e-dp"]
+keyTakeaways:
+  - "BST permite busca O(log n) porque a cada passo elimina metade dos nós — mas degenera para O(n) sem balanceamento"
+  - "Índices de banco de dados (B-Trees/B+Trees) são árvores otimizadas para I/O de disco — cada nó cabe em uma página de memória"
+  - "Árvores AVL e Red-Black garantem O(log n) no pior caso via rotações automáticas"
+  - "Tries permitem busca por prefixo em O(m) onde m é o comprimento da string — base de autocomplete e spell checkers"
+  - "Segment Trees e Fenwick Trees resolvem range queries em O(log n) — essenciais em competitive programming e sistemas analíticos"
+---
+
+# Trees (Árvores)
+
+## Definição Formal
+
+Uma **árvore** é um grafo acíclico conexo `G = (V, E)` onde `|E| = |V| - 1`. Essa restrição garante que existe exatamente **um único caminho** entre quaisquer dois vértices — propriedade fundamental que viabiliza buscas eficientes.
+
+Em computação, trabalhamos quase sempre com **árvores enraizadas** (*rooted trees*), onde um nó é designado como **raiz** e todos os outros nós possuem exatamente um pai.
+
+### Terminologia Essencial
+
+| Termo | Definição |
+|---|---|
+| **Raiz** (*root*) | Nó sem pai; topo da hierarquia |
+| **Folha** (*leaf*) | Nó sem filhos; `grau(v) = 0` |
+| **Nó interno** | Nó que possui pelo menos um filho |
+| **Grau** (*degree*) | Número de filhos de um nó |
+| **Profundidade** (*depth*) | Distância (em arestas) da raiz até o nó; `depth(root) = 0` |
+| **Altura** (*height*) | Maior profundidade entre todas as folhas; `height = max(depth(leaf))` |
+| **Subárvore** | Árvore formada por um nó e todos os seus descendentes |
+| **Ancestral** | Qualquer nó no caminho da raiz até o nó em questão |
+| **Nível** (*level*) | Conjunto de nós com a mesma profundidade |
+
+```
+            10              ← raiz (depth=0, height=3)
+           /  \
+          5    15           ← nós internos (depth=1)
+         / \   / \
+        3   7 12  20        ← depth=2
+       /         / \
+      1         18  25      ← folhas (depth=3)
+```
+
+---
+
+## Binary Tree — Propriedades Matemáticas
+
+Uma **árvore binária** é uma árvore onde cada nó tem no máximo 2 filhos (grau ≤ 2). Propriedades formais para uma árvore binária de altura `h`:
+
+- **Máximo de nós no nível `k`:** `2^k`
+- **Máximo de nós total:** `2^(h+1) - 1` (árvore **completa**)
+- **Máximo de folhas:** `2^h`
+- **Altura mínima para `n` nós:** `⌊log₂(n)⌋`
+- **Relação folhas/nós internos** (árvore estritamente binária): `folhas = nós_internos + 1`
+
+Classificações importantes:
+
+- **Full Binary Tree**: todo nó tem 0 ou 2 filhos (nunca 1)
+- **Complete Binary Tree**: todos os níveis estão preenchidos exceto possivelmente o último, que é preenchido da esquerda para a direita
+- **Perfect Binary Tree**: todos os nós internos têm 2 filhos e todas as folhas estão no mesmo nível
+
+A distinção é crítica: um **heap binário** exige *complete binary tree* (viabilizando representação em array), enquanto uma **BST** não impõe restrição estrutural — apenas a invariante de ordenação.
+
+---
+
+## Binary Search Tree (BST)
+
+### Invariante
+
+Para todo nó `v` em uma BST:
+
+```
+∀ u ∈ subárvore_esquerda(v): u.key < v.key
+∀ w ∈ subárvore_direita(v):  w.key > v.key
+```
+
+Essa invariante garante que um **percurso inorder** produz os elementos em **ordem crescente** — prova trivial por indução estrutural.
+
+### Implementação Completa
+
+```typescript
+class TreeNode<T> {
+  value: T;
+  left: TreeNode<T> | null = null;
+  right: TreeNode<T> | null = null;
+
+  constructor(value: T) {
+    this.value = value;
+  }
+}
+
+class BST<T> {
+  root: TreeNode<T> | null = null;
+
+  // INSERT — O(h) onde h é a altura
+  // Caso médio (árvore balanceada): O(log n)
+  // Pior caso (árvore degenerada): O(n)
+  insert(value: T): void {
+    this.root = this._insert(this.root, value);
+  }
+
+  private _insert(node: TreeNode<T> | null, value: T): TreeNode<T> {
+    if (!node) return new TreeNode(value);
+
+    if (value < node.value) {
+      node.left = this._insert(node.left, value);
+    } else if (value > node.value) {
+      node.right = this._insert(node.right, value);
+    }
+    // Duplicatas ignoradas (poderia ir para a direita por convenção)
+    return node;
+  }
+
+  // SEARCH — O(h)
+  // A cada comparação, descartamos uma subárvore inteira
+  search(value: T): TreeNode<T> | null {
+    let current = this.root;
+    while (current) {
+      if (value === current.value) return current;
+      current = value < current.value ? current.left : current.right;
+    }
+    return null;
+  }
+
+  // DELETE — O(h), o caso mais complexo
+  // Três cenários:
+  //   1. Folha: remove diretamente
+  //   2. Um filho: substitui pelo filho
+  //   3. Dois filhos: substitui pelo sucessor inorder (menor da subárvore direita)
+  delete(value: T): void {
+    this.root = this._delete(this.root, value);
+  }
+
+  private _delete(node: TreeNode<T> | null, value: T): TreeNode<T> | null {
+    if (!node) return null;
+
+    if (value < node.value) {
+      node.left = this._delete(node.left, value);
+    } else if (value > node.value) {
+      node.right = this._delete(node.right, value);
+    } else {
+      // Caso 1 e 2: sem filho esquerdo ou sem filho direito
+      if (!node.left) return node.right;
+      if (!node.right) return node.left;
+
+      // Caso 3: dois filhos — encontrar sucessor inorder
+      const successor = this._findMin(node.right);
+      node.value = successor.value;
+      node.right = this._delete(node.right, successor.value);
+    }
+    return node;
+  }
+
+  private _findMin(node: TreeNode<T>): TreeNode<T> {
+    while (node.left) node = node.left;
+    return node;
+  }
+}
+```
+
+### BST Degenerada — Quando Vira Linked List
+
+Se inserirmos elementos em **ordem crescente** (ou decrescente), a BST degenera:
+
+```
+Inserção: 1, 2, 3, 4, 5
+
+  1
+   \
+    2
+     \
+      3         → Linked list! Todas as operações viram O(n).
+       \
+        4
+         \
+          5
+```
+
+A altura `h` se torna `n - 1` ao invés de `⌊log₂(n)⌋`. Isso é **catastrófico** em produção — a complexidade de busca vai de O(log n) para O(n). É exatamente por isso que existem **árvores autobalanceadas**.
+
+---
+
+## Árvores Balanceadas
+
+### AVL Tree (Adelson-Velsky e Landis, 1962)
+
+A AVL foi a **primeira árvore autobalanceada** publicada. A invariante é simples:
+
+```
+∀ nó v: |height(v.left) - height(v.right)| ≤ 1
+```
+
+O **fator de balanceamento** (balance factor) de cada nó é:
+
+```
+bf(v) = height(v.left) - height(v.right)
+```
+
+Se `bf(v) ∉ {-1, 0, 1}` após uma inserção ou remoção, aplicamos **rotações**.
+
+#### Rotações
+
+**Rotação Simples à Direita** (caso Left-Left):
+
+```
+        z                  y
+       / \               /   \
+      y   T4    →       x     z
+     / \               / \   / \
+    x   T3            T1 T2 T3 T4
+   / \
+  T1  T2
+```
+
+**Rotação Simples à Esquerda** (caso Right-Right): espelho da anterior.
+
+**Rotação Dupla Esquerda-Direita** (caso Left-Right):
+
+```
+      z               z               x
+     / \             / \            /    \
+    y   T4   →      x   T4   →    y      z
+   / \             / \            / \    / \
+  T1  x           y   T3        T1 T2  T3 T4
+     / \         / \
+    T2  T3      T1  T2
+```
+
+Primeiro rotaciona `y` à esquerda, depois rotaciona `z` à direita.
+
+**Rotação Dupla Direita-Esquerda** (caso Right-Left): espelho da anterior.
+
+```typescript
+class AVLNode<T> {
+  value: T;
+  left: AVLNode<T> | null = null;
+  right: AVLNode<T> | null = null;
+  height: number = 0;
+
+  constructor(value: T) {
+    this.value = value;
+  }
+}
+
+class AVLTree<T> {
+  root: AVLNode<T> | null = null;
+
+  private height(node: AVLNode<T> | null): number {
+    return node ? node.height : -1;
+  }
+
+  private balanceFactor(node: AVLNode<T>): number {
+    return this.height(node.left) - this.height(node.right);
+  }
+
+  private updateHeight(node: AVLNode<T>): void {
+    node.height = 1 + Math.max(this.height(node.left), this.height(node.right));
+  }
+
+  // Rotação simples à direita
+  private rotateRight(z: AVLNode<T>): AVLNode<T> {
+    const y = z.left!;
+    z.left = y.right;
+    y.right = z;
+    this.updateHeight(z);
+    this.updateHeight(y);
+    return y;
+  }
+
+  // Rotação simples à esquerda
+  private rotateLeft(z: AVLNode<T>): AVLNode<T> {
+    const y = z.right!;
+    z.right = y.left;
+    y.left = z;
+    this.updateHeight(z);
+    this.updateHeight(y);
+    return y;
+  }
+
+  private balance(node: AVLNode<T>): AVLNode<T> {
+    this.updateHeight(node);
+    const bf = this.balanceFactor(node);
+
+    // Left-heavy
+    if (bf > 1) {
+      if (this.balanceFactor(node.left!) < 0) {
+        node.left = this.rotateLeft(node.left!); // Left-Right → dupla
+      }
+      return this.rotateRight(node); // Left-Left → simples
+    }
+
+    // Right-heavy
+    if (bf < -1) {
+      if (this.balanceFactor(node.right!) > 0) {
+        node.right = this.rotateRight(node.right!); // Right-Left → dupla
+      }
+      return this.rotateLeft(node); // Right-Right → simples
+    }
+
+    return node;
+  }
+
+  insert(value: T): void {
+    this.root = this._insert(this.root, value);
+  }
+
+  private _insert(node: AVLNode<T> | null, value: T): AVLNode<T> {
+    if (!node) return new AVLNode(value);
+
+    if (value < node.value) {
+      node.left = this._insert(node.left, value);
+    } else if (value > node.value) {
+      node.right = this._insert(node.right, value);
+    }
+
+    return this.balance(node);
+  }
+}
+```
+
+**Complexidade garantida:** Todas as operações são **O(log n)** no pior caso, pois a altura é sempre `O(log n)`. Mais precisamente, a altura de uma AVL com `n` nós satisfaz `h < 1.4405 * log₂(n + 2) - 0.3277`.
+
+### Red-Black Tree
+
+Red-Black Trees (usadas internamente em `std::map` do C++, `TreeMap` do Java, e no kernel do Linux para o CFS scheduler) relaxam o balanceamento da AVL em troca de menos rotações em inserções/remoções.
+
+**Cinco propriedades invariantes:**
+
+1. Todo nó é **vermelho** ou **preto**
+2. A raiz é **preta**
+3. Toda folha (`NIL`) é **preta**
+4. Se um nó é **vermelho**, ambos os filhos são **pretos** (sem dois vermelhos consecutivos)
+5. Para cada nó, todos os caminhos da raiz até as folhas descendentes contêm o **mesmo número de nós pretos** (*black-height*)
+
+**Consequência:** o caminho mais longo é no máximo **2x** o caminho mais curto (alternando vermelho-preto vs. só preto). Isso garante `h ≤ 2 * log₂(n + 1)`, mantendo O(log n) para todas as operações.
+
+**AVL vs Red-Black — quando usar qual?**
+
+| Critério | AVL | Red-Black |
+|---|---|---|
+| Balanceamento | Mais rígido (`bf ≤ 1`) | Mais relaxado (`h ≤ 2 log n`) |
+| Busca | Ligeiramente mais rápida | Ligeiramente mais lenta |
+| Inserção/Remoção | Mais rotações | Menos rotações (≤ 2 por inserção, ≤ 3 por remoção) |
+| Uso ideal | Leitura-intensiva | Escrita-intensiva |
+
+---
+
+## B-Tree e B+Tree — Árvores para Disco
+
+### Por que BSTs Não Servem para Bancos de Dados
+
+Uma BST binária com 1 milhão de registros tem altura ≈ 20. Cada nó é um acesso ao disco. Um acesso a disco (seek + leitura) leva **~10ms em HDD** e **~0.1ms em SSD**. Com 20 acessos, uma busca leva 200ms em HDD — inaceitável.
+
+A solução: **aumentar o grau da árvore** para que cada nó caiba em uma **página de disco** (tipicamente 4KB ou 16KB). Com nós de ordem 1000, a altura cai para ≈ 3, reduzindo acessos a disco drasticamente.
+
+### B-Tree (Bayer & McCreight, 1970)
+
+Uma B-Tree de ordem `m` satisfaz:
+
+1. Cada nó tem no máximo `m` filhos
+2. Cada nó interno (exceto raiz) tem no mínimo `⌈m/2⌉` filhos
+3. A raiz tem no mínimo 2 filhos (se não for folha)
+4. Todas as folhas estão no **mesmo nível**
+5. Um nó com `k` filhos contém `k - 1` chaves ordenadas
+
+**Altura máxima:** `h ≤ log_{⌈m/2⌉}((n + 1) / 2)`
+
+Para `m = 1000` e `n = 1 bilhão`: `h ≤ log₅₀₀(500.000.000) ≈ 3.2` → apenas **4 acessos a disco** para qualquer busca.
+
+### B+Tree — A Variante Dominante
+
+Bancos de dados como **PostgreSQL, MySQL (InnoDB), SQLite** e filesystems como **NTFS, ext4, Btrfs** usam B+Trees, não B-Trees puras. Diferenças:
+
+1. **Dados apenas nas folhas**: nós internos armazenam só chaves de roteamento
+2. **Folhas encadeadas**: linked list entre folhas permite range scans eficientes
+3. **Maior fan-out**: como nós internos não guardam dados, cabem mais chaves por página
+
+```
+Nós internos (só chaves de roteamento):
+
+         [30 | 60 | 90]
+        /    |     |    \
+       /     |     |     \
+
+Folhas (dados + ponteiros entre folhas):
+
+[10,20,30] → [40,50,60] → [70,80,90] → [100,110]
+```
+
+**Por que range scans são eficientes:** `SELECT * FROM users WHERE age BETWEEN 25 AND 35` — o banco encontra a folha com `25` em O(log n), depois percorre a linked list sequencialmente até `35`. Sem B+Tree, seria O(n) full table scan.
+
+---
+
+## Traversals (Percursos)
+
+### Percursos em Profundidade (DFS)
+
+Três variantes clássicas, diferindo apenas na **posição de visita do nó atual**:
+
+```typescript
+class Traversals<T> {
+  // INORDER: esquerda → nó → direita
+  // Em BST, produz elementos em ordem crescente
+  // Complexidade: O(n) tempo, O(h) espaço na call stack
+  inorder(node: TreeNode<T> | null, result: T[] = []): T[] {
+    if (!node) return result;
+    this.inorder(node.left, result);
+    result.push(node.value);
+    this.inorder(node.right, result);
+    return result;
+  }
+
+  // PREORDER: nó → esquerda → direita
+  // Útil para serialização/clonagem da árvore
+  preorder(node: TreeNode<T> | null, result: T[] = []): T[] {
+    if (!node) return result;
+    result.push(node.value);
+    this.preorder(node.left, result);
+    this.preorder(node.right, result);
+    return result;
+  }
+
+  // POSTORDER: esquerda → direita → nó
+  // Útil para deletar árvore (filhos antes do pai) e avaliar expressões
+  postorder(node: TreeNode<T> | null, result: T[] = []): T[] {
+    if (!node) return result;
+    this.postorder(node.left, result);
+    this.postorder(node.right, result);
+    result.push(node.value);
+    return result;
+  }
+}
+```
+
+### Versões Iterativas com Stack Explícita
+
+A versão recursiva tem limite de profundidade (~10.000 frames em V8). Para árvores muito profundas, usamos stack explícita:
+
+```typescript
+// Inorder iterativo — simula a call stack manualmente
+function inorderIterative<T>(root: TreeNode<T> | null): T[] {
+  const result: T[] = [];
+  const stack: TreeNode<T>[] = [];
+  let current = root;
+
+  while (current || stack.length > 0) {
+    // Desce até o nó mais à esquerda
+    while (current) {
+      stack.push(current);
+      current = current.left;
+    }
+    // Processa o nó
+    current = stack.pop()!;
+    result.push(current.value);
+    // Move para a subárvore direita
+    current = current.right;
+  }
+
+  return result;
+}
+
+// Preorder iterativo
+function preorderIterative<T>(root: TreeNode<T> | null): T[] {
+  if (!root) return [];
+  const result: T[] = [];
+  const stack: TreeNode<T>[] = [root];
+
+  while (stack.length > 0) {
+    const node = stack.pop()!;
+    result.push(node.value);
+    // Push right primeiro (LIFO → left sai primeiro)
+    if (node.right) stack.push(node.right);
+    if (node.left) stack.push(node.left);
+  }
+
+  return result;
+}
+```
+
+### Level-Order (BFS com Queue)
+
+```typescript
+// Percurso por nível — usa fila (FIFO), não pilha
+// Útil para: imprimir árvore nível a nível, encontrar profundidade mínima
+function levelOrder<T>(root: TreeNode<T> | null): T[][] {
+  if (!root) return [];
+  const result: T[][] = [];
+  const queue: TreeNode<T>[] = [root];
+
+  while (queue.length > 0) {
+    const levelSize = queue.length;
+    const currentLevel: T[] = [];
+
+    for (let i = 0; i < levelSize; i++) {
+      const node = queue.shift()!;
+      currentLevel.push(node.value);
+      if (node.left) queue.push(node.left);
+      if (node.right) queue.push(node.right);
+    }
+
+    result.push(currentLevel);
+  }
+
+  return result;
+  // Para a árvore [10,5,15,3,7,12,20]:
+  // [[10], [5,15], [3,7,12,20]]
+}
+```
+
+> **Nota de performance:** `queue.shift()` é O(n) em arrays JavaScript (reindexação). Em produção, use uma implementação de deque ou ponteiro de início para O(1) amortizado.
+
+---
+
+## Morris Traversal — O(1) de Espaço Extra
+
+O Morris Traversal é uma técnica que modifica temporariamente a árvore usando **threaded pointers** para eliminar a necessidade de stack ou recursão. Espaço extra: **O(1)**.
+
+A ideia: para cada nó, criamos um link temporário do **predecessor inorder** de volta ao nó atual. Isso permite "voltar" sem stack.
+
+```typescript
+// Morris Inorder Traversal
+// Tempo: O(n) — cada aresta é percorrida no máximo 2 vezes
+// Espaço: O(1) — sem stack, sem recursão
+function morrisInorder<T>(root: TreeNode<T> | null): T[] {
+  const result: T[] = [];
+  let current = root;
+
+  while (current) {
+    if (!current.left) {
+      // Sem subárvore esquerda: visita e vai para a direita
+      result.push(current.value);
+      current = current.right;
+    } else {
+      // Encontra o predecessor inorder (nó mais à direita da subárvore esquerda)
+      let predecessor = current.left;
+      while (predecessor.right && predecessor.right !== current) {
+        predecessor = predecessor.right;
+      }
+
+      if (!predecessor.right) {
+        // Cria thread: predecessor aponta de volta para current
+        predecessor.right = current;
+        current = current.left;
+      } else {
+        // Thread já existe: já visitamos a subárvore esquerda
+        // Remove thread (restaura a árvore original)
+        predecessor.right = null;
+        result.push(current.value);
+        current = current.right;
+      }
+    }
+  }
+
+  return result;
+}
+```
+
+**Quando usar:** cenários com restrição severa de memória ou quando a árvore é extremamente profunda e a stack recursiva estouraria. Na prática, raramente necessário, mas aparece em entrevistas de nível avançado.
+
+---
+
+## Trie (Prefix Tree)
+
+Uma **Trie** (de re**trie**val) é uma árvore onde cada aresta representa um caractere e cada caminho da raiz a um nó representa um **prefixo**. Operações de busca por prefixo são **O(m)** onde `m` é o comprimento da string — independente do número total de palavras armazenadas.
+
+```typescript
+class TrieNode {
+  children: Map<string, TrieNode> = new Map();
+  isEndOfWord: boolean = false;
+  // Metadado opcional: frequência, ponteiro para dados, etc.
+  frequency: number = 0;
+}
+
+class Trie {
+  root: TrieNode = new TrieNode();
+
+  // INSERT — O(m) onde m = comprimento da palavra
+  insert(word: string): void {
+    let node = this.root;
+    for (const char of word) {
+      if (!node.children.has(char)) {
+        node.children.set(char, new TrieNode());
+      }
+      node = node.children.get(char)!;
+    }
+    node.isEndOfWord = true;
+    node.frequency++;
+  }
+
+  // SEARCH exata — O(m)
+  search(word: string): boolean {
+    const node = this._traverse(word);
+    return node !== null && node.isEndOfWord;
+  }
+
+  // STARTS WITH (busca por prefixo) — O(m)
+  startsWith(prefix: string): boolean {
+    return this._traverse(prefix) !== null;
+  }
+
+  // AUTOCOMPLETE — retorna todas as palavras com dado prefixo
+  autocomplete(prefix: string, maxResults: number = 10): string[] {
+    const node = this._traverse(prefix);
+    if (!node) return [];
+
+    const results: string[] = [];
+    this._dfs(node, prefix, results, maxResults);
+    return results;
+  }
+
+  private _traverse(str: string): TrieNode | null {
+    let node = this.root;
+    for (const char of str) {
+      if (!node.children.has(char)) return null;
+      node = node.children.get(char)!;
+    }
+    return node;
+  }
+
+  private _dfs(
+    node: TrieNode,
+    currentWord: string,
+    results: string[],
+    maxResults: number
+  ): void {
+    if (results.length >= maxResults) return;
+    if (node.isEndOfWord) results.push(currentWord);
+
+    for (const [char, child] of node.children) {
+      this._dfs(child, currentWord + char, results, maxResults);
+    }
+  }
+}
+```
+
+**Aplicações reais:**
+
+- **Autocomplete** (Google Search, IDEs): `startsWith` + DFS coletando sugestões
+- **Spell checkers**: busca com tolerância a edições (Levenshtein distance na trie)
+- **Roteamento IP**: Longest Prefix Match em roteadores usa uma variante de trie binária
+- **Compressão**: Radix Tree (Patricia Trie) compacta cadeias de nós com filho único
+
+**Trade-off de memória:** uma trie ingênua com ponteiros para cada caractere possível (26 para a-z, 256 para ASCII) consome muita memória. Alternativas: **Radix Tree** (compacta prefixos comuns), **Ternary Search Tree**, ou **DAFSA** (Directed Acyclic Finite State Automaton).
+
+---
+
+## Segment Tree — Range Queries em O(log n)
+
+Uma **Segment Tree** é uma árvore binária onde cada nó armazena informação agregada sobre um **intervalo** do array original. Permite:
+
+- **Range query** (soma, mínimo, máximo de um intervalo): **O(log n)**
+- **Point update** (alterar um elemento): **O(log n)**
+
+Construção: **O(n)**. Espaço: **O(4n)** (array com 4x o tamanho para garantir espaço).
+
+```typescript
+class SegmentTree {
+  private tree: number[];
+  private n: number;
+
+  // Constrói a segment tree a partir do array — O(n)
+  constructor(arr: number[]) {
+    this.n = arr.length;
+    this.tree = new Array(4 * this.n).fill(0);
+    this._build(arr, 1, 0, this.n - 1);
+  }
+
+  private _build(arr: number[], node: number, start: number, end: number): void {
+    if (start === end) {
+      this.tree[node] = arr[start];
+      return;
+    }
+    const mid = Math.floor((start + end) / 2);
+    this._build(arr, 2 * node, start, mid);
+    this._build(arr, 2 * node + 1, mid + 1, end);
+    this.tree[node] = this.tree[2 * node] + this.tree[2 * node + 1];
+  }
+
+  // Range sum query [l, r] — O(log n)
+  query(l: number, r: number): number {
+    return this._query(1, 0, this.n - 1, l, r);
+  }
+
+  private _query(
+    node: number, start: number, end: number,
+    l: number, r: number
+  ): number {
+    // Sem sobreposição
+    if (r < start || end < l) return 0;
+    // Totalmente contido
+    if (l <= start && end <= r) return this.tree[node];
+    // Sobreposição parcial
+    const mid = Math.floor((start + end) / 2);
+    return (
+      this._query(2 * node, start, mid, l, r) +
+      this._query(2 * node + 1, mid + 1, end, l, r)
+    );
+  }
+
+  // Point update: arr[idx] = val — O(log n)
+  update(idx: number, val: number): void {
+    this._update(1, 0, this.n - 1, idx, val);
+  }
+
+  private _update(
+    node: number, start: number, end: number,
+    idx: number, val: number
+  ): void {
+    if (start === end) {
+      this.tree[node] = val;
+      return;
+    }
+    const mid = Math.floor((start + end) / 2);
+    if (idx <= mid) {
+      this._update(2 * node, start, mid, idx, val);
+    } else {
+      this._update(2 * node + 1, mid + 1, end, idx, val);
+    }
+    this.tree[node] = this.tree[2 * node] + this.tree[2 * node + 1];
+  }
+}
+```
+
+### Fenwick Tree (Binary Indexed Tree — BIT)
+
+A **Fenwick Tree** resolve o mesmo problema de range sum + point update, mas com **implementação muito mais simples** e constante menor. Usa a representação binária dos índices para determinar responsabilidades.
+
+```typescript
+class FenwickTree {
+  private bit: number[];
+  private n: number;
+
+  constructor(n: number) {
+    this.n = n;
+    this.bit = new Array(n + 1).fill(0);
+  }
+
+  // Point update: adiciona delta ao índice i — O(log n)
+  update(i: number, delta: number): void {
+    for (i++; i <= this.n; i += i & (-i)) {
+      this.bit[i] += delta;
+    }
+  }
+
+  // Prefix sum [0, i] — O(log n)
+  prefixSum(i: number): number {
+    let sum = 0;
+    for (i++; i > 0; i -= i & (-i)) {
+      sum += this.bit[i];
+    }
+    return sum;
+  }
+
+  // Range sum [l, r] — O(log n)
+  rangeSum(l: number, r: number): number {
+    return this.prefixSum(r) - (l > 0 ? this.prefixSum(l - 1) : 0);
+  }
+}
+```
+
+O truque `i & (-i)` isola o **bit menos significativo** — determina o "salto" no array de forma que cada posição cobre um intervalo específico de elementos.
+
+**Segment Tree vs Fenwick Tree:**
+
+| Critério | Segment Tree | Fenwick Tree |
+|---|---|---|
+| Range query | Qualquer operação associativa | Tipicamente soma (extensível) |
+| Implementação | Mais complexa | Muito simples |
+| Espaço | 4n | n |
+| Lazy propagation | Sim (range updates em O(log n)) | Limitada |
+| Constante | Maior | Menor |
+
+---
+
+## Heap como Árvore Binária
+
+Um **heap binário** é uma *complete binary tree* onde cada nó satisfaz a **heap property**:
+
+- **Min-heap:** `parent.key ≤ child.key` (raiz é o mínimo)
+- **Max-heap:** `parent.key ≥ child.key` (raiz é o máximo)
+
+A representação em **array** é possível justamente porque é *complete*:
+
+```
+Para o nó no índice i (0-indexed):
+  Pai:         ⌊(i - 1) / 2⌋
+  Filho esq.:  2i + 1
+  Filho dir.:  2i + 2
+```
+
+Já cobrimos heap em detalhes na lição de stacks/queues. O ponto aqui é reforçar que **heap é uma árvore** — a representação em array é uma otimização de memória, não uma mudança conceitual.
+
+---
+
+## Aplicações em Sistemas Reais
+
+### DOM Tree (Document Object Model)
+
+O navegador parseia HTML em uma árvore. Cada elemento é um nó com filhos:
+
+```
+document
+  └── html
+       ├── head
+       │    ├── title
+       │    └── meta
+       └── body
+            ├── div#app
+            │    ├── header
+            │    └── main
+            └── script
+```
+
+`document.querySelector()` faz um **DFS** na DOM tree. `querySelectorAll` coleta nós que matcham o seletor durante o percurso.
+
+### AST (Abstract Syntax Tree)
+
+Compiladores e transpiladores (Babel, TypeScript, ESLint) parseiam código-fonte em ASTs:
+
+```javascript
+// Código: 2 + 3 * 4
+
+// AST resultante:
+//       +
+//      / \
+//     2   *
+//        / \
+//       3   4
+```
+
+O ESLint percorre a AST com o *visitor pattern* — cada regra registra callbacks para tipos de nó específicos. O Babel transforma a AST (e.g., arrow functions → function expressions) e depois regenera código.
+
+### Sistemas de Arquivos
+
+Filesystems organizam diretórios e arquivos em árvores. Comandos como `find` e `ls -R` fazem DFS. O **path** `/usr/local/bin/node` é literalmente o caminho da raiz até uma folha na árvore de diretórios.
+
+Internamente, **ext4** usa **HTrees** (variante de B-Tree com hash) para indexar entradas de diretório, permitindo lookup em O(log n) ao invés de O(n) em diretórios com milhares de arquivos.
+
+### Decision Trees em Machine Learning
+
+Árvores de decisão particionam o espaço de features recursivamente. Cada nó interno testa uma condição (`age > 30?`), cada folha emite uma predição. **Random Forests** constroem múltiplas árvores com subsets aleatórios para reduzir overfitting via *ensemble*.
+
+---
+
+## Complexidade Comparativa
+
+| Estrutura | Search | Insert | Delete | Espaço | Caso de uso |
+|---|---|---|---|---|---|
+| BST (média) | O(log n) | O(log n) | O(log n) | O(n) | Uso didático |
+| BST (pior) | O(n) | O(n) | O(n) | O(n) | — |
+| AVL | O(log n) | O(log n) | O(log n) | O(n) | Leitura-intensiva |
+| Red-Black | O(log n) | O(log n) | O(log n) | O(n) | Escrita-intensiva, uso geral |
+| B-Tree | O(log n) | O(log n) | O(log n) | O(n) | Disco / banco de dados |
+| Trie | O(m) | O(m) | O(m) | O(Σ * m * n) | Busca por prefixo |
+| Segment Tree | O(log n) | O(log n) | — | O(n) | Range queries |
+| Fenwick Tree | O(log n) | O(log n) | — | O(n) | Range sum queries |
+
+> **m** = comprimento da string; **Σ** = tamanho do alfabeto; **n** = número de elementos.
+
+**Ponto crucial para entrevistas:** sempre discuta a **altura** da árvore. A complexidade de BST é O(h), não O(log n) — só é O(log n) se a árvore for balanceada. Essa distinção demonstra profundidade técnica.

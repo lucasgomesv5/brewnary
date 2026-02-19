@@ -1,0 +1,379 @@
+---
+title: "O que e Inteligencia Artificial"
+description: "Definicao formal de IA, taxonomia Narrow/General/Super AI, paradigmas de Machine Learning e a relacao entre IA, ML e Deep Learning"
+track: "ia"
+order: 1
+section: "Fundamentos"
+priority: "high"
+tags: ["ia", "machine-learning", "deep-learning", "fundamentos"]
+prerequisites: []
+keyTakeaways:
+  - "IA e o campo da computacao que busca criar sistemas capazes de realizar tarefas que normalmente requerem inteligencia humana -- a taxonomia Narrow/General/Super AI distingue o escopo dessas capacidades"
+  - "Machine Learning e um subconjunto de IA que aprende padroes a partir de dados; Deep Learning e um subconjunto de ML que usa redes neurais profundas -- a hierarquia IA > ML > DL e fundamental"
+  - "Os tres paradigmas de ML (supervisionado, nao-supervisionado e por reforco) resolvem classes de problemas distintas e a escolha do paradigma depende da natureza dos dados e do objetivo"
+---
+
+# O que e Inteligencia Artificial
+
+## 1. Definicao Formal
+
+Inteligencia Artificial (IA) e o campo da ciencia da computacao dedicado a criar sistemas capazes de realizar tarefas que, quando executadas por humanos, requerem inteligencia. Essa definicao, embora amplamente aceita, e intencionalmente vaga -- e existem abordagens distintas para operacionaliza-la.
+
+As quatro abordagens historicas para definir IA, organizadas por Stuart Russell e Peter Norvig no livro *Artificial Intelligence: A Modern Approach*:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│              ABORDAGENS PARA DEFINIR IA                      │
+├──────────────────────────┬──────────────────────────────────┤
+│    Pensando como humano  │   Pensando racionalmente         │
+│    (Ciencia Cognitiva)   │   (Logica formal, leis do        │
+│    Modelar o processo    │   pensamento)                    │
+│    cognitivo humano      │   Inferencia correta a partir    │
+│                          │   de premissas                   │
+├──────────────────────────┼──────────────────────────────────┤
+│    Agindo como humano    │   Agindo racionalmente           │
+│    (Teste de Turing)     │   (Agentes racionais)            │
+│    Comportamento         │   Tomar a melhor acao possivel   │
+│    indistinguivel de     │   dada a informacao disponivel   │
+│    um humano             │   (abordagem dominante hoje)     │
+└──────────────────────────┴──────────────────────────────────┘
+```
+
+A abordagem dominante na IA moderna e a do **agente racional**: um sistema que percebe seu ambiente e toma acoes que maximizam uma medida de desempenho. Essa definicao nao exige que o sistema pense como um humano -- apenas que aja de forma otima.
+
+---
+
+## 2. Taxonomia: Narrow AI, General AI e Super AI
+
+A classificacao mais utilizada para IA distingue tres niveis de capacidade:
+
+### Narrow AI (IA Estreita / ANI)
+
+Sistemas projetados para executar **uma tarefa especifica** com desempenho igual ou superior ao humano. Toda IA que existe hoje e Narrow AI.
+
+**Exemplos:**
+- **Classificacao de imagens**: ResNet identifica objetos em fotos com acuracia superior a humanos (top-5 error < 3.6% no ImageNet)
+- **Processamento de linguagem natural**: GPT-4, Claude, Gemini geram texto coerente e respondem perguntas
+- **Jogos**: AlphaGo derrotou o campeao mundial de Go; AlphaFold previu a estrutura de proteinas
+- **Recomendacao**: Netflix, Spotify e YouTube usam sistemas de recomendacao baseados em ML
+- **Veiculos autonomos**: Tesla Autopilot, Waymo usam percepcao visual + planejamento de trajetoria
+
+Cada um desses sistemas e extremamente capaz em seu dominio, mas **nenhum** consegue transferir seu conhecimento para tarefas fora do escopo de treinamento sem adaptacao significativa.
+
+### General AI (IA Geral / AGI)
+
+Um sistema hipotetico com capacidade cognitiva **equivalente a de um humano** em qualquer dominio intelectual. AGI poderia aprender qualquer tarefa que um humano aprende, transferir conhecimento entre dominios e raciocinar de forma abstrata.
+
+AGI **nao existe atualmente**. Ha debate sobre se LLMs modernos representam um passo em direcao a AGI ou se sao fundamentalmente limitados por sua arquitetura (pattern matching sofisticado vs. raciocinio genuino). A definicao exata de AGI tambem nao tem consenso academico.
+
+### Super AI (Superinteligencia / ASI)
+
+Um sistema hipotetico que **excede** a capacidade cognitiva humana em todos os dominios. Conceito explorado por Nick Bostrom em *Superintelligence* (2014). Nao existe e nao ha consenso sobre se ou quando seria possivel.
+
+```
+┌────────────────────────────────────────────────────────────┐
+│                    TAXONOMIA DE IA                          │
+│                                                            │
+│  ┌──────────────────────────────────────────────────────┐  │
+│  │  Super AI (ASI)                                      │  │
+│  │  Excede capacidade humana em TODOS os dominios       │  │
+│  │  Status: Hipotetico                                  │  │
+│  │                                                      │  │
+│  │  ┌──────────────────────────────────────────────┐    │  │
+│  │  │  General AI (AGI)                            │    │  │
+│  │  │  Equivalente a humano em QUALQUER dominio    │    │  │
+│  │  │  Status: Hipotetico                          │    │  │
+│  │  │                                              │    │  │
+│  │  │  ┌──────────────────────────────────────┐    │    │  │
+│  │  │  │  Narrow AI (ANI)                     │    │    │  │
+│  │  │  │  Excelente em UMA tarefa especifica  │    │    │  │
+│  │  │  │  Status: EXISTE HOJE                 │    │    │  │
+│  │  │  │  Ex: GPT-4, AlphaGo, DALL-E         │    │    │  │
+│  │  │  └──────────────────────────────────────┘    │    │  │
+│  │  └──────────────────────────────────────────────┘    │  │
+│  └──────────────────────────────────────────────────────┘  │
+└────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 3. A Hierarquia: IA vs ML vs Deep Learning
+
+Esses tres termos sao frequentemente usados como sinonimos, mas representam conjuntos aninhados com escopos distintos:
+
+```
+┌────────────────────────────────────────────────────────────┐
+│  INTELIGENCIA ARTIFICIAL (IA)                              │
+│  Qualquer tecnica que permite a maquinas imitar            │
+│  comportamento inteligente.                                │
+│  Inclui: sistemas baseados em regras, logica formal,       │
+│  busca, planejamento, ML, etc.                             │
+│                                                            │
+│  ┌──────────────────────────────────────────────────────┐  │
+│  │  MACHINE LEARNING (ML)                               │  │
+│  │  Subconjunto de IA que APRENDE padroes a partir      │  │
+│  │  de dados, sem ser explicitamente programado.        │  │
+│  │  Inclui: regressao, arvores de decisao, SVM,        │  │
+│  │  random forests, redes neurais, etc.                 │  │
+│  │                                                      │  │
+│  │  ┌──────────────────────────────────────────────┐    │  │
+│  │  │  DEEP LEARNING (DL)                          │    │  │
+│  │  │  Subconjunto de ML que usa redes neurais     │    │  │
+│  │  │  com MUITAS camadas (profundas).             │    │  │
+│  │  │  Inclui: CNNs, RNNs, Transformers, GANs     │    │  │
+│  │  │  Requer grandes volumes de dados e GPU.      │    │  │
+│  │  └──────────────────────────────────────────────┘    │  │
+│  └──────────────────────────────────────────────────────┘  │
+└────────────────────────────────────────────────────────────┘
+```
+
+**IA sem ML** -- Sistemas especialistas (expert systems) usam regras if/then definidas por humanos. Um motor de regras de fraude bancaria que implementa `if transacao > R$10000 AND pais != Brasil then bloquear` e IA (toma decisoes), mas nao e ML (nao aprende com dados).
+
+**ML sem Deep Learning** -- Um modelo de regressao logistica que prevE churn de clientes com base em features numericas e ML classico. Aprende com dados, mas usa um unico "neuronio" com funcao sigmoide -- nao e deep learning.
+
+**Deep Learning** -- Um modelo Transformer como o GPT-4 que gera texto e deep learning: redes neurais com bilhoes de parametros distribuidos em dezenas de camadas.
+
+---
+
+## 4. Paradigmas de Machine Learning
+
+Machine Learning se divide em tres paradigmas fundamentais, definidos pela natureza dos dados de treinamento e pelo objetivo do aprendizado.
+
+### 4.1 Aprendizado Supervisionado (Supervised Learning)
+
+O modelo recebe pares **(entrada, rotulo)** e aprende a mapear entradas para rotulos. O objetivo e generalizar esse mapeamento para dados nunca vistos.
+
+```
+Dados de treinamento:
+  (email_1, spam)
+  (email_2, nao_spam)
+  (email_3, spam)
+  ...
+
+Modelo aprende:  f(email) -> {spam, nao_spam}
+
+Inferencia:
+  f(email_novo) -> spam  (predicao)
+```
+
+**Tipos de problemas:**
+- **Classificacao**: rotulo e uma categoria discreta (spam/nao spam, gato/cachorro, benigno/maligno)
+- **Regressao**: rotulo e um valor continuo (preco de imovel, temperatura amanha, tempo de entrega)
+
+**Algoritmos classicos:**
+- Regressao linear e logistica
+- k-Nearest Neighbors (KNN)
+- Arvores de decisao e Random Forests
+- Support Vector Machines (SVM)
+- Redes neurais (MLP, CNN, Transformers)
+
+**Exemplo pratico em Python (scikit-learn):**
+
+```python
+from sklearn.model_selection import train_test_split
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.metrics import accuracy_score
+
+# Dados: features numericas + rotulos
+X = [[5.1, 3.5], [4.9, 3.0], [7.0, 3.2], [6.4, 3.2]]  # features
+y = [0, 0, 1, 1]  # rotulos (0 = setosa, 1 = versicolor)
+
+# Dividir em treino e teste
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.25)
+
+# Treinar modelo
+modelo = RandomForestClassifier(n_estimators=100)
+modelo.fit(X_train, y_train)
+
+# Avaliar
+predicoes = modelo.predict(X_test)
+print(f"Acuracia: {accuracy_score(y_test, predicoes):.2f}")
+```
+
+### 4.2 Aprendizado Nao-Supervisionado (Unsupervised Learning)
+
+O modelo recebe **apenas entradas** (sem rotulos) e deve encontrar estrutura, padroes ou agrupamentos nos dados.
+
+```
+Dados de treinamento:
+  [email_1, email_2, email_3, email_4, ...]
+  (sem rotulos!)
+
+Modelo descobre:
+  Grupo A: {email_1, email_3}  (similares entre si)
+  Grupo B: {email_2, email_4}  (similares entre si)
+```
+
+**Tipos de problemas:**
+- **Clustering**: agrupar dados similares (segmentacao de clientes, deteccao de anomalias)
+- **Reducao de dimensionalidade**: comprimir dados preservando informacao (PCA, t-SNE, UMAP)
+- **Aprendizado de representacoes**: extrair features uteis (autoencoders, embeddings)
+
+**Algoritmos classicos:**
+- K-Means e K-Medoids
+- DBSCAN (density-based)
+- PCA (Principal Component Analysis)
+- Autoencoders
+
+**Exemplo pratico:**
+
+```python
+from sklearn.cluster import KMeans
+import numpy as np
+
+# Dados de clientes: [gastos_mensal, frequencia_visitas]
+clientes = np.array([
+    [500, 20], [480, 18], [50, 2], [60, 3],
+    [300, 10], [320, 12], [40, 1], [510, 22]
+])
+
+# Descobrir 3 segmentos
+kmeans = KMeans(n_clusters=3, random_state=42)
+kmeans.fit(clientes)
+
+print(f"Segmentos: {kmeans.labels_}")
+# Saida possivel: [0, 0, 2, 2, 1, 1, 2, 0]
+# Grupo 0: alto gasto, alta frequencia
+# Grupo 1: gasto medio, frequencia media
+# Grupo 2: baixo gasto, baixa frequencia
+```
+
+### 4.3 Aprendizado por Reforco (Reinforcement Learning)
+
+Um **agente** interage com um **ambiente**, executa **acoes** e recebe **recompensas** (ou penalidades). O objetivo e aprender uma **politica** (estrategia) que maximiza a recompensa acumulada ao longo do tempo.
+
+```
+┌─────────────────────────────────────────────────────┐
+│                 REINFORCEMENT LEARNING                │
+│                                                       │
+│   ┌──────────┐    acao (a_t)    ┌──────────────┐     │
+│   │          │ ────────────────→│              │     │
+│   │  AGENTE  │                  │  AMBIENTE    │     │
+│   │          │←────────────────│              │     │
+│   └──────────┘  estado (s_t+1)  └──────────────┘     │
+│                  recompensa (r_t)                     │
+│                                                       │
+│   Objetivo: aprender politica pi(s) -> a              │
+│   que maximiza sum(gamma^t * r_t)                     │
+│   onde gamma e o fator de desconto (0 < gamma <= 1)   │
+└─────────────────────────────────────────────────────┘
+```
+
+**Exemplos celebres:**
+- **AlphaGo** (DeepMind, 2016): aprendeu Go jogando contra si mesmo milhoes de vezes
+- **OpenAI Five** (2019): equipe de 5 agentes aprendeu a jogar Dota 2 em nivel profissional
+- **RLHF** (Reinforcement Learning from Human Feedback): tecnica usada para alinhar LLMs como ChatGPT e Claude com preferencias humanas
+
+**Conceitos fundamentais:**
+- **Estado (s)**: representacao do ambiente em um instante
+- **Acao (a)**: o que o agente pode fazer
+- **Recompensa (r)**: sinal escalar de feedback
+- **Politica (pi)**: mapeamento estado -> acao
+- **Funcao valor V(s)**: recompensa esperada a partir de um estado
+- **Funcao Q(s,a)**: recompensa esperada ao tomar acao `a` no estado `s`
+
+**Algoritmos fundamentais:**
+- Q-Learning (tabular)
+- Deep Q-Network (DQN) -- Q-Learning + redes neurais
+- Policy Gradient (REINFORCE)
+- PPO (Proximal Policy Optimization) -- usado no RLHF de LLMs
+- SAC (Soft Actor-Critic)
+
+---
+
+## 5. Alem dos Tres Paradigmas
+
+Alem dos tres paradigmas classicos, existem abordagens hibridas e especializadas que ganharam destaque:
+
+### Aprendizado Semi-Supervisionado
+
+Combina uma **pequena** quantidade de dados rotulados com uma **grande** quantidade de dados nao rotulados. Util quando rotular dados e caro (ex: imagens medicas que requerem um radiologista).
+
+### Aprendizado Auto-Supervisionado (Self-Supervised Learning)
+
+O modelo cria seus proprios rotulos a partir da estrutura dos dados. Essa e a base do treinamento de LLMs modernos:
+
+```
+Texto original:  "O gato sentou no tapete"
+Tarefa criada:   Dado "O gato sentou no ___", prever "tapete"
+
+O modelo nunca recebeu rotulos humanos -- ele criou a tarefa
+de predicao a partir da propria estrutura do texto.
+```
+
+### Transfer Learning
+
+Um modelo pre-treinado em uma tarefa (ex: classificacao de imagens no ImageNet) e adaptado para outra tarefa (ex: deteccao de tumores em raios-X). O conhecimento aprendido nas camadas iniciais (deteccao de bordas, texturas) e reutilizado.
+
+---
+
+## 6. Quando Usar (e Quando Nao Usar) IA
+
+IA nao e a solucao para todo problema. Um fluxograma pratico:
+
+```
+O problema requer decisao baseada em dados?
+  │
+  ├── NAO → Use logica convencional (if/else, regras de negocio)
+  │
+  └── SIM → Voce tem dados suficientes?
+              │
+              ├── NAO → Colete dados primeiro ou use regras + heuristicas
+              │
+              └── SIM → Os dados sao rotulados?
+                          │
+                          ├── SIM → Supervised Learning
+                          │         (classificacao ou regressao)
+                          │
+                          ├── PARCIAL → Semi-supervised ou
+                          │             Self-supervised
+                          │
+                          └── NAO → Unsupervised Learning
+                                    (clustering, anomalias)
+
+Existe um ambiente simulavel com feedback claro?
+  └── SIM → Reinforcement Learning
+```
+
+**IA funciona bem quando:**
+- Ha grandes volumes de dados representativos
+- O problema envolve reconhecimento de padroes complexos
+- Regras explicitas sao dificeis de definir (visao computacional, NLP)
+- O custo de erro e toleravel ou o sistema tem supervisao humana
+
+**IA nao funciona bem quando:**
+- Os dados sao escassos ou de baixa qualidade
+- O problema requer raciocinio logico deterministico (use um algoritmo)
+- Explicabilidade total e exigida (regulamentacao financeira/medica)
+- O custo de erro e catastrofico sem possibilidade de revisao humana
+
+---
+
+## 7. Metricas Fundamentais
+
+Para avaliar modelos de ML, e essencial entender as metricas basicas:
+
+```
+                    Predicao Positiva    Predicao Negativa
+                   ┌────────────────────┬────────────────────┐
+Real Positivo      │  True Positive (TP)│ False Negative (FN)│
+                   ├────────────────────┼────────────────────┤
+Real Negativo      │ False Positive (FP)│ True Negative (TN) │
+                   └────────────────────┴────────────────────┘
+
+Acuracia   = (TP + TN) / (TP + TN + FP + FN)
+Precisao   = TP / (TP + FP)     -- "Dos que previ positivo, quantos sao?"
+Recall     = TP / (TP + FN)     -- "Dos positivos reais, quantos encontrei?"
+F1-Score   = 2 * (Precisao * Recall) / (Precisao + Recall)
+```
+
+**Quando priorizar cada metrica:**
+- **Precisao alta**: quando falso positivo e caro (ex: marcar email legitimo como spam)
+- **Recall alto**: quando falso negativo e perigoso (ex: nao detectar cancer em exame)
+- **F1-Score**: quando voce precisa de equilibrio entre precisao e recall
+
+---
+
+## Resumo
+
+Inteligencia Artificial e um campo amplo que abrange desde sistemas baseados em regras ate redes neurais com bilhoes de parametros. O entendimento claro da hierarquia IA > ML > DL, dos tres paradigmas de aprendizado e de quando aplicar cada abordagem e o alicerce sobre o qual todo o restante desta trilha se constroi. Nas proximas licoes, vamos explorar a historia que nos trouxe ate aqui, a matematica que sustenta esses sistemas e os modelos que definem o estado da arte.

@@ -1,0 +1,635 @@
+---
+title: "Documentação Técnica"
+description: "ADRs, RFCs, runbooks, API docs e o framework Diátaxis — como documentar decisões arquiteturais e propostas técnicas"
+track: "career"
+order: 1
+section: "Código e Qualidade"
+priority: "high"
+tags: ["documentação", "adr", "rfc", "arquitetura", "decisões"]
+prerequisites: []
+keyTakeaways:
+  - "ADRs (Architecture Decision Records) registram o contexto e justificativa de cada decisão arquitetural — são a memória do projeto"
+  - "O framework Diátaxis organiza documentação em 4 tipos: tutorials, how-to guides, explanation e reference — cada um com propósito distinto"
+  - "Engenheiros eficazes escrevem documentação proativamente — quem não documenta cria dívida técnica invisível"
+---
+
+## Por Que Documentação É Multiplicador de Impacto
+
+Muitos engenheiros veem documentação como tarefa menor — algo que "deveria ser feito" mas nunca é prioridade. Na prática, **documentação é multiplicador de impacto**: uma boa ADR economiza semanas de discussão futura, um runbook bem escrito reduz o MTTR (Mean Time to Recovery) de horas para minutos, e uma RFC clara alinha um time inteiro antes de uma linha de código ser escrita.
+
+```
+Impacto da documentação no ciclo de vida do software:
+
+Onboarding sem docs:  2-4 semanas para novo dev ser produtivo
+Onboarding com docs:  3-5 dias para novo dev ser produtivo
+
+Incidente sem runbook:  1-4 horas de MTTR (debugging ao vivo)
+Incidente com runbook:  10-30 minutos de MTTR (passos claros)
+
+Decisão sem ADR:  Relitigada a cada 6 meses por novos membros
+Decisão com ADR:  "Leia ADR-042, o contexto está documentado"
+```
+
+---
+
+## Tipos de Documentação Técnica
+
+### Taxonomia Completa
+
+```
+Tipo                 | Audiência          | Quando escrever
+---------------------|--------------------|--------------------------
+ADR                  | Time de eng.       | Cada decisão arquitetural
+RFC                  | Org. de eng.       | Mudanças grandes/cross-team
+Runbook              | On-call/SRE        | Cada alerta novo
+API Reference        | Consumidores       | Cada endpoint/função pública
+README               | Novos devs         | Início do projeto + manutenção
+Onboarding Guide     | Novos membros      | Quando time cresce
+How-to Guide         | Devs do time       | Tarefas recorrentes
+Architecture Doc     | Time + liderança   | Visão geral do sistema
+Post-mortem          | Toda org.          | Após incidentes
+Changelog            | Usuários/devs      | Cada release
+```
+
+---
+
+## ADR — Architecture Decision Records
+
+### O Formato
+
+ADRs são documentos **curtos** (1-2 páginas) que registram **uma** decisão arquitetural, o contexto, as alternativas e as consequências.
+
+```markdown
+# ADR-042: Adotar PostgreSQL como Banco Principal
+
+## Status
+Aceito (2024-01-15)
+Substitui: ADR-003 (MySQL como banco principal)
+
+## Contexto
+O sistema evoluiu para precisar de:
+- Queries complexas com dados semi-estruturados (JSON)
+- Full-text search nativo (sem Elasticsearch para MVP)
+- CTEs recursivas para hierarquia de categorias
+- Suporte a tipos geográficos (PostGIS) para feature futura
+
+O time tem 3 devs com experiência em MySQL e 1 em PostgreSQL.
+O volume atual é ~500 RPS com projeção de 5K RPS em 12 meses.
+
+## Decisão
+Adotaremos PostgreSQL 16 como banco de dados principal.
+
+## Justificativa
+| Critério           | PostgreSQL          | MySQL 8           | MongoDB         |
+|--------------------|---------------------|-------------------|-----------------|
+| JSONB              | Nativo, indexável   | JSON (sem índice) | Nativo          |
+| Full-text search   | Built-in (ts_vector)| Limitado          | Atlas Search    |
+| CTEs recursivas    | Completo            | Limitado          | Não aplicável   |
+| ACID               | Completo            | Completo          | Parcial         |
+| Extensões          | PostGIS, pg_trgm    | Limitadas         | N/A             |
+| Curva do time      | Média               | Baixa             | Média           |
+
+Trade-off aceito: curva de aprendizado para 3 devs do MySQL (~2 semanas).
+
+## Alternativas Rejeitadas
+1. **MySQL 8**: Familiar ao time, mas JSONB inferior, FTS limitado
+2. **MongoDB**: Bom para dados flexíveis, mas perdemos ACID completo
+   e JOINs eficientes. Complexidade operacional maior.
+3. **CockroachDB**: PostgreSQL-compatible e distribuído, mas custo
+   operacional alto para o estágio atual do projeto.
+
+## Consequências
+- Time precisa de 1-2 semanas de adaptação
+- Configurar pgbouncer para connection pooling
+- Backups com pg_dump (MVP) → WAL archiving (produção)
+- Migrations com golang-migrate ou Prisma
+- Monitoramento com pg_stat_statements
+```
+
+### Quando Escrever um ADR
+
+```
+ESCREVA um ADR quando:
+  ✓ Escolher uma tecnologia (banco, framework, linguagem, cloud provider)
+  ✓ Definir um padrão arquitetural (event-driven, CQRS, microserviço)
+  ✓ Escolher entre abordagens técnicas com trade-offs significativos
+  ✓ Decidir NÃO fazer algo (decisões de exclusão são valiosas)
+  ✓ A decisão afeta múltiplos módulos ou times
+
+NÃO escreva um ADR quando:
+  ✗ É uma decisão facilmente reversível (nome de variável, lib pequena)
+  ✗ É um padrão já estabelecido no time (não precisa re-decidir)
+  ✗ É uma decisão de produto, não técnica
+```
+
+### Tooling para ADRs
+
+```bash
+# adr-tools (CLI para gerenciar ADRs)
+brew install adr-tools
+
+adr new "Adotar PostgreSQL como banco principal"
+# Cria: docs/adr/0042-adotar-postgresql-como-banco-principal.md
+
+adr list                    # Lista todos os ADRs
+adr link 42 "Substitui" 3  # Linka ADR-042 como substituto de ADR-003
+
+# Estrutura no repositório:
+docs/
+  adr/
+    0001-usar-typescript.md
+    0002-adotar-monorepo.md
+    0003-mysql-como-banco-principal.md   # Status: Substituído por ADR-042
+    ...
+    0042-adotar-postgresql-como-banco-principal.md
+```
+
+---
+
+## RFC — Request for Comments
+
+### Quando Usar RFC vs ADR
+
+```
+ADR: Decisão pontual já tomada (ou prestes a ser tomada)
+     → 1-2 páginas, registro histórico
+
+RFC: Proposta de mudança significativa que precisa de input coletivo
+     → 3-10 páginas, design técnico, plano de execução
+     → Geralmente resulta em 1+ ADRs após aprovação
+```
+
+### Template de RFC Completo
+
+```markdown
+# RFC: Migração para Event-Driven Architecture
+
+## Metadados
+- **Autor**: Lucas Gomes
+- **Data**: 2024-02-01
+- **Status**: Em Discussão → Aceito / Rejeitado
+- **Reviewers**: @maria, @pedro, @tech-lead
+- **Deadline para comentários**: 2024-02-15
+
+## 1. Problema
+O endpoint POST /orders leva 8s (P99) porque executa 5 operações
+síncronas sequenciais:
+1. Validação de estoque (InventoryService) — ~200ms
+2. Cálculo de frete (ShippingService) — ~1500ms (API externa)
+3. Processamento de pagamento (PaymentService) — ~3000ms
+4. Envio de email de confirmação (EmailService) — ~2000ms
+5. Atualização de analytics (AnalyticsService) — ~1300ms
+
+Consequências atuais:
+- Timeout em 15% das requests (SLA: < 1%)
+- UX degradada: usuário espera 8s+ na tela de checkout
+- Falha em qualquer etapa cancela todo o pedido (falta de resiliência)
+
+## 2. Proposta
+Migrar operações não-críticas para processamento assíncrono via
+RabbitMQ, mantendo apenas validação e pagamento no caminho síncrono.
+
+Fluxo proposto:
+```
+POST /orders
+  → Validar estoque (síncrono, ~200ms)
+  → Processar pagamento (síncrono, ~3000ms)
+  → Retornar 202 Accepted (~3200ms total)
+  → Publicar evento OrderCreated
+    → Consumer: enviar email
+    → Consumer: atualizar analytics
+    → Consumer: calcular frete e agendar entrega
+```
+
+## 3. Design Técnico
+
+### 3.1 Topologia de Mensageria
+- Exchange: `orders.events` (tipo: topic)
+- Routing keys: `order.created`, `order.paid`, `order.shipped`
+- Queues: uma por consumer, com dead-letter queue individual
+- Retry policy: 3 tentativas, exponential backoff (1s, 5s, 25s)
+
+### 3.2 Schema do Evento
+```json
+{
+  "eventId": "uuid-v4",
+  "type": "order.created",
+  "timestamp": "2024-02-01T10:00:00Z",
+  "version": 1,
+  "data": {
+    "orderId": "ord_abc123",
+    "userId": "usr_xyz789",
+    "items": [...],
+    "total": 299.90
+  },
+  "metadata": {
+    "correlationId": "req_def456",
+    "source": "order-service"
+  }
+}
+```
+
+## 4. Riscos e Mitigações
+
+| Risco                          | Probabilidade | Impacto | Mitigação                    |
+|--------------------------------|---------------|---------|------------------------------|
+| Mensagem perdida               | Baixa         | Alto    | Publisher confirms + DLQ     |
+| Consistência eventual visível  | Média         | Médio   | Optimistic UI + polling      |
+| RabbitMQ indisponível          | Baixa         | Alto    | Fallback síncrono + alertas  |
+| Mensagem processada 2x        | Média         | Médio   | Idempotência em consumers    |
+
+## 5. Plano de Rollout
+1. **Semana 1**: Setup RabbitMQ + infra de consumers + monitoramento
+2. **Semana 2**: Migrar envio de email para async (menor risco)
+3. **Semana 3**: Migrar analytics para async
+4. **Semana 4**: Migrar cálculo de frete para async
+5. **Semana 5**: Remover chamadas síncronas antigas + cleanup
+
+Feature flag `USE_ASYNC_ORDER_PROCESSING` para rollback instantâneo.
+
+## 6. Métricas de Sucesso
+- Latência P99 de POST /orders: < 500ms (atual: 8s)
+- Taxa de timeout: < 0.1% (atual: 15%)
+- Disponibilidade do fluxo de checkout: > 99.9%
+- Tempo de processamento de email: < 30s após criação do pedido
+
+## 7. Alternativas Consideradas
+1. **Otimizar chamadas síncronas**: Paralelizar com Promise.all.
+   Rejeitado: ainda falha se uma etapa falhar, não resolve resiliência.
+2. **AWS SQS**: Mais simples, mas vendor lock-in e sem routing avançado.
+3. **Apache Kafka**: Mais robusto, mas complexidade operacional excessiva
+   para nosso volume atual (~500 RPS).
+```
+
+---
+
+## O Framework Diátaxis
+
+O Diátaxis (criado por Daniele Procida) organiza documentação em **4 quadrantes** baseados em dois eixos: teoria vs prática e aprendizado vs trabalho.
+
+```
+                    APRENDIZADO                    TRABALHO
+                    (estudando)                    (fazendo)
+              ┌───────────────────┬───────────────────────┐
+   PRÁTICA    │                   │                       │
+   (passos)   │    TUTORIALS      │    HOW-TO GUIDES      │
+              │    (aprender)     │    (resolver)         │
+              │                   │                       │
+              ├───────────────────┼───────────────────────┤
+   TEORIA     │                   │                       │
+   (conceito) │    EXPLANATION    │    REFERENCE           │
+              │    (entender)     │    (consultar)        │
+              │                   │                       │
+              └───────────────────┴───────────────────────┘
+```
+
+### Os 4 Tipos na Prática
+
+```
+1. TUTORIAL (learning-oriented)
+   → Guia passo-a-passo para INICIANTE aprender fazendo
+   → "Crie sua primeira API com NestJS em 15 minutos"
+   → O autor controla o caminho, o leitor segue
+   → Foco: sucesso garantido, experiência positiva
+
+2. HOW-TO GUIDE (task-oriented)
+   → Guia para resolver um PROBLEMA ESPECÍFICO
+   → "Como configurar autenticação JWT no NestJS"
+   → Assume que o leitor já conhece o básico
+   → Foco: resolver, não ensinar
+
+3. EXPLANATION (understanding-oriented)
+   → Explicação conceitual para ENTENDER o porquê
+   → "Como o event loop do Node.js funciona"
+   → Não tem passos — é discussão, contexto, história
+   → Foco: modelo mental, razões, trade-offs
+
+4. REFERENCE (information-oriented)
+   → Descrição técnica completa e PRECISA
+   → "API Reference: todos os métodos do OrderService"
+   → Estruturada por consistência, não por narrativa
+   → Foco: acurácia, completude, fácil de buscar
+```
+
+### Erros Comuns ao Misturar Tipos
+
+```
+ERRO: Tutorial que vira reference
+  → "Passo 1: use o método createUser(data: UserData): Promise{'<'}User{'>'}
+     que aceita os seguintes 47 parâmetros..."
+  → O iniciante se perde. Reference vai na API docs, não no tutorial.
+
+ERRO: How-to que vira explanation
+  → "Para configurar o Redis, primeiro entenda que Redis é um
+     data structure server criado por Salvatore Sanfilippo em 2009..."
+  → Quem busca how-to quer RESOLVER, não estudar história.
+
+ERRO: Reference que tenta ser tutorial
+  → "Array.map() — vamos aprender a usar map! Primeiro, imagine
+     uma lista de compras..."
+  → Reference é para CONSULTAR, não para ensinar do zero.
+```
+
+---
+
+## Escrevendo READMEs Eficazes
+
+### Template para Projetos de Software
+
+```markdown
+# Nome do Projeto
+
+Descrição de uma linha: o que faz e para quem.
+
+## Quick Start
+
+Comandos mínimos para rodar o projeto:
+
+  git clone <repo>
+  cd <projeto>
+  cp .env.example .env
+  docker compose up -d
+  npm install
+  npm run dev
+
+## Arquitetura
+
+Diagrama de alto nível (C4 level 1 ou 2).
+
+## Desenvolvimento
+
+### Pré-requisitos
+- Node.js >= 20
+- Docker e Docker Compose
+- PostgreSQL 16 (ou use o docker-compose)
+
+### Comandos Úteis
+- npm run dev        → servidor de desenvolvimento
+- npm test           → roda testes
+- npm run lint       → linting
+- npm run build      → build de produção
+- npm run migration  → roda migrations pendentes
+
+### Variáveis de Ambiente
+Documentar CADA variável do .env.example com descrição e exemplo.
+
+## Deploy
+Como fazer deploy (CI/CD pipeline, ambientes, aprovações).
+
+## ADRs
+Link para docs/adr/ com as decisões arquiteturais.
+
+## Contribuindo
+Link para CONTRIBUTING.md.
+```
+
+---
+
+## Documentação de API
+
+### OpenAPI / Swagger — Melhores Práticas
+
+```yaml
+# Não documente apenas o "happy path"
+paths:
+  /orders:
+    post:
+      summary: Criar novo pedido
+      description: |
+        Cria um pedido com os itens fornecidos. O estoque é
+        verificado sincronamente e o pagamento processado via
+        gateway. Operações assíncronas (email, analytics) são
+        disparadas via evento OrderCreated.
+
+        **Idempotência**: Use o header X-Idempotency-Key para
+        garantir que retries não criem pedidos duplicados.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateOrderRequest'
+            examples:
+              minimal:
+                summary: Pedido mínimo
+                value:
+                  items: [{ productId: "prod_123", quantity: 1 }]
+              complete:
+                summary: Pedido completo com cupom
+                value:
+                  items: [{ productId: "prod_123", quantity: 2 }]
+                  couponCode: "DESCONTO10"
+                  shippingAddress:
+                    zipCode: "01310-100"
+      responses:
+        '202':
+          description: Pedido aceito para processamento
+        '400':
+          description: Dados inválidos
+          content:
+            application/json:
+              examples:
+                missing_items:
+                  value:
+                    error: "VALIDATION_ERROR"
+                    message: "O campo 'items' é obrigatório"
+                    details: [{ field: "items", rule: "required" }]
+        '409':
+          description: Conflito de estoque
+          content:
+            application/json:
+              examples:
+                out_of_stock:
+                  value:
+                    error: "STOCK_UNAVAILABLE"
+                    message: "Produto prod_123 sem estoque"
+                    availableQuantity: 0
+        '422':
+          description: Regra de negócio violada
+        '429':
+          description: Rate limit excedido
+          headers:
+            Retry-After:
+              description: Segundos para aguardar
+              schema:
+                type: integer
+```
+
+---
+
+## Runbooks para Resposta a Incidentes
+
+### Estrutura de um Runbook
+
+```markdown
+# Runbook: Alerta "High Database Connection Pool Usage"
+
+## Severidade: P2 (Alta)
+## Tempo esperado de resolução: 10-15 minutos
+## Último teste: 2024-01-20
+
+## Sintomas
+- Alerta no Grafana: `db_pool_active_connections > 80%`
+- Usuários reportam lentidão ou timeouts
+- Logs com `Error: connection pool exhausted`
+
+## Diagnóstico
+
+### 1. Verificar métricas atuais
+  SELECT count(*) as total,
+         state,
+         wait_event_type
+  FROM pg_stat_activity
+  GROUP BY state, wait_event_type
+  ORDER BY total DESC;
+
+### 2. Identificar queries lentas
+  SELECT pid, now() - pg_stat_activity.query_start AS duration,
+         query, state
+  FROM pg_stat_activity
+  WHERE (now() - pg_stat_activity.query_start) > interval '5 seconds'
+  ORDER BY duration DESC;
+
+### 3. Verificar locks
+  SELECT blocked_locks.pid     AS blocked_pid,
+         blocking_locks.pid    AS blocking_pid,
+         blocked_activity.query AS blocked_query
+  FROM pg_catalog.pg_locks blocked_locks
+  JOIN pg_catalog.pg_locks blocking_locks
+    ON blocking_locks.locktype = blocked_locks.locktype
+  WHERE NOT blocked_locks.granted;
+
+## Resolução
+
+### Cenário A: Queries lentas (mais comum — ~70% dos casos)
+1. Identifique a query lenta com o passo 2 acima
+2. Se for query conhecida, aplique o fix documentado em [link]
+3. Se for query desconhecida, mate a conexão:
+   SELECT pg_terminate_backend(<pid>);
+4. Abra ticket para investigar root cause
+
+### Cenário B: Connection leak no aplicativo
+1. Verifique os pods: kubectl get pods -n production
+2. Identifique qual pod tem mais conexões:
+   kubectl exec <pod> -- curl localhost:9090/metrics | grep db_pool
+3. Restart do pod problemático:
+   kubectl rollout restart deployment/<service> -n production
+
+### Cenário C: Spike de tráfego legítimo
+1. Escale horizontalmente: kubectl scale deployment/<service> --replicas=5
+2. Aumente pool temporariamente via config map
+3. Monitore normalização
+
+## Escalação
+Se não resolver em 15 minutos → escalar para Tech Lead on-call
+Se afetar > 50% dos usuários → declarar incidente P1
+
+## Pós-incidente
+- Preencher template de post-mortem: [link]
+- Atualizar este runbook se procedimento mudou
+```
+
+---
+
+## Documentation as Code
+
+### Princípios
+
+```
+1. Documentação vive no MESMO repositório que o código
+   → Versionada junto, revisada em PR, mesma fonte de verdade
+
+2. Formatos de texto puro (Markdown, AsciiDoc, reStructuredText)
+   → Diff-friendly, mergeável, pesquisável
+
+3. CI/CD para documentação
+   → Linting automático (markdownlint, vale)
+   → Build automático (Docusaurus, MkDocs, Astro)
+   → Deploy automático para site interno
+
+4. Diagramas como código
+   → Mermaid, PlantUML, D2 — diagramas em texto
+   → Versionáveis e diff-friendly
+```
+
+### Diagramas com C4 Model e Mermaid
+
+```
+Nível 1 — System Context: Quem usa o sistema e do que ele depende
+Nível 2 — Container: Os "containers" dentro do sistema (APIs, DBs, queues)
+Nível 3 — Component: Componentes dentro de cada container
+Nível 4 — Code: Detalhes de implementação (geralmente desnecessário)
+```
+
+```markdown
+Exemplo Mermaid — Sequence Diagram:
+
+  sequenceDiagram
+    participant U as Usuário
+    participant API as API Gateway
+    participant OS as OrderService
+    participant PS as PaymentService
+    participant Q as RabbitMQ
+    participant ES as EmailService
+
+    U->>API: POST /orders
+    API->>OS: placeOrder(dto)
+    OS->>PS: processPayment(amount)
+    PS-->>OS: PaymentResult
+    OS->>Q: publish(OrderCreated)
+    OS-->>API: 202 Accepted
+    API-->>U: { orderId, status: "processing" }
+    Q->>ES: consume(OrderCreated)
+    ES-->>U: Email de confirmação
+```
+
+---
+
+## Princípios de Escrita Técnica
+
+### Clareza Acima de Tudo
+
+```
+RUIM:  "O sistema utiliza uma abordagem baseada em eventos para
+        realizar a comunicação entre os diversos microsserviços
+        que compõem a infraestrutura da plataforma."
+
+BOM:   "Os microsserviços se comunicam via eventos assíncronos
+        publicados no RabbitMQ."
+
+REGRAS:
+1. Use voz ativa ("O serviço processa" em vez de "É processado pelo serviço")
+2. Uma ideia por frase
+3. Elimine palavras desnecessárias ("utiliza" → "usa", "realizar" → "fazer")
+4. Seja específico ("banco de dados" → "PostgreSQL 16")
+5. Defina siglas na primeira ocorrência
+6. Use listas e tabelas para informação estruturada
+7. Escreva para quem vai ler, não para impressionar
+```
+
+### Audiência Define o Formato
+
+```
+Audiência              | O que espera          | Como escrever
+-----------------------|-----------------------|---------------------
+Novo dev no time       | Contexto, quick start | Tutorial, onboarding
+Dev do time            | Como fazer X          | How-to guide
+Dev de outro time      | O que esta API faz    | API reference
+On-call engineer       | Como resolver agora   | Runbook (passos claros)
+Tech lead / architect  | Por que esta decisão  | ADR, RFC
+VP of Engineering      | Impacto e timeline    | Executive summary
+```
+
+---
+
+## Referências
+
+```
+- Diátaxis framework: https://diataxis.fr
+- "Docs for Developers" — Jared Bhatti et al.
+- ADR Tools: https://github.com/npryce/adr-tools
+- C4 Model: https://c4model.com
+- Google Developer Documentation Style Guide
+- "The Documentation System" — Daniele Procida (PyCon talk)
+- Vale (linter de prosa): https://vale.sh
+```

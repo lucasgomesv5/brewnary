@@ -1,0 +1,198 @@
+---
+import MainLayout from '../layouts/MainLayout.astro';
+---
+
+<MainLayout
+  title="Diagramas"
+  description="Diagramas interativos de arquitetura, fluxo de requisições e padrões de infraestrutura."
+>
+  <div class="mx-auto max-w-5xl px-4 py-12 sm:px-6">
+    <div class="mb-10">
+      <h1 class="mb-3 text-3xl font-bold tracking-tight sm:text-4xl">Diagramas</h1>
+      <p class="max-w-lg text-sm text-[var(--color-text-muted)]">
+        Visualizações interativas de arquitetura de sistemas, protocolos e padrões de infraestrutura.
+      </p>
+    </div>
+
+    <div class="grid grid-cols-1 gap-4 md:grid-cols-2">
+      {
+        [
+          {
+            href: '/diagramas/arquitetura-aws',
+            title: 'Arquitetura AWS',
+            desc: 'VPC, subnets, load balancer, ECS, RDS, ElastiCache e CloudFront.',
+            color: '#F59E0B',
+            tooltip:
+              'Visualize a arquitetura completa de uma aplicação em produção na AWS, incluindo VPC com subnets públicas e privadas, Application Load Balancer, ECS Fargate, RDS Multi-AZ, ElastiCache Redis e distribuição CloudFront.',
+          },
+          {
+            href: '/diagramas/fluxo-request',
+            title: 'Fluxo HTTP',
+            desc: 'Caminho completo de uma requisição HTTP — do browser ao banco de dados.',
+            color: '#2563EB',
+            tooltip:
+              'Acompanhe passo a passo o caminho de uma requisição HTTP desde o browser, passando por DNS, CDN, load balancer, servidor de aplicação, cache e banco de dados, até a resposta chegar ao cliente.',
+          },
+          {
+            href: '/diagramas/seguranca-camadas',
+            title: 'Segurança em Camadas',
+            desc: 'Modelo de segurança em camadas: rede, aplicação, autenticação e dados.',
+            color: '#EF4444',
+            tooltip:
+              'Modelo defense-in-depth com múltiplas camadas de proteção: firewall e WAF na borda, TLS/mTLS no transporte, autenticação e autorização na aplicação, e criptografia at-rest nos dados.',
+          },
+          {
+            href: '/diagramas/evolucao-arquitetura',
+            title: 'Evolução de Arquitetura',
+            desc: 'De monolito a microsserviços. Tradeoffs em cada transição.',
+            color: '#10B981',
+            tooltip:
+              'Compare os tradeoffs reais de cada estágio: monolito, monolito modular, SOA e microsserviços. Entenda quando e por que migrar, e quais problemas cada arquitetura resolve e introduz.',
+          },
+          {
+            href: '/diagramas/youtube-architecture',
+            title: 'Arquitetura do YouTube',
+            desc: 'CDN, ingestão de vídeo, transcodificação, recommendation engine e serving.',
+            color: '#a855f7',
+            tooltip:
+              'Estudo de caso: ingestão de vídeo em escala global, pipeline de transcodificação, distribuição via CDN, sistema de recomendação e serving de bilhões de requests por dia.',
+          },
+          {
+            href: '/diagramas/queue-systems',
+            title: 'Sistemas de Filas',
+            desc: 'Producers, brokers, consumers, dead letter queues e padrões de entrega.',
+            color: '#f97316',
+            tooltip:
+              'Message brokers, pub/sub, garantias de entrega (at-least-once, exactly-once), dead letter queues, backpressure e padrões de integração com RabbitMQ, Kafka e SQS.',
+          },
+        ].map((item) => (
+          <a
+            href={item.href}
+            class="group relative block overflow-hidden rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-alt)] transition-colors hover:border-[var(--color-text-muted)]"
+          >
+            <div class="h-0.5" style={`background-color: ${item.color}`} />
+            <div class="p-5">
+              <h2 class="mb-1.5 text-sm font-bold">{item.title}</h2>
+              <p class="text-xs leading-relaxed text-[var(--color-text-muted)]">{item.desc}</p>
+              <span class="mt-3 inline-flex items-center gap-1 text-xs text-[var(--color-text-muted)] transition-colors group-hover:text-[var(--color-text)]">
+                Explorar
+                <svg
+                  class="h-3 w-3"
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  stroke-width="2"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <>
+                    <path d="M5 12h14" />
+                    <path d="m12 5 7 7-7 7" />
+                  </>
+                </svg>
+              </span>
+            </div>
+            <span class="pointer-events-none absolute right-4 bottom-full left-4 z-10 mb-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-alt)] p-3 text-xs leading-relaxed text-[var(--color-text-muted)] opacity-0 shadow-lg transition-opacity duration-200 group-hover:opacity-100">
+              {item.tooltip}
+            </span>
+          </a>
+        ))
+      }
+    </div>
+
+    <div class="mt-16">
+      <div class="mb-8">
+        <h2 class="mb-2 text-2xl font-bold tracking-tight">Algoritmos</h2>
+        <p class="max-w-lg text-sm text-[var(--color-text-muted)]">
+          Visualizadores animados passo a passo de algoritmos clássicos de ordenação, busca e grafos.
+        </p>
+      </div>
+
+      <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        {
+          [
+            {
+              href: '/diagramas/algoritmos/bubble-sort',
+              title: 'Bubble Sort',
+              desc: 'Comparação adjacente com complexidade O(n²).',
+              color: '#8B5CF6',
+              tooltip:
+                'Algoritmo de ordenação mais simples: compara elementos adjacentes e troca se estiverem fora de ordem. Ideal para entender conceitos básicos de sorting.',
+            },
+            {
+              href: '/diagramas/algoritmos/quick-sort',
+              title: 'Quick Sort',
+              desc: 'Partição com pivô, O(n log n) no caso médio.',
+              color: '#2563EB',
+              tooltip:
+                'Algoritmo divide-and-conquer que escolhe um pivô e particiona o array. Um dos algoritmos de ordenação mais eficientes na prática.',
+            },
+            {
+              href: '/diagramas/algoritmos/merge-sort',
+              title: 'Merge Sort',
+              desc: 'Divisão recursiva + merge, O(n log n) garantido.',
+              color: '#EC4899',
+              tooltip:
+                'Divide o array pela metade recursivamente e depois combina as metades ordenadas. Garante O(n log n) em todos os casos, mas usa memória extra.',
+            },
+            {
+              href: '/diagramas/algoritmos/binary-search',
+              title: 'Binary Search',
+              desc: 'Busca em array ordenado com O(log n).',
+              color: '#10B981',
+              tooltip:
+                'Busca eficiente em arrays ordenados: compara o elemento do meio e descarta metade do array a cada passo. Logarítmico no número de elementos.',
+            },
+            {
+              href: '/diagramas/algoritmos/bfs',
+              title: 'BFS — Busca em Largura',
+              desc: 'Exploração nível a nível com fila FIFO.',
+              color: '#F59E0B',
+              tooltip:
+                'Breadth-First Search: explora todos os vizinhos de um nó antes de avançar para o próximo nível. Usa fila FIFO. Encontra o caminho mais curto em grafos não-ponderados.',
+            },
+            {
+              href: '/diagramas/algoritmos/dfs',
+              title: 'DFS — Busca em Profundidade',
+              desc: 'Exploração em profundidade com pilha LIFO.',
+              color: '#EF4444',
+              tooltip:
+                'Depth-First Search: segue um caminho até o fim antes de voltar e explorar alternativas. Usa pilha LIFO. Útil para detecção de ciclos e ordenação topológica.',
+            },
+          ].map((item) => (
+            <a
+              href={item.href}
+              class="group relative block overflow-hidden rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-alt)] transition-colors hover:border-[var(--color-text-muted)]"
+            >
+              <div class="h-0.5" style={`background-color: ${item.color}`} />
+              <div class="p-5">
+                <h2 class="mb-1.5 text-sm font-bold">{item.title}</h2>
+                <p class="text-xs leading-relaxed text-[var(--color-text-muted)]">{item.desc}</p>
+                <span class="mt-3 inline-flex items-center gap-1 text-xs text-[var(--color-text-muted)] transition-colors group-hover:text-[var(--color-text)]">
+                  Visualizar
+                  <svg
+                    class="h-3 w-3"
+                    viewBox="0 0 24 24"
+                    fill="none"
+                    stroke="currentColor"
+                    stroke-width="2"
+                    stroke-linecap="round"
+                    stroke-linejoin="round"
+                  >
+                    <>
+                      <path d="M5 12h14" />
+                      <path d="m12 5 7 7-7 7" />
+                    </>
+                  </svg>
+                </span>
+              </div>
+              <span class="pointer-events-none absolute right-4 bottom-full left-4 z-10 mb-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-alt)] p-3 text-xs leading-relaxed text-[var(--color-text-muted)] opacity-0 shadow-lg transition-opacity duration-200 group-hover:opacity-100">
+                {item.tooltip}
+              </span>
+            </a>
+          ))
+        }
+      </div>
+    </div>
+  </div>
+</MainLayout>

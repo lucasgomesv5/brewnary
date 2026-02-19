@@ -1,0 +1,1021 @@
+---
+title: "Async/Await"
+description: "Entenda o event loop, Promises, async/await, e padrões avançados de programação assíncrona"
+track: "frontend"
+order: 10
+section: "JavaScript"
+priority: "high"
+tags: ["javascript", "async", "promises", "paralelismo"]
+prerequisites: ["closures"]
+keyTakeaways:
+  - "async/await é sugar syntax sobre Promises, que por sua vez é sugar syntax sobre callbacks"
+  - "await pausa a execução da função, não do Event Loop"
+  - "Use Promise.all para requests paralelos e Promise.allSettled quando precisa de todos os resultados mesmo com falhas"
+---
+
+## Event loop: o modelo de concorrência do JavaScript
+
+JavaScript é **single-threaded** — existe apenas uma call stack. Toda concorrência é baseada no **event loop**, que coordena a execução entre a call stack, a task queue (macrotask queue) e a microtask queue.
+
+### Componentes do event loop
+
+```
+┌──────────────────────────────────┐
+│          Call Stack               │  ← Execução síncrona (LIFO)
+├──────────────────────────────────┤
+│          Microtask Queue          │  ← Promise.then, queueMicrotask, MutationObserver
+├──────────────────────────────────┤
+│          Task Queue (Macrotask)   │  ← setTimeout, setInterval, I/O, UI rendering
+└──────────────────────────────────┘
+
+Algoritmo do Event Loop (simplificado):
+1. Executa tudo na call stack até esvaziar
+2. Processa TODAS as microtasks (e microtasks geradas durante o processamento)
+3. Pega UMA macrotask da task queue e executa
+4. Volta para o passo 2
+```
+
+A implicação crítica: **microtasks têm prioridade sobre macrotasks**. Uma Promise resolvida (microtask) sempre executa antes de um setTimeout de 0ms (macrotask).
+
+```javascript
+console.log('1 - síncrono');
+
+setTimeout(() => console.log('2 - macrotask (setTimeout)'), 0);
+
+Promise.resolve().then(() => console.log('3 - microtask (Promise.then)'));
+
+queueMicrotask(() => console.log('4 - microtask (queueMicrotask)'));
+
+console.log('5 - síncrono');
+
+// Output:
+// 1 - síncrono
+// 5 - síncrono
+// 3 - microtask (Promise.then)
+// 4 - microtask (queueMicrotask)
+// 2 - macrotask (setTimeout)
+```
+
+### Microtasks podem bloquear a UI
+
+```javascript
+// ❌ PERIGO: microtasks recursivas bloqueiam o rendering e macrotasks
+function recursiveMicrotask() {
+  Promise.resolve().then(() => {
+    // Isso gera uma nova microtask a cada iteração
+    // O event loop NUNCA avança para macrotasks ou rendering
+    recursiveMicrotask(); // Loop infinito de microtasks → página congela
+  });
+}
+
+// ✅ Se precisar de execução repetida, use macrotasks:
+function recursiveMacrotask() {
+  setTimeout(() => {
+    // Cada iteração permite que o browser renderize e processe outros eventos
+    recursiveMacrotask();
+  }, 0);
+}
+```
+
+---
+
+## Callbacks: o início de tudo
+
+Antes de Promises, toda operação assíncrona era feita com callbacks. O padrão **error-first** do Node.js estabeleceu a convenção:
+
+```javascript
+// Error-first callback convention (Node.js)
+const fs = require('fs');
+
+fs.readFile('/etc/passwd', 'utf8', (err, data) => {
+  if (err) {
+    console.error('Erro ao ler arquivo:', err);
+    return;
+  }
+  console.log(data);
+});
+
+// O primeiro argumento é SEMPRE o erro (ou null se sucesso)
+// O segundo argumento são os dados
+```
+
+### Callback hell (Pyramid of Doom)
+
+```javascript
+// ❌ Callback hell: aninhamento cresce para a direita
+getUser(userId, (err, user) => {
+  if (err) return handleError(err);
+
+  getOrders(user.id, (err, orders) => {
+    if (err) return handleError(err);
+
+    getOrderDetails(orders[0].id, (err, details) => {
+      if (err) return handleError(err);
+
+      getShippingStatus(details.shippingId, (err, status) => {
+        if (err) return handleError(err);
+
+        updateUI(user, orders, details, status);
+      });
+    });
+  });
+});
+```
+
+### Inversão de controle
+
+O problema fundamental dos callbacks é a **inversão de controle**: você entrega uma função para código que você não controla e confia que ele:
+1. Chamará o callback exatamente uma vez
+2. Passará os argumentos corretos
+3. Tratará erros adequadamente
+4. Não perderá o callback
+
+```javascript
+// ❌ E se a biblioteca third-party chamar o callback duas vezes?
+thirdPartyPayment.charge(amount, (err, result) => {
+  // Se isso executar 2x, o usuário é cobrado duplamente!
+  processPayment(result);
+});
+
+// Promises resolvem isso: uma Promise só pode ser resolvida/rejeitada UMA VEZ
+```
+
+---
+
+## Promises: estados e API
+
+Uma Promise é um objeto que representa o resultado eventual de uma operação assíncrona. Ela possui três estados:
+
+- **pending**: estado inicial, operação em andamento
+- **fulfilled**: operação completou com sucesso (tem um value)
+- **rejected**: operação falhou (tem um reason)
+
+Uma Promise "settled" (fulfilled ou rejected) **nunca muda de estado** — é imutável.
+
+```javascript
+// Criando uma Promise
+const promise = new Promise((resolve, reject) => {
+  // 'resolve' e 'reject' são funções fornecidas pelo runtime
+  // Chamar resolve() transiciona de pending → fulfilled
+  // Chamar reject() transiciona de pending → rejected
+  // Chamadas subsequentes são ignoradas
+
+  const success = Math.random() > 0.5;
+
+  setTimeout(() => {
+    if (success) {
+      resolve({ data: 'resultado' }); // fulfilled com value
+    } else {
+      reject(new Error('Operação falhou')); // rejected com reason
+    }
+  }, 1000);
+});
+
+// Consumindo uma Promise
+promise
+  .then((value) => {
+    // Executado quando fulfilled
+    console.log('Sucesso:', value);
+    return value.data; // Retornar um valor cria uma nova Promise fulfilled
+  })
+  .then((data) => {
+    // Encadeamento: recebe o retorno do then anterior
+    console.log('Dados:', data);
+  })
+  .catch((reason) => {
+    // Executado quando rejected (em qualquer ponto da chain)
+    console.error('Erro:', reason.message);
+  })
+  .finally(() => {
+    // Executado SEMPRE, independente de fulfilled ou rejected
+    // Útil para cleanup (loading spinners, etc.)
+    console.log('Operação finalizada');
+  });
+```
+
+### then() retorna uma nova Promise
+
+```javascript
+// Cada .then() retorna uma NOVA Promise. Isso permite encadeamento:
+fetch('/api/user')
+  .then((res) => res.json())        // Promise<Response> → Promise<User>
+  .then((user) => fetch(`/api/orders/${user.id}`))  // Promise<User> → Promise<Response>
+  .then((res) => res.json())         // Promise<Response> → Promise<Order[]>
+  .then((orders) => console.log(orders));
+
+// Se um .then() retorna uma Promise, a chain "espera" ela resolver
+// Se retorna um valor normal, ele é wrappado em Promise.resolve(valor)
+// Se lança um erro, ele é wrappado em Promise.reject(erro)
+```
+
+---
+
+## Implementação de Promise from scratch
+
+Entender como Promise funciona internamente solidifica o modelo mental:
+
+```javascript
+class MyPromise {
+  #state = 'pending';
+  #value = undefined;
+  #handlers = []; // fila de { onFulfilled, onRejected, resolve, reject }
+
+  constructor(executor) {
+    const resolve = (value) => {
+      if (this.#state !== 'pending') return; // Ignora se já settled
+      this.#state = 'fulfilled';
+      this.#value = value;
+      this.#processHandlers();
+    };
+
+    const reject = (reason) => {
+      if (this.#state !== 'pending') return;
+      this.#state = 'rejected';
+      this.#value = reason;
+      this.#processHandlers();
+    };
+
+    try {
+      executor(resolve, reject);
+    } catch (err) {
+      reject(err); // Se o executor lançar, a Promise é rejected
+    }
+  }
+
+  then(onFulfilled, onRejected) {
+    // then() SEMPRE retorna uma nova Promise
+    return new MyPromise((resolve, reject) => {
+      this.#handlers.push({ onFulfilled, onRejected, resolve, reject });
+
+      if (this.#state !== 'pending') {
+        // Se já settled, processa imediatamente (via microtask)
+        this.#processHandlers();
+      }
+    });
+  }
+
+  catch(onRejected) {
+    return this.then(undefined, onRejected);
+  }
+
+  finally(onFinally) {
+    return this.then(
+      (value) => { onFinally(); return value; },
+      (reason) => { onFinally(); throw reason; },
+    );
+  }
+
+  #processHandlers() {
+    if (this.#state === 'pending') return;
+
+    // Handlers são executados como MICROTASKS (assíncronos)
+    queueMicrotask(() => {
+      while (this.#handlers.length > 0) {
+        const { onFulfilled, onRejected, resolve, reject } = this.#handlers.shift();
+
+        const handler = this.#state === 'fulfilled' ? onFulfilled : onRejected;
+
+        if (typeof handler !== 'function') {
+          // Se não há handler, propaga o valor/erro para a próxima Promise
+          (this.#state === 'fulfilled' ? resolve : reject)(this.#value);
+          continue;
+        }
+
+        try {
+          const result = handler(this.#value);
+
+          if (result instanceof MyPromise) {
+            // Se o handler retorna uma Promise, a chain espera
+            result.then(resolve, reject);
+          } else {
+            resolve(result);
+          }
+        } catch (err) {
+          reject(err);
+        }
+      }
+    });
+  }
+
+  // Métodos estáticos
+  static resolve(value) {
+    if (value instanceof MyPromise) return value;
+    return new MyPromise((resolve) => resolve(value));
+  }
+
+  static reject(reason) {
+    return new MyPromise((_, reject) => reject(reason));
+  }
+
+  static all(promises) {
+    return new MyPromise((resolve, reject) => {
+      const results = [];
+      let remaining = promises.length;
+
+      if (remaining === 0) return resolve([]);
+
+      promises.forEach((p, i) => {
+        MyPromise.resolve(p).then(
+          (value) => {
+            results[i] = value;
+            if (--remaining === 0) resolve(results);
+          },
+          reject, // Rejeita com o PRIMEIRO erro
+        );
+      });
+    });
+  }
+}
+```
+
+O ponto-chave da implementação: `queueMicrotask` no `#processHandlers`. É isso que garante que `.then()` callbacks sejam sempre assíncronos, mesmo quando a Promise já está settled.
+
+---
+
+## async/await: syntactic sugar sobre Promises
+
+`async/await` foi introduzido no ES2017 (ES8) como uma forma mais legível de trabalhar com Promises. Por baixo dos panos, **toda função async retorna uma Promise**, e `await` suspende a execução daquela função até a Promise resolver.
+
+```javascript
+// Estas duas funções são equivalentes:
+
+// Versão com Promises
+function fetchUserPromise(id) {
+  return fetch(`/api/users/${id}`)
+    .then((res) => {
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      return res.json();
+    });
+}
+
+// Versão com async/await
+async function fetchUserAsync(id) {
+  const res = await fetch(`/api/users/${id}`);
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  return res.json(); // await implícito no return de async function
+}
+
+// Ambas retornam Promise<User>
+// async/await é puro sugar syntax — não adiciona nenhuma capacidade nova
+```
+
+### Como await funciona internamente
+
+```javascript
+async function example() {
+  console.log('A'); // Executa síncronamente
+
+  const result = await somePromise; // Aqui a função SUSPENDE
+  // O engine salva o estado da função (como um generator)
+  // e retorna o controle para o event loop
+
+  console.log('B'); // Executa quando somePromise resolver
+  // O engine retoma a execução da função como uma microtask
+
+  return result;
+}
+
+// Internamente, é como se o engine transformasse em:
+function exampleDesugared() {
+  console.log('A');
+
+  return somePromise.then((result) => {
+    console.log('B');
+    return result;
+  });
+}
+```
+
+### Error handling com try/catch
+
+```javascript
+async function fetchWithErrorHandling(url) {
+  try {
+    const response = await fetch(url);
+
+    if (!response.ok) {
+      // Criar Error com contexto é crucial para debugging
+      const body = await response.text();
+      throw new Error(
+        `HTTP ${response.status} ao acessar ${url}: ${body.slice(0, 200)}`
+      );
+    }
+
+    return await response.json();
+  } catch (error) {
+    if (error instanceof TypeError) {
+      // TypeError = falha de rede (DNS, CORS, offline)
+      console.error('Erro de rede:', error.message);
+    } else {
+      // Erro HTTP ou erro de parsing
+      console.error('Erro na requisição:', error.message);
+    }
+    throw error; // Re-throw para o caller decidir
+  }
+}
+```
+
+---
+
+## Patterns: sequential vs concurrent
+
+### Execução sequencial (await em série)
+
+```javascript
+// ❌ LENTO: cada request espera o anterior completar
+async function getDataSequential(ids) {
+  const results = [];
+  for (const id of ids) {
+    const data = await fetchItem(id); // Bloqueia a cada iteração
+    results.push(data);
+  }
+  return results;
+}
+// Se cada request leva 200ms e temos 5 IDs: ~1000ms total
+```
+
+### Execução concorrente (Promise.all)
+
+```javascript
+// ✅ RÁPIDO: todas as requests iniciam ao mesmo tempo
+async function getDataConcurrent(ids) {
+  const promises = ids.map((id) => fetchItem(id)); // Inicia TODAS
+  return Promise.all(promises); // Espera TODAS completarem
+}
+// Se cada request leva 200ms e temos 5 IDs: ~200ms total (o mais lento)
+
+// ✅ Com limite de concorrência (evita sobrecarregar o servidor)
+async function getDataWithConcurrencyLimit(ids, limit = 3) {
+  const results = [];
+
+  for (let i = 0; i < ids.length; i += limit) {
+    const batch = ids.slice(i, i + limit);
+    const batchResults = await Promise.all(
+      batch.map((id) => fetchItem(id))
+    );
+    results.push(...batchResults);
+  }
+
+  return results;
+}
+// Processa em lotes de 3: mais controlado que disparar tudo de uma vez
+```
+
+### Retry com exponential backoff
+
+```javascript
+async function fetchWithRetry(
+  url,
+  options = {},
+  { maxRetries = 3, baseDelay = 1000, maxDelay = 30000 } = {}
+) {
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      const response = await fetch(url, options);
+
+      if (!response.ok) {
+        // Só faz retry em erros de servidor (5xx) ou rate limiting (429)
+        if (response.status >= 500 || response.status === 429) {
+          throw new Error(`HTTP ${response.status}`);
+        }
+        // Erros 4xx (exceto 429) são erros do cliente — não faz retry
+        throw new Error(`HTTP ${response.status} (sem retry)`);
+      }
+
+      return response;
+    } catch (error) {
+      const isLastAttempt = attempt === maxRetries;
+
+      if (isLastAttempt || error.message.includes('sem retry')) {
+        throw error;
+      }
+
+      // Exponential backoff com jitter
+      const delay = Math.min(
+        baseDelay * Math.pow(2, attempt) + Math.random() * 1000,
+        maxDelay
+      );
+
+      console.warn(
+        `Tentativa ${attempt + 1}/${maxRetries} falhou. ` +
+        `Retentando em ${Math.round(delay)}ms...`
+      );
+
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
+  }
+}
+```
+
+---
+
+## Promise combinators
+
+### Promise.all — Falha rápido
+
+```javascript
+// Resolve quando TODAS resolvem. Rejeita com o PRIMEIRO erro.
+const [users, orders, config] = await Promise.all([
+  fetchUsers(),    // Se qualquer uma falhar,
+  fetchOrders(),   // TODAS são "descartadas"
+  fetchConfig(),   // (na verdade continuam executando, mas o resultado é ignorado)
+]);
+// Use quando: TODAS as respostas são necessárias para continuar
+```
+
+### Promise.allSettled — Nunca rejeita
+
+```javascript
+// Espera TODAS completarem, independente de sucesso ou falha
+const results = await Promise.allSettled([
+  fetch('/api/a'),
+  fetch('/api/b'),
+  fetch('/api/c'),
+]);
+
+// Separar sucessos e falhas
+const fulfilled = results
+  .filter((r) => r.status === 'fulfilled')
+  .map((r) => r.value);
+
+const rejected = results
+  .filter((r) => r.status === 'rejected')
+  .map((r) => r.reason);
+
+console.log(`${fulfilled.length} OK, ${rejected.length} falharam`);
+// Use quando: quer resultados parciais mesmo com falhas
+```
+
+### Promise.race — O primeiro a resolver (ou rejeitar)
+
+```javascript
+// Resolve/rejeita com o PRIMEIRO a completar
+// Use case clássico: timeout
+async function fetchWithTimeout(url, timeoutMs = 5000) {
+  const result = await Promise.race([
+    fetch(url),
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error('Timeout')), timeoutMs)
+    ),
+  ]);
+  return result;
+}
+// Use quando: precisa de um timeout ou quer o resultado mais rápido
+```
+
+### Promise.any — O primeiro sucesso
+
+```javascript
+// Resolve com o PRIMEIRO a ter sucesso. Ignora rejeições.
+// Só rejeita se TODAS falharem (AggregateError)
+async function fetchFromMirrors(resource) {
+  try {
+    const response = await Promise.any([
+      fetch(`https://mirror1.example.com/${resource}`),
+      fetch(`https://mirror2.example.com/${resource}`),
+      fetch(`https://mirror3.example.com/${resource}`),
+    ]);
+    return response;
+  } catch (error) {
+    // AggregateError: todas falharam
+    console.error('Todos os mirrors falharam:', error.errors);
+    throw error;
+  }
+}
+// Use quando: tem múltiplas fontes e quer a primeira que funcionar
+```
+
+---
+
+## Async iterators e generators
+
+### for await...of
+
+```javascript
+// Async iterators permitem iterar sobre dados assíncronos
+async function* fetchPages(baseUrl) {
+  let page = 1;
+  let hasMore = true;
+
+  while (hasMore) {
+    const response = await fetch(`${baseUrl}?page=${page}`);
+    const data = await response.json();
+
+    yield data.items; // yield retorna os itens e SUSPENDE o generator
+
+    hasMore = data.hasNextPage;
+    page++;
+  }
+}
+
+// Consumindo com for await...of
+async function getAllItems() {
+  const allItems = [];
+
+  for await (const items of fetchPages('/api/products')) {
+    allItems.push(...items);
+    console.log(`Carregados ${allItems.length} itens até agora...`);
+  }
+
+  return allItems;
+}
+```
+
+### Async generator para streaming
+
+```javascript
+// Processamento de stream linha por linha
+async function* readLines(readable) {
+  const reader = readable.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  try {
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop(); // Última linha pode estar incompleta
+
+      for (const line of lines) {
+        yield line;
+      }
+    }
+
+    if (buffer.length > 0) {
+      yield buffer; // Última linha sem \n
+    }
+  } finally {
+    reader.releaseLock();
+  }
+}
+
+// Uso: processar Server-Sent Events (SSE)
+async function processSSE(url) {
+  const response = await fetch(url);
+
+  for await (const line of readLines(response.body)) {
+    if (line.startsWith('data: ')) {
+      const data = JSON.parse(line.slice(6));
+      console.log('Evento recebido:', data);
+    }
+  }
+}
+```
+
+---
+
+## Top-level await (ES2022)
+
+A partir do ES2022, `await` pode ser usado no nível superior de um **ES Module** (não em scripts comuns ou CommonJS).
+
+```javascript
+// config.js (ES Module)
+const response = await fetch('/api/config');
+export const config = await response.json();
+
+// main.js
+import { config } from './config.js';
+// O import de main.js ESPERA config.js completar o top-level await
+// Isso bloqueia o carregamento de TODOS os módulos que dependem de config.js
+```
+
+### Implicações para module loading
+
+```javascript
+// ❌ CUIDADO: top-level await pode criar gargalos
+// moduleA.js
+await heavyOperation(); // 2 segundos
+export const a = 'A';
+
+// moduleB.js
+await anotherHeavyOp(); // 1 segundo
+export const b = 'B';
+
+// main.js
+import { a } from './moduleA.js'; // Espera 2s
+import { b } from './moduleB.js'; // Espera 1s
+// Se os módulos são independentes, o bundler pode paralelizar
+// Se um depende do outro, é sequencial
+
+// ✅ Melhor: exportar funções de inicialização
+// config.js
+let config = null;
+
+export async function initConfig() {
+  if (!config) {
+    const res = await fetch('/api/config');
+    config = await res.json();
+  }
+  return config;
+}
+```
+
+---
+
+## AbortController: cancelamento de operações assíncronas
+
+`AbortController` é a API padrão para cancelar operações assíncronas como `fetch`, event listeners e qualquer operação customizada.
+
+```javascript
+// Uso básico: cancelar um fetch
+const controller = new AbortController();
+
+fetch('/api/large-data', { signal: controller.signal })
+  .then((res) => res.json())
+  .then((data) => console.log(data))
+  .catch((err) => {
+    if (err.name === 'AbortError') {
+      console.log('Request cancelada pelo usuário');
+    } else {
+      console.error('Erro real:', err);
+    }
+  });
+
+// Cancelar após 5 segundos
+setTimeout(() => controller.abort(), 5000);
+// Ou: AbortSignal.timeout(5000) — API nativa de timeout
+```
+
+### Signal propagation
+
+```javascript
+// Propagar cancelamento por múltiplas operações
+async function fetchUserWithDetails(userId, signal) {
+  // Passa o signal para CADA sub-operação
+  const user = await fetch(`/api/users/${userId}`, { signal }).then(r => r.json());
+  const orders = await fetch(`/api/orders?userId=${userId}`, { signal }).then(r => r.json());
+  const preferences = await fetch(`/api/prefs/${userId}`, { signal }).then(r => r.json());
+
+  return { user, orders, preferences };
+}
+
+// Uso em React (cleanup via AbortController)
+function UserProfile({ userId }) {
+  const [user, setUser] = useState(null);
+
+  useEffect(() => {
+    const controller = new AbortController();
+
+    fetchUserWithDetails(userId, controller.signal)
+      .then(setUser)
+      .catch((err) => {
+        if (err.name !== 'AbortError') {
+          console.error(err);
+        }
+      });
+
+    // Cleanup: cancela o fetch se o componente desmontar
+    // ou se userId mudar antes do fetch completar
+    return () => controller.abort();
+  }, [userId]);
+
+  return user ? <div>{user.name}</div> : <div>Carregando...</div>;
+}
+```
+
+### AbortSignal.any() e composição de sinais
+
+```javascript
+// Combinar múltiplos sinais: cancela se QUALQUER um disparar
+async function fetchWithTimeoutAndUserCancel(url) {
+  const userController = new AbortController();
+
+  // Botão de cancelar
+  document.getElementById('cancel-btn').onclick = () => userController.abort();
+
+  const signal = AbortSignal.any([
+    userController.signal,        // Cancelamento manual do usuário
+    AbortSignal.timeout(10_000),  // Timeout de 10 segundos
+  ]);
+
+  const response = await fetch(url, { signal });
+  return response.json();
+}
+```
+
+---
+
+## Error handling avançado
+
+### Unhandled rejections
+
+```javascript
+// No Node.js: capturar Promises rejeitadas sem handler
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Rejection:', reason);
+  // Em produção: enviar para serviço de monitoramento (Sentry, DataDog, etc.)
+  // A partir do Node.js 15, unhandled rejections encerram o processo por padrão
+});
+
+// No browser:
+window.addEventListener('unhandledrejection', (event) => {
+  console.error('Unhandled Rejection:', event.reason);
+  event.preventDefault(); // Previne log padrão no console
+});
+```
+
+### Promise.reject vs throw
+
+```javascript
+// Em funções async, ambos são equivalentes:
+async function throwError() {
+  throw new Error('erro'); // Retorna Promise.reject(new Error('erro'))
+}
+
+async function rejectError() {
+  return Promise.reject(new Error('erro')); // Mesmo resultado
+}
+
+// Em funções NÃO-async, são diferentes:
+function syncThrow() {
+  throw new Error('erro'); // Lança SINCRONAMENTE — não retorna Promise
+}
+
+function syncReject() {
+  return Promise.reject(new Error('erro')); // Retorna Promise rejeitada
+}
+
+// SEMPRE prefira throw em funções async — é mais legível e gera stack traces melhores
+```
+
+### Error handling estratégias
+
+```typescript
+// Padrão Result (inspirado em Rust): evitar try/catch espalhado
+type Result<T, E = Error> =
+  | { ok: true; value: T }
+  | { ok: false; error: E };
+
+async function safeAsync<T>(
+  promise: Promise<T>
+): Promise<Result<T>> {
+  try {
+    const value = await promise;
+    return { ok: true, value };
+  } catch (error) {
+    return { ok: false, error: error as Error };
+  }
+}
+
+// Uso:
+const result = await safeAsync(fetch('/api/data').then(r => r.json()));
+
+if (result.ok) {
+  console.log('Dados:', result.value);
+} else {
+  console.error('Erro:', result.error.message);
+}
+// Sem try/catch, sem exceções — fluxo explícito
+```
+
+---
+
+## Anti-patterns
+
+### async forEach (não espera)
+
+```javascript
+// ❌ forEach NÃO espera callbacks assíncronos
+const ids = [1, 2, 3, 4, 5];
+
+ids.forEach(async (id) => {
+  const data = await fetchItem(id);
+  console.log(data);
+  // forEach ignora a Promise retornada pelo callback
+  // Todas as requisições disparam ao mesmo tempo (não sequencial)
+  // E o código APÓS o forEach executa ANTES dos awaits completarem
+});
+
+console.log('Terminado'); // Executa IMEDIATAMENTE, antes dos fetches
+
+// ✅ Para execução sequencial, use for...of
+for (const id of ids) {
+  const data = await fetchItem(id);
+  console.log(data);
+}
+
+// ✅ Para execução paralela, use Promise.all + map
+const results = await Promise.all(
+  ids.map(async (id) => {
+    const data = await fetchItem(id);
+    return data;
+  })
+);
+```
+
+### Floating promises (Promises sem tratamento)
+
+```javascript
+// ❌ Floating promise: resultado e erros são silenciosamente ignorados
+async function saveData(data) {
+  fetch('/api/save', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+  // A Promise do fetch "flutua" — ninguém a trata
+  // Se falhar, o erro é silencioso (ou gera unhandledRejection)
+}
+
+// ✅ Sempre usar await ou .catch()
+async function saveDataCorrect(data) {
+  await fetch('/api/save', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  });
+}
+
+// ✅ Se intencionalmente "fire and forget", documente e trate erros
+function saveDataFireAndForget(data) {
+  fetch('/api/save', {
+    method: 'POST',
+    body: JSON.stringify(data),
+  }).catch((err) => {
+    // Intencionalmente fire-and-forget, mas logamos o erro
+    console.error('Falha ao salvar (não-crítico):', err);
+  });
+}
+
+// ESLint rule: @typescript-eslint/no-floating-promises
+```
+
+### Unnecessary async
+
+```javascript
+// ❌ async desnecessário: adiciona overhead de microtask sem benefício
+async function getUser(id) {
+  return userCache.get(id); // Valor síncrono wrappado em Promise
+}
+
+// ✅ Retorne o valor diretamente ou a Promise existente
+function getUserSync(id) {
+  return userCache.get(id);
+}
+
+// ❌ async + await desnecessário em return
+async function fetchData() {
+  return await fetch('/api/data'); // await é redundante no return
+}
+
+// ✅ Retorne a Promise diretamente
+function fetchDataClean() {
+  return fetch('/api/data');
+}
+
+// ⚠️ EXCEÇÃO: await no return É necessário dentro de try/catch
+async function fetchDataWithErrorHandling() {
+  try {
+    return await fetch('/api/data'); // await necessário para catch funcionar
+  } catch (err) {
+    // Sem o await, o catch NUNCA executaria para rejeição do fetch
+    console.error(err);
+    throw err;
+  }
+}
+```
+
+### Async em construtores
+
+```javascript
+// ❌ Construtores NÃO PODEM ser async
+class ApiClient {
+  constructor(baseUrl) {
+    // Isso NÃO funciona como esperado:
+    this.config = await fetchConfig(); // SyntaxError!
+  }
+}
+
+// ✅ Padrão factory method
+class ApiClient {
+  #config;
+
+  // Construtor privado (convenção)
+  constructor(config) {
+    this.#config = config;
+  }
+
+  // Factory method assíncrono
+  static async create(baseUrl) {
+    const config = await fetch(`${baseUrl}/config`).then(r => r.json());
+    return new ApiClient(config);
+  }
+}
+
+const client = await ApiClient.create('https://api.example.com');
+```
+
+---
+
+## Resumo
+
+| Conceito | Quando usar | Armadilha |
+|---|---|---|
+| `Promise.all` | Quando TODAS as operações são necessárias | Falha rápido: uma rejeição cancela tudo |
+| `Promise.allSettled` | Quando quer resultados parciais | Nunca rejeita — precisa filtrar manualmente |
+| `Promise.race` | Timeout ou "o mais rápido ganha" | Uma rejeição rápida vence promises lentas |
+| `Promise.any` | Fallback entre múltiplas fontes | Só rejeita se TODAS falharem (AggregateError) |
+| `for await...of` | Iteração assíncrona sequencial | Não paraleliza — cada yield espera o anterior |
+| `AbortController` | Cancelamento de fetch/operações | Verificar `signal.aborted` antes de operações longas |
+| Top-level await | Inicialização de módulos | Pode criar gargalos no module graph |

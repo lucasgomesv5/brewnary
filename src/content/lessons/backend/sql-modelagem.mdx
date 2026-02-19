@@ -1,0 +1,849 @@
+---
+title: "SQL e Modelagem Relacional"
+description: "Modelagem relacional avançada: álgebra relacional, normalização, DDL, joins, window functions, índices, query planner e anti-patterns"
+track: "backend"
+order: 9
+section: "Banco de Dados"
+priority: "high"
+tags: ["sql", "banco-de-dados", "modelagem", "postgresql", "normalização", "índices"]
+prerequisites: []
+keyTakeaways:
+  - "A álgebra relacional (σ, π, ⋈, ×) é o fundamento teórico de toda query SQL"
+  - "Normalização (1NF→BCNF) elimina anomalias; desnormalização controlada otimiza leitura"
+  - "Window functions e CTEs recursivas resolvem problemas que subqueries tornam ilegíveis"
+  - "O query planner decide entre Seq Scan, Index Scan e Bitmap Scan com base em estatísticas"
+  - "Anti-patterns como EAV e associações polimórficas destroem performance e integridade"
+---
+
+## SQL e Modelagem Relacional
+
+### Fundamentos: Modelo Relacional e Álgebra Relacional
+
+O modelo relacional, formalizado por Edgar F. Codd em 1970, define dados como **relações** (tabelas) compostas por **tuplas** (linhas) e **atributos** (colunas). Toda query SQL é, em última instância, uma expressão de **álgebra relacional** — um conjunto fechado de operações sobre relações que produz novas relações.
+
+As operações fundamentais da álgebra relacional são:
+
+```
+σ (sigma)  — Seleção: filtra tuplas que satisfazem um predicado
+             σ_{idade > 30}(Funcionários) → equivale a WHERE idade > 30
+
+π (pi)     — Projeção: seleciona um subconjunto de atributos
+             π_{nome, salário}(Funcionários) → equivale a SELECT nome, salário
+
+⋈ (bowtie) — Join (junção natural): combina tuplas de duas relações
+             Funcionários ⋈ Departamentos → equivale a NATURAL JOIN
+
+×          — Produto cartesiano: combina toda tupla de R com toda tupla de S
+             |R| × |S| = número total de tuplas no resultado → CROSS JOIN
+
+ρ (rho)    — Renomeação: atribui alias a uma relação ou atributo
+             ρ_{Emp}(Funcionários) → equivale a AS Emp
+
+∪, ∩, −   — União, interseção, diferença de conjuntos
+             UNION, INTERSECT, EXCEPT em SQL
+```
+
+A propriedade de **fechamento** garante que o resultado de qualquer operação é também uma relação, permitindo composição arbitrária. Quando você escreve uma query complexa com múltiplos JOINs, WHERE e SELECT, o banco está executando uma árvore de operações algébricas que o **query planner** reorganiza para eficiência.
+
+---
+
+### Normalização: Eliminando Anomalias com Rigor Formal
+
+Normalização é o processo de organizar atributos em relações para **eliminar anomalias de inserção, atualização e deleção**. O conceito central é a **dependência funcional**: dado um esquema R, dizemos que X → Y (X determina funcionalmente Y) se para quaisquer duas tuplas t1 e t2, quando t1[X] = t2[X], então obrigatoriamente t1[Y] = t2[Y].
+
+#### Primeira Forma Normal (1NF)
+
+Uma relação está em 1NF se todos os atributos contêm apenas valores **atômicos** (indivisíveis) e não há grupos repetitivos.
+
+```sql
+-- VIOLAÇÃO da 1NF: campo multivalorado
+CREATE TABLE pedidos_errado (
+    id SERIAL PRIMARY KEY,
+    cliente TEXT NOT NULL,
+    produtos TEXT NOT NULL  -- "Notebook, Mouse, Teclado" ← NÃO ATÔMICO
+);
+
+-- CORRETO: decomposição em tabela associativa
+CREATE TABLE pedidos (
+    id SERIAL PRIMARY KEY,
+    cliente_id INT NOT NULL REFERENCES clientes(id)
+);
+
+CREATE TABLE itens_pedido (
+    pedido_id INT NOT NULL REFERENCES pedidos(id) ON DELETE CASCADE,
+    produto_id INT NOT NULL REFERENCES produtos(id),
+    quantidade INT NOT NULL CHECK (quantidade > 0),
+    PRIMARY KEY (pedido_id, produto_id)
+);
+```
+
+#### Segunda Forma Normal (2NF)
+
+Uma relação está em 2NF se está em 1NF e todo atributo não-chave depende **funcionalmente da chave inteira**, não de parte dela. Violações ocorrem apenas com chaves compostas.
+
+```sql
+-- VIOLAÇÃO da 2NF: nome_produto depende APENAS de produto_id, não da chave composta
+-- Chave primária: (pedido_id, produto_id)
+-- Dependência parcial: produto_id → nome_produto
+CREATE TABLE itens_pedido_errado (
+    pedido_id INT NOT NULL,
+    produto_id INT NOT NULL,
+    quantidade INT NOT NULL,
+    nome_produto TEXT NOT NULL,  -- depende só de produto_id → dep. parcial
+    PRIMARY KEY (pedido_id, produto_id)
+);
+
+-- CORRETO: nome_produto fica na tabela produtos
+CREATE TABLE produtos (
+    id SERIAL PRIMARY KEY,
+    nome TEXT NOT NULL,
+    preco NUMERIC(12, 2) NOT NULL
+);
+```
+
+#### Terceira Forma Normal (3NF)
+
+Uma relação está em 3NF se está em 2NF e não possui **dependências transitivas**: nenhum atributo não-chave depende de outro atributo não-chave.
+
+```sql
+-- VIOLAÇÃO da 3NF: departamento_nome depende de departamento_id (transitiva)
+-- funcionario_id → departamento_id → departamento_nome
+CREATE TABLE funcionarios_errado (
+    id SERIAL PRIMARY KEY,
+    nome TEXT NOT NULL,
+    departamento_id INT NOT NULL,
+    departamento_nome TEXT NOT NULL  -- dependência transitiva!
+);
+
+-- CORRETO: decomposição
+CREATE TABLE departamentos (
+    id SERIAL PRIMARY KEY,
+    nome TEXT NOT NULL UNIQUE
+);
+
+CREATE TABLE funcionarios (
+    id SERIAL PRIMARY KEY,
+    nome TEXT NOT NULL,
+    departamento_id INT NOT NULL REFERENCES departamentos(id)
+);
+```
+
+#### Forma Normal de Boyce-Codd (BCNF)
+
+Uma relação está em BCNF se para toda dependência funcional não-trivial X → Y, X é uma **superchave**. BCNF é mais restritiva que 3NF — existem esquemas em 3NF que não estão em BCNF quando há múltiplas chaves candidatas sobrepostas.
+
+```sql
+-- Exemplo clássico: Professores, Disciplinas, Salas
+-- Restrições: cada professor leciona UMA disciplina, cada disciplina
+-- pode ser lecionada em UMA sala, mas vários professores podem lecionar a mesma disciplina
+-- DFs: professor → disciplina, disciplina → sala
+-- Chave candidata: {professor}
+-- disciplina → sala viola BCNF porque disciplina NÃO é superchave
+
+-- Decomposição BCNF:
+CREATE TABLE professor_disciplina (
+    professor_id INT PRIMARY KEY REFERENCES professores(id),
+    disciplina_id INT NOT NULL REFERENCES disciplinas(id)
+);
+
+CREATE TABLE disciplina_sala (
+    disciplina_id INT PRIMARY KEY REFERENCES disciplinas(id),
+    sala_id INT NOT NULL REFERENCES salas(id)
+);
+```
+
+---
+
+### Desnormalização Controlada
+
+Normalização perfeita pode gerar **excesso de JOINs** em workloads de leitura intensiva. A desnormalização controlada é uma decisão arquitetural deliberada — nunca acidental.
+
+**Quando desnormalizar:**
+
+- **Read-heavy com JOINs custosos**: dashboards, relatórios analíticos, APIs de listagem com paginação
+- **Agregações pré-computadas**: contadores, somas, médias que seriam recalculadas a cada request
+- **Dados imutáveis ou raramente atualizados**: logs, eventos, snapshots históricos
+
+```sql
+-- Desnormalização: campo calculado materializado
+ALTER TABLE pedidos ADD COLUMN total_itens INT DEFAULT 0;
+ALTER TABLE pedidos ADD COLUMN valor_total NUMERIC(12, 2) DEFAULT 0;
+
+-- Trigger para manter consistência
+CREATE OR REPLACE FUNCTION atualizar_totais_pedido()
+RETURNS TRIGGER AS $$
+BEGIN
+    UPDATE pedidos SET
+        total_itens = (SELECT COALESCE(SUM(quantidade), 0) FROM itens_pedido WHERE pedido_id = NEW.pedido_id),
+        valor_total = (SELECT COALESCE(SUM(quantidade * preco_unitario), 0) FROM itens_pedido WHERE pedido_id = NEW.pedido_id)
+    WHERE id = NEW.pedido_id;
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+CREATE TRIGGER trg_atualizar_totais
+AFTER INSERT OR UPDATE OR DELETE ON itens_pedido
+FOR EACH ROW EXECUTE FUNCTION atualizar_totais_pedido();
+
+-- Materialized View para relatórios pesados
+CREATE MATERIALIZED VIEW mv_vendas_mensais AS
+SELECT
+    date_trunc('month', p.criado_em) AS mes,
+    COUNT(DISTINCT p.id) AS total_pedidos,
+    SUM(p.valor_total) AS receita_total,
+    AVG(p.valor_total) AS ticket_medio
+FROM pedidos p
+WHERE p.status = 'finalizado'
+GROUP BY date_trunc('month', p.criado_em);
+
+-- Refresh periódico (via cron ou pg_cron)
+REFRESH MATERIALIZED VIEW CONCURRENTLY mv_vendas_mensais;
+```
+
+A regra é: **normalize primeiro, desnormalize com evidência**. Meça com `EXPLAIN ANALYZE` antes de duplicar dados.
+
+---
+
+### DDL: CREATE TABLE com Constraints Completas
+
+Constraints são a primeira linha de defesa da integridade dos dados. O PostgreSQL oferece constraints declarativas que são verificadas **atomicamente** em cada operação de escrita.
+
+```sql
+CREATE TABLE usuarios (
+    -- UUID v7 (ordenável por tempo) como PK — melhor que SERIAL para sistemas distribuídos
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+
+    -- UNIQUE garante unicidade; cria índice B-Tree implícito
+    email TEXT NOT NULL UNIQUE,
+
+    -- CHECK com expressão regular via operador ~
+    username TEXT NOT NULL
+        CHECK (length(username) BETWEEN 3 AND 30)
+        CHECK (username ~ '^[a-z0-9_]+$'),
+
+    -- ENUM como tipo customizado (preferível a CHECK com IN para extensibilidade)
+    papel TEXT NOT NULL DEFAULT 'membro'
+        CHECK (papel IN ('admin', 'moderador', 'membro')),
+
+    -- NUMERIC para dinheiro — NUNCA float/double (IEEE 754)
+    credito NUMERIC(12, 2) NOT NULL DEFAULT 0.00
+        CHECK (credito >= 0),
+
+    -- TIMESTAMPTZ: SEMPRE armazene com timezone — TIMESTAMP sem tz é ambíguo
+    criado_em TIMESTAMPTZ NOT NULL DEFAULT now(),
+    atualizado_em TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+    -- Soft delete pattern
+    deletado_em TIMESTAMPTZ,
+
+    -- Constraint composta nomeada (facilita debugging e migrations)
+    CONSTRAINT chk_datas CHECK (atualizado_em >= criado_em)
+);
+
+CREATE TABLE projetos (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    nome TEXT NOT NULL,
+    proprietario_id UUID NOT NULL REFERENCES usuarios(id) ON DELETE RESTRICT,
+    organizacao_id UUID NOT NULL REFERENCES organizacoes(id) ON DELETE CASCADE,
+    metadata JSONB NOT NULL DEFAULT '{}',
+    criado_em TIMESTAMPTZ NOT NULL DEFAULT now(),
+
+    -- UNIQUE composta: nome único por organização
+    UNIQUE (organizacao_id, nome)
+);
+
+-- EXCLUSION constraint (PostgreSQL): garante que não há sobreposição de ranges
+CREATE TABLE reservas (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    sala_id INT NOT NULL REFERENCES salas(id),
+    periodo TSTZRANGE NOT NULL,
+
+    -- Impede sobreposição de reservas na mesma sala
+    EXCLUDE USING gist (sala_id WITH =, periodo WITH &&)
+);
+```
+
+---
+
+### Tipos de Dados: Escolhas que Impactam Performance
+
+```sql
+-- TEXT vs VARCHAR(n):
+-- PostgreSQL não tem diferença de performance entre TEXT e VARCHAR(n).
+-- VARCHAR(n) é útil APENAS se o limite de tamanho é uma regra de negócio.
+-- Internamente, ambos usam a mesma representação (varlena).
+-- Preferência: TEXT + CHECK (length(...) <= n) para flexibilidade em migrations.
+
+-- INT (4 bytes, até ~2.1 bilhões) vs BIGINT (8 bytes, até ~9.2 quintilhões):
+-- Use BIGINT para IDs em tabelas de alto volume (eventos, logs, transações).
+-- SERIAL = INT + sequence, BIGSERIAL = BIGINT + sequence.
+
+-- TIMESTAMP vs TIMESTAMPTZ:
+-- TIMESTAMP: armazena data/hora SEM timezone — interpretação depende da sessão.
+-- TIMESTAMPTZ: armazena internamente em UTC, converte na exibição.
+-- REGRA: SEMPRE use TIMESTAMPTZ. O custo é zero e evita bugs silenciosos.
+
+-- UUID:
+-- 16 bytes vs 4 (INT) ou 8 (BIGINT), mas garante unicidade global.
+-- UUID v4: aleatório — causa fragmentação em B-Tree (inserções não-sequenciais).
+-- UUID v7 (RFC 9562): timestamp-prefixed — mantém ordenação temporal.
+-- Para PKs com alto throughput, considere BIGSERIAL + UUID como coluna secundária.
+
+-- JSONB:
+-- Armazenamento binário de JSON — suporta indexação GIN para queries eficientes.
+-- Use para dados semi-estruturados (preferências, metadata, configs).
+-- NÃO use para dados que precisam de JOINs, constraints ou normalização.
+
+-- Exemplos de operadores JSONB:
+SELECT
+    metadata->>'versao' AS versao,          -- extrai como TEXT
+    metadata->'config'->'limites' AS limites, -- navega estrutura
+    metadata @> '{"ativo": true}' AS is_ativo -- containment operator
+FROM projetos
+WHERE metadata ? 'versao'                    -- chave existe?
+  AND metadata @> '{"tipo": "saas"}';        -- contém o sub-objeto?
+```
+
+---
+
+### Joins: Semântica, Diagramas e Planos de Execução
+
+Cada tipo de JOIN corresponde a uma operação diferente da álgebra relacional. Entender a semântica evita bugs silenciosos (linhas duplicadas ou perdidas).
+
+```
+INNER JOIN (⋈)         LEFT JOIN              RIGHT JOIN             FULL OUTER JOIN
+ ┌─────┬─────┐         ┌─────┬─────┐          ┌─────┬─────┐         ┌─────┬─────┐
+ │  A  │  B  │         │  A  │  B  │          │  A  │  B  │         │  A  │  B  │
+ │     ┌─────┤         │ ████┌─────┤          ├─────┐████ │         │ ████┌─────┤
+ │     │█████│         │ ████│█████│          │█████│████ │         │ ████│█████│
+ │     └─────┤         │ ████└─────┤          ├─────┘████ │         │ ████└─────┤
+ │     │  B  │         │  A  │  B  │          │  A  │  B  │         │  A  │  B  │
+ └─────┴─────┘         └─────┴─────┘          └─────┴─────┘         └─────┴─────┘
+ Apenas matches         Todos de A +           Todos de B +          Todos de A e B
+                        matches de B           matches de A          com NULLs
+```
+
+```sql
+-- INNER JOIN: apenas registros com correspondência em ambas as tabelas
+SELECT u.nome, p.nome AS projeto
+FROM usuarios u
+INNER JOIN projetos p ON p.proprietario_id = u.id;
+
+-- LEFT JOIN: todos os usuários, mesmo sem projetos (projeto será NULL)
+SELECT u.nome, p.nome AS projeto
+FROM usuarios u
+LEFT JOIN projetos p ON p.proprietario_id = u.id;
+
+-- RIGHT JOIN: todos os projetos, mesmo órfãos (raramente usado — reescreva como LEFT)
+SELECT u.nome, p.nome AS projeto
+FROM usuarios u
+RIGHT JOIN projetos p ON p.proprietario_id = u.id;
+
+-- FULL OUTER JOIN: união completa — útil para reconciliação de dados
+SELECT
+    COALESCE(a.email, b.email) AS email,
+    a.id AS id_sistema_a,
+    b.id AS id_sistema_b
+FROM sistema_a a
+FULL OUTER JOIN sistema_b b ON a.email = b.email
+WHERE a.id IS NULL OR b.id IS NULL;  -- encontra divergências
+
+-- CROSS JOIN (×): produto cartesiano — cuidado com explosão combinatória
+-- Caso legítimo: gerar todas as combinações de tamanhos e cores
+SELECT t.nome AS tamanho, c.nome AS cor
+FROM tamanhos t
+CROSS JOIN cores c;
+
+-- LATERAL JOIN: subquery correlacionada que acessa colunas da tabela anterior
+-- Extremamente útil para "top-N por grupo"
+SELECT u.nome, ultimos.*
+FROM usuarios u
+CROSS JOIN LATERAL (
+    SELECT p.nome, p.criado_em
+    FROM projetos p
+    WHERE p.proprietario_id = u.id
+    ORDER BY p.criado_em DESC
+    LIMIT 3
+) ultimos;
+```
+
+O query planner escolhe entre **Nested Loop**, **Hash Join** e **Merge Join** dependendo do tamanho das tabelas, presença de índices e estatísticas. Use `EXPLAIN (ANALYZE, BUFFERS)` para ver qual algoritmo foi escolhido.
+
+---
+
+### Subqueries vs CTEs (WITH)
+
+```sql
+-- Subquery correlacionada: executada para CADA linha da query externa
+-- O planner PODE otimizar para um join, mas nem sempre consegue
+SELECT u.nome,
+    (SELECT COUNT(*) FROM projetos p WHERE p.proprietario_id = u.id) AS total_projetos
+FROM usuarios u;
+
+-- CTE (Common Table Expression): melhora legibilidade drasticamente
+-- No PostgreSQL 12+, CTEs simples são inlined (otimizadas como subqueries)
+-- Use MATERIALIZED para forçar materialização se necessário
+WITH projetos_ativos AS (
+    SELECT proprietario_id, COUNT(*) AS total
+    FROM projetos
+    WHERE deletado_em IS NULL
+    GROUP BY proprietario_id
+)
+SELECT u.nome, COALESCE(pa.total, 0) AS projetos_ativos
+FROM usuarios u
+LEFT JOIN projetos_ativos pa ON pa.proprietario_id = u.id;
+
+-- CTE MATERIALIZED: força execução separada (útil quando o planner erra)
+WITH MATERIALIZED usuarios_recentes AS (
+    SELECT * FROM usuarios WHERE criado_em > now() - INTERVAL '30 days'
+)
+SELECT * FROM usuarios_recentes WHERE papel = 'admin';
+
+-- CTE recursiva: percorre hierarquias (árvores, grafos)
+-- Exemplo: organograma com profundidade arbitrária
+WITH RECURSIVE hierarquia AS (
+    -- Caso base: raiz da árvore (sem gerente)
+    SELECT id, nome, gerente_id, 1 AS nivel, ARRAY[id] AS caminho
+    FROM funcionarios
+    WHERE gerente_id IS NULL
+
+    UNION ALL
+
+    -- Passo recursivo: filhos de cada nó já encontrado
+    SELECT f.id, f.nome, f.gerente_id, h.nivel + 1, h.caminho || f.id
+    FROM funcionarios f
+    INNER JOIN hierarquia h ON f.gerente_id = h.id
+    WHERE NOT f.id = ANY(h.caminho)  -- proteção contra ciclos
+)
+SELECT
+    repeat('  ', nivel - 1) || nome AS organograma,
+    nivel
+FROM hierarquia
+ORDER BY caminho;
+```
+
+---
+
+### Window Functions: Análise sem Colapsar Linhas
+
+Window functions operam sobre um **frame** (janela) de linhas relacionadas à linha atual, **sem agrupar** o result set. São indispensáveis para rankings, running totals, comparações com linhas anteriores/posteriores e percentis.
+
+```sql
+-- ROW_NUMBER, RANK, DENSE_RANK: diferenças sutis
+SELECT
+    nome,
+    departamento,
+    salario,
+    ROW_NUMBER() OVER (PARTITION BY departamento ORDER BY salario DESC) AS seq,
+    -- ROW_NUMBER: sempre sequencial (1, 2, 3, 4) — sem empates
+    RANK()       OVER (PARTITION BY departamento ORDER BY salario DESC) AS rank,
+    -- RANK: pula posições em empate (1, 2, 2, 4) — gap após empate
+    DENSE_RANK() OVER (PARTITION BY departamento ORDER BY salario DESC) AS dense
+    -- DENSE_RANK: sem gaps (1, 2, 2, 3) — próximo rank é consecutivo
+FROM funcionarios;
+
+-- LAG / LEAD: acessar linhas anteriores e posteriores
+SELECT
+    mes,
+    receita,
+    LAG(receita, 1) OVER (ORDER BY mes)  AS receita_mes_anterior,
+    LEAD(receita, 1) OVER (ORDER BY mes) AS receita_proximo_mes,
+    receita - LAG(receita, 1) OVER (ORDER BY mes) AS variacao,
+    ROUND(
+        100.0 * (receita - LAG(receita, 1) OVER (ORDER BY mes))
+        / NULLIF(LAG(receita, 1) OVER (ORDER BY mes), 0),
+        2
+    ) AS variacao_percentual
+FROM receitas_mensais;
+
+-- SUM / AVG com PARTITION BY: running total e média móvel
+SELECT
+    data,
+    valor,
+    SUM(valor) OVER (
+        ORDER BY data
+        ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+    ) AS acumulado,
+    AVG(valor) OVER (
+        ORDER BY data
+        ROWS BETWEEN 6 PRECEDING AND CURRENT ROW
+    ) AS media_movel_7d
+FROM transacoes;
+
+-- NTILE: dividir em buckets (quartis, decis, percentis)
+SELECT
+    nome,
+    salario,
+    NTILE(4) OVER (ORDER BY salario) AS quartil
+FROM funcionarios;
+
+-- NAMED WINDOW: evita repetição quando múltiplas funções usam o mesmo frame
+SELECT
+    nome,
+    departamento,
+    salario,
+    ROW_NUMBER() OVER w AS posicao,
+    SUM(salario) OVER w AS salario_acumulado,
+    ROUND(salario * 100.0 / SUM(salario) OVER (PARTITION BY departamento), 2) AS pct_departamento
+FROM funcionarios
+WINDOW w AS (PARTITION BY departamento ORDER BY salario DESC);
+```
+
+---
+
+### Aggregations Avançadas: GROUP BY, HAVING, GROUPING SETS, ROLLUP, CUBE
+
+```sql
+-- GROUP BY + HAVING: filtro sobre agregações (WHERE filtra linhas, HAVING filtra grupos)
+SELECT
+    departamento,
+    COUNT(*) AS total,
+    AVG(salario) AS salario_medio,
+    PERCENTILE_CONT(0.5) WITHIN GROUP (ORDER BY salario) AS mediana
+FROM funcionarios
+GROUP BY departamento
+HAVING COUNT(*) >= 5 AND AVG(salario) > 8000;
+
+-- GROUPING SETS: múltiplas agregações em uma só query
+-- Equivale a UNION ALL de vários GROUP BYs, mas com um único scan
+SELECT
+    COALESCE(departamento, '(TODOS)') AS departamento,
+    COALESCE(cargo, '(TODOS)') AS cargo,
+    COUNT(*) AS total,
+    AVG(salario) AS salario_medio
+FROM funcionarios
+GROUP BY GROUPING SETS (
+    (departamento, cargo),   -- por departamento E cargo
+    (departamento),           -- subtotal por departamento
+    (cargo),                  -- subtotal por cargo
+    ()                        -- total geral
+);
+
+-- ROLLUP: hierarquia de subtotais (do mais granular ao total geral)
+-- ROLLUP(a, b, c) = GROUPING SETS((a,b,c), (a,b), (a), ())
+SELECT
+    EXTRACT(YEAR FROM criado_em) AS ano,
+    EXTRACT(MONTH FROM criado_em) AS mes,
+    COUNT(*) AS total_pedidos,
+    SUM(valor_total) AS receita
+FROM pedidos
+GROUP BY ROLLUP (
+    EXTRACT(YEAR FROM criado_em),
+    EXTRACT(MONTH FROM criado_em)
+)
+ORDER BY ano NULLS LAST, mes NULLS LAST;
+
+-- CUBE: todas as combinações possíveis de dimensões
+-- CUBE(a, b) = GROUPING SETS((a,b), (a), (b), ())
+SELECT
+    regiao,
+    categoria,
+    SUM(vendas) AS total_vendas
+FROM vendas_regionais
+GROUP BY CUBE (regiao, categoria);
+
+-- FILTER: agregação condicional (mais limpo que CASE WHEN dentro de SUM)
+SELECT
+    departamento,
+    COUNT(*) AS total,
+    COUNT(*) FILTER (WHERE salario > 10000) AS acima_10k,
+    AVG(salario) FILTER (WHERE contrato = 'CLT') AS media_clt,
+    AVG(salario) FILTER (WHERE contrato = 'PJ') AS media_pj
+FROM funcionarios
+GROUP BY departamento;
+```
+
+---
+
+### Índices: Estruturas, Tipos e Quando Usar Cada Um
+
+Índices aceleram leitura ao custo de escrita mais lenta e espaço extra em disco. A escolha do tipo de índice depende do **padrão de acesso** (equality, range, containment, full-text, geospatial).
+
+```sql
+-- B-Tree (padrão): ideal para =, <, >, <=, >=, BETWEEN, IN, IS NULL
+-- Ordenado — suporta ORDER BY sem sort adicional
+CREATE INDEX idx_usuarios_email ON usuarios (email);
+CREATE INDEX idx_pedidos_criado_em ON pedidos (criado_em DESC);
+
+-- Índice parcial: indexa apenas um subconjunto de linhas
+-- Reduz tamanho do índice drasticamente quando a maioria dos dados não importa
+CREATE INDEX idx_pedidos_pendentes
+ON pedidos (criado_em)
+WHERE status = 'pendente' AND deletado_em IS NULL;
+
+-- Índice composto: ordem das colunas importa! (leftmost prefix rule)
+-- Este índice serve: WHERE org_id = X, WHERE org_id = X AND criado_em > Y
+-- NÃO serve: WHERE criado_em > Y (sem org_id)
+CREATE INDEX idx_projetos_org_data ON projetos (organizacao_id, criado_em DESC);
+
+-- Covering index (INCLUDE): adiciona colunas sem indexá-las — evita heap lookup
+CREATE INDEX idx_usuarios_email_covering
+ON usuarios (email) INCLUDE (nome, papel);
+-- Agora: SELECT nome, papel FROM usuarios WHERE email = 'x' → Index Only Scan
+
+-- Hash: apenas igualdade (=), menor que B-Tree, NÃO suporta range queries
+-- Útil para colunas com alta cardinalidade e apenas lookups por igualdade
+CREATE INDEX idx_sessoes_token ON sessoes USING hash (token);
+
+-- GIN (Generalized Inverted Index): arrays, JSONB, full-text search
+CREATE INDEX idx_projetos_metadata ON projetos USING gin (metadata jsonb_path_ops);
+CREATE INDEX idx_artigos_busca ON artigos USING gin (to_tsvector('portuguese', titulo || ' ' || conteudo));
+
+-- Busca full-text com GIN
+SELECT titulo, ts_rank(
+    to_tsvector('portuguese', titulo || ' ' || conteudo),
+    plainto_tsquery('portuguese', 'modelagem relacional')
+) AS relevancia
+FROM artigos
+WHERE to_tsvector('portuguese', titulo || ' ' || conteudo)
+    @@ plainto_tsquery('portuguese', 'modelagem relacional')
+ORDER BY relevancia DESC;
+
+-- GiST (Generalized Search Tree): dados geospatiais (PostGIS), ranges, nearest-neighbor
+-- Requer extensão PostGIS para tipos geográficos
+CREATE INDEX idx_lojas_localizacao ON lojas USING gist (coordenadas);
+
+-- BRIN (Block Range Index): dados naturalmente ordenados (timestamps em append-only)
+-- Extremamente compacto — armazena min/max por bloco de páginas
+-- Ideal para tabelas de logs/eventos com inserção cronológica
+CREATE INDEX idx_eventos_timestamp ON eventos USING brin (criado_em)
+    WITH (pages_per_range = 32);
+```
+
+---
+
+### Query Planner: EXPLAIN ANALYZE e Estratégias de Scan
+
+O **query planner** do PostgreSQL é baseado em custo. Ele estima o custo de cada plano possível usando **estatísticas** coletadas pelo `ANALYZE` (via autovacuum ou manualmente) e escolhe o plano de menor custo estimado.
+
+```sql
+-- EXPLAIN mostra o plano SEM executar
+-- EXPLAIN ANALYZE executa e mostra tempos reais — CUIDADO com mutations!
+-- Para DML, use: BEGIN; EXPLAIN ANALYZE DELETE ...; ROLLBACK;
+
+EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT)
+SELECT u.nome, COUNT(p.id) AS total_projetos
+FROM usuarios u
+LEFT JOIN projetos p ON p.proprietario_id = u.id
+WHERE u.criado_em > '2025-01-01'
+GROUP BY u.id, u.nome
+ORDER BY total_projetos DESC
+LIMIT 10;
+
+-- Resultado típico (simplificado):
+-- Limit (cost=156.23..156.25 rows=10 actual time=2.341..2.345 rows=10)
+--   -> Sort (cost=156.23..158.73 rows=1000 actual time=2.340..2.342 rows=10)
+--         Sort Key: (count(p.id)) DESC
+--         Sort Method: top-N heapsort  Memory: 25kB
+--         -> HashAggregate (cost=128.50..138.50 rows=1000 actual time=1.892..2.156 rows=847)
+--               -> Hash Left Join (cost=35.00..118.50 rows=2000 actual time=0.456..1.523 rows=2150)
+--                     Hash Cond: (u.id = p.proprietario_id)
+--                     -> Bitmap Index Scan on idx_usuarios_criado (cost=...)
+--                     -> Hash (cost=25.00..25.00 rows=800 ...)
+--                           -> Seq Scan on projetos p
+```
+
+**Tipos de scan e quando ocorrem:**
+
+```
+Seq Scan         — Lê TODA a tabela sequencialmente.
+                   Usado quando: tabela pequena, ou query retorna >5-10% das linhas,
+                   ou não há índice aplicável.
+
+Index Scan       — Percorre o índice e faz lookup no heap (tabela) para cada linha.
+                   Usado quando: poucas linhas retornadas, índice seletivo.
+
+Index Only Scan  — Lê APENAS o índice (não toca o heap).
+                   Requer: covering index + visibility map atualizado (VACUUM).
+
+Bitmap Index Scan + Bitmap Heap Scan
+                 — Primeiro escaneia o índice e cria um bitmap de pages.
+                   Depois lê as pages em ordem física (evita random I/O).
+                   Usado quando: muitas linhas para Index Scan, poucas para Seq Scan.
+                   Permite combinar múltiplos índices (BitmapAnd, BitmapOr).
+```
+
+**Dicas para interpretar EXPLAIN ANALYZE:**
+
+- Compare `rows` estimado vs real — divergência indica estatísticas desatualizadas (`ANALYZE tabela`)
+- `Buffers: shared hit` = leitura do cache, `shared read` = leitura do disco
+- `actual time=X..Y` — X é tempo até a primeira linha, Y é tempo total
+- Se o planner escolhe Seq Scan com índice disponível, provavelmente o índice não é seletivo o suficiente ou `random_page_cost` está muito alto
+
+---
+
+### Migrations: Estratégias para Produção
+
+Alterar esquemas em produção com zero downtime exige disciplina. A estratégia **expand-contract** divide mudanças breaking em fases compatíveis.
+
+```
+Expand-Contract Pattern (exemplo: renomear coluna):
+
+Fase 1 — EXPAND (deploy compatível):
+  ├─ ADD nova coluna com DEFAULT
+  ├─ Trigger que sincroniza escrita: antiga → nova
+  ├─ Backfill assíncrono dos dados existentes
+  └─ Deploy do código que lê de AMBAS as colunas
+
+Fase 2 — MIGRATE:
+  ├─ Deploy do código que escreve na nova coluna
+  └─ Verificação: nova coluna tem 100% dos dados
+
+Fase 3 — CONTRACT:
+  ├─ Remove leitura da coluna antiga
+  ├─ Remove trigger de sincronização
+  └─ DROP coluna antiga
+```
+
+```sql
+-- REGRA DE OURO: nunca faça ALTER TABLE que trava a tabela por muito tempo em produção
+
+-- SAFE: adicionar coluna com DEFAULT (PostgreSQL 11+ não reescreve a tabela)
+ALTER TABLE usuarios ADD COLUMN bio TEXT DEFAULT '';
+
+-- DANGEROUS: adicionar NOT NULL sem DEFAULT em tabela existente
+-- Reescreve TODA a tabela — lock exclusivo por minutos/horas em tabelas grandes
+-- ALTER TABLE usuarios ADD COLUMN bio TEXT NOT NULL;  -- NÃO FAÇA ISSO
+
+-- SAFE alternative:
+ALTER TABLE usuarios ADD COLUMN bio TEXT;                    -- 1. nullable
+UPDATE usuarios SET bio = '' WHERE bio IS NULL;              -- 2. backfill em batches
+ALTER TABLE usuarios ALTER COLUMN bio SET DEFAULT '';         -- 3. default
+ALTER TABLE usuarios ALTER COLUMN bio SET NOT NULL;           -- 4. constraint
+
+-- CREATE INDEX CONCURRENTLY: não bloqueia escritas (mas é mais lento)
+CREATE INDEX CONCURRENTLY idx_usuarios_nome ON usuarios (nome);
+-- ATENÇÃO: se falhar, o índice fica em estado INVALID — verifique e DROP se necessário
+```
+
+**Ferramentas de migration recomendadas:**
+
+- **golang-migrate / migrate**: agnóstico, SQL puro, suporta múltiplos bancos
+- **Flyway**: JVM-based, versionamento sequencial, callbacks de lifecycle
+- **Alembic** (Python/SQLAlchemy): auto-geração de migrations a partir de models
+- **Prisma Migrate**: integrado ao ORM Prisma, schema declarativo com diffing
+- **pgroll**: migrations com zero-downtime nativo via versionamento de esquema
+
+---
+
+### Anti-patterns: O que Nunca Fazer
+
+#### 1. Entity-Attribute-Value (EAV)
+
+```sql
+-- ANTI-PATTERN: EAV table
+CREATE TABLE configuracoes (
+    entidade_id INT NOT NULL,
+    chave TEXT NOT NULL,
+    valor TEXT NOT NULL,  -- TUDO é texto — sem tipagem, sem constraints
+    PRIMARY KEY (entidade_id, chave)
+);
+
+-- Problemas do EAV:
+-- 1. Sem tipagem: "idade" = "vinte" é válido
+-- 2. Sem constraints: não há como fazer CHECK(idade > 0)
+-- 3. Queries horríveis: precisa de PIVOT/CROSSTAB para reconstruir a entidade
+-- 4. JOINs multiplicam: cada atributo exige um self-join
+-- 5. Sem foreign keys: integridade referencial impossível
+
+-- SOLUÇÃO: use JSONB para dados semi-estruturados OU colunas tipadas
+CREATE TABLE configuracoes_melhor (
+    id SERIAL PRIMARY KEY,
+    entidade_id INT NOT NULL REFERENCES entidades(id),
+    dados JSONB NOT NULL DEFAULT '{}',
+    -- Pode indexar campos específicos do JSONB
+    CONSTRAINT chk_dados CHECK (dados ? 'versao')
+);
+CREATE INDEX idx_config_dados ON configuracoes_melhor USING gin (dados);
+```
+
+#### 2. Associações Polimórficas
+
+```sql
+-- ANTI-PATTERN: foreign key "polimórfica" — impossível de validar
+CREATE TABLE comentarios (
+    id SERIAL PRIMARY KEY,
+    corpo TEXT NOT NULL,
+    comentavel_tipo TEXT NOT NULL,  -- 'artigo', 'video', 'foto'
+    comentavel_id INT NOT NULL      -- FK para qual tabela? O banco não sabe!
+);
+-- O banco NÃO PODE criar FK real — integridade depende 100% da aplicação
+
+-- SOLUÇÃO 1: tabela de comentários por entidade (explícita, com FKs reais)
+CREATE TABLE comentarios_artigos (
+    id SERIAL PRIMARY KEY,
+    artigo_id INT NOT NULL REFERENCES artigos(id) ON DELETE CASCADE,
+    corpo TEXT NOT NULL
+);
+CREATE TABLE comentarios_videos (
+    id SERIAL PRIMARY KEY,
+    video_id INT NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+    corpo TEXT NOT NULL
+);
+
+-- SOLUÇÃO 2: tabela base com herança via FKs exclusivas (exclusive arc)
+CREATE TABLE comentarios (
+    id SERIAL PRIMARY KEY,
+    corpo TEXT NOT NULL,
+    artigo_id INT REFERENCES artigos(id),
+    video_id INT REFERENCES videos(id),
+    foto_id INT REFERENCES fotos(id),
+    -- Exatamente uma FK deve ser preenchida
+    CONSTRAINT chk_exclusivo CHECK (
+        (artigo_id IS NOT NULL)::int +
+        (video_id IS NOT NULL)::int +
+        (foto_id IS NOT NULL)::int = 1
+    )
+);
+```
+
+#### 3. CSV em Colunas (Violação da 1NF)
+
+```sql
+-- ANTI-PATTERN: múltiplos valores em uma coluna de texto
+CREATE TABLE usuarios_errado (
+    id SERIAL PRIMARY KEY,
+    nome TEXT NOT NULL,
+    tags TEXT NOT NULL  -- "admin,editor,revisor" — parsing na aplicação!
+);
+
+-- Impossível: indexar tags individuais, fazer JOIN, garantir unicidade, FK
+
+-- SOLUÇÃO: array nativo + GIN ou tabela associativa
+-- Opção A: ARRAY do PostgreSQL (bom para dados simples sem FK)
+CREATE TABLE usuarios_array (
+    id SERIAL PRIMARY KEY,
+    nome TEXT NOT NULL,
+    tags TEXT[] NOT NULL DEFAULT '{}'
+);
+CREATE INDEX idx_usuarios_tags ON usuarios_array USING gin (tags);
+-- Query: SELECT * FROM usuarios_array WHERE tags @> ARRAY['admin'];
+
+-- Opção B: tabela associativa (ideal quando tags são entidades com seus próprios atributos)
+CREATE TABLE tags (
+    id SERIAL PRIMARY KEY,
+    nome TEXT NOT NULL UNIQUE
+);
+CREATE TABLE usuario_tags (
+    usuario_id INT NOT NULL REFERENCES usuarios(id) ON DELETE CASCADE,
+    tag_id INT NOT NULL REFERENCES tags(id) ON DELETE CASCADE,
+    PRIMARY KEY (usuario_id, tag_id)
+);
+```
+
+---
+
+### Checklist de Modelagem para Produção
+
+```
+1. Toda tabela TEM chave primária — sem exceção
+2. TIMESTAMPTZ para qualquer dado temporal — TIMESTAMP é ambíguo
+3. NUMERIC/DECIMAL para dinheiro — FLOAT é IEEE 754, arredonda errado
+4. Foreign keys com ON DELETE explícito (RESTRICT, CASCADE, SET NULL)
+5. Constraints CHECK para regras de negócio validáveis no banco
+6. Índices criados com base em queries reais (EXPLAIN ANALYZE primeiro)
+7. Soft delete (deletado_em TIMESTAMPTZ) + índice parcial WHERE deletado_em IS NULL
+8. Migrations backward-compatible (expand-contract para mudanças breaking)
+9. JSONB para dados semi-estruturados — EAV nunca
+10. Nomes de constraints explícitos para facilitar debugging em produção
+```

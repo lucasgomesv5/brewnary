@@ -1,0 +1,867 @@
+---
+title: "Event Loop"
+description: "O mecanismo single-threaded de concorrência que permite Node.js e browsers processarem milhares de operações assíncronas sem bloqueio"
+track: "backend"
+order: 3
+section: "Node.js"
+priority: "high"
+tags: ["nodejs", "event-loop", "async", "performance", "libuv", "concorrência"]
+prerequisites: []
+keyTakeaways:
+  - "O Event Loop possui 6 fases distintas (timers, pending callbacks, idle/prepare, poll, check, close) e microtasks rodam entre cada transição de fase"
+  - "Bloquear o Event Loop com operações CPU-intensive trava todas as requisições — use worker_threads, child_process ou clustering"
+  - "process.nextTick() tem prioridade sobre Promise.then(), que tem prioridade sobre setTimeout(), que tem prioridade sobre setImmediate()"
+  - "O libuv mantém uma thread pool (padrão 4 threads) para operações que não possuem APIs assíncronas no kernel (fs, dns.lookup, crypto, zlib)"
+  - "No browser, o Event Loop é fundamentalmente diferente: inclui rendering pipeline (rAF, style, layout, paint) e task queues separadas por origin"
+---
+
+## O que é o Event Loop
+
+O Event Loop é o mecanismo central de concorrência do Node.js e dos browsers. Ele implementa um modelo **single-threaded** de execução baseado em **I/O não-bloqueante** e **multiplexação de eventos**. Diferente de modelos tradicionais baseados em threads (como o thread-per-request do Apache/Tomcat), o Event Loop processa todas as operações em uma única thread principal, delegando operações bloqueantes para o sistema operacional ou para uma thread pool interna.
+
+A premissa fundamental é simples: a maior parte do tempo de uma aplicação web é gasta **esperando I/O** (rede, disco, banco de dados), não executando computação. O Event Loop explora isso ao nunca esperar — quando uma operação de I/O é iniciada, o controle retorna imediatamente ao loop, que pode processar outras requisições enquanto o kernel cuida da operação pendente.
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                     ARQUITETURA NODE.JS                         │
+│                                                                 │
+│  ┌───────────────────────────────────────────────────────────┐  │
+│  │                    JavaScript (V8)                        │  │
+│  │  ┌─────────┐  ┌──────────┐  ┌─────────────────────────┐  │  │
+│  │  │ Call     │  │ Micro    │  │ Node.js APIs            │  │  │
+│  │  │ Stack    │  │ Task     │  │ (fs, net, http, crypto) │  │  │
+│  │  │          │  │ Queue    │  │                         │  │  │
+│  │  └─────────┘  └──────────┘  └────────────┬────────────┘  │  │
+│  └──────────────────────────────────────────┼────────────────┘  │
+│                                              │                  │
+│  ┌───────────────────────────────────────────┼───────────────┐  │
+│  │                    libuv                   │               │  │
+│  │  ┌──────────────┐  ┌──────────────────────▼────────────┐  │  │
+│  │  │ Event Loop   │  │ Thread Pool (padrão: 4 threads)   │  │  │
+│  │  │ (single      │  │                                   │  │  │
+│  │  │  thread)     │  │  fs.read()    dns.lookup()        │  │  │
+│  │  │              │  │  crypto.*()   zlib.*()            │  │  │
+│  │  └──────┬───────┘  └───────────────────────────────────┘  │  │
+│  │         │                                                  │  │
+│  │  ┌──────▼──────────────────────────────────────────────┐  │  │
+│  │  │ Kernel Async I/O Backends                           │  │  │
+│  │  │  Linux: epoll    macOS: kqueue    Windows: IOCP     │  │  │
+│  │  └─────────────────────────────────────────────────────┘  │  │
+│  └────────────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+O V8 é responsável por compilar e executar JavaScript (JIT compilation via TurboFan). A libuv é a biblioteca C que implementa o Event Loop, a thread pool e a abstração de I/O assíncrono cross-platform. Essas duas peças, combinadas com os bindings C++ do Node.js, formam a arquitetura completa.
+
+---
+
+## As 6 fases do Event Loop (Node.js)
+
+Cada iteração completa do Event Loop é chamada de **tick**. Dentro de cada tick, o loop percorre 6 fases em ordem fixa. Cada fase possui uma **FIFO queue** de callbacks a executar. Quando o loop entra em uma fase, ele executa callbacks dessa fila até que ela se esvazie ou até atingir um limite máximo de callbacks por fase (para evitar starvation das fases seguintes).
+
+```
+   ┌───────────────────────────────────────────────────┐
+   │                                                   │
+   │   ┌─────────────────────────────────────────┐     │
+   │   │  ★ Microtasks (entre CADA fase):        │     │
+   │   │    1. process.nextTick() queue           │     │
+   │   │    2. Promise microtask queue            │     │
+   │   └─────────────────────────────────────────┘     │
+   │                                                   │
+┌──▼──────────────────────────────┐                    │
+│  1. TIMERS                      │                    │
+│     setTimeout(), setInterval() │                    │
+│     Executa callbacks cujo      │                    │
+│     threshold expirou           │                    │
+└──┬──────────────────────────────┘                    │
+   │  [microtasks]                                     │
+┌──▼──────────────────────────────┐                    │
+│  2. PENDING CALLBACKS            │                    │
+│     Callbacks de I/O adiados     │                    │
+│     do ciclo anterior (ex: erros │                    │
+│     TCP ECONNREFUSED)            │                    │
+└──┬──────────────────────────────┘                    │
+   │  [microtasks]                                     │
+┌──▼──────────────────────────────┐                    │
+│  3. IDLE, PREPARE               │                    │
+│     Uso interno do Node.js      │                    │
+│     (não expõe callbacks)       │                    │
+└──┬──────────────────────────────┘                    │
+   │  [microtasks]                                     │
+┌──▼──────────────────────────────┐                    │
+│  4. POLL                         │                    │
+│     Busca novos eventos de I/O   │                    │
+│     Executa callbacks de I/O     │                    │
+│     (fs.readFile, net.connect)   │                    │
+│     Pode BLOQUEAR aqui se não    │                    │
+│     houver timers pendentes      │                    │
+└──┬──────────────────────────────┘                    │
+   │  [microtasks]                                     │
+┌──▼──────────────────────────────┐                    │
+│  5. CHECK                        │                    │
+│     setImmediate() callbacks     │                    │
+│     Sempre roda após poll        │                    │
+└──┬──────────────────────────────┘                    │
+   │  [microtasks]                                     │
+┌──▼──────────────────────────────┐                    │
+│  6. CLOSE CALLBACKS              │                    │
+│     socket.on('close')           │                    │
+│     server.on('close')           │                    │
+└──┬──────────────────────────────┘                    │
+   │  [microtasks]                                     │
+   └───────────────────────────────────────────────────┘
+```
+
+### Detalhes críticos de cada fase
+
+**Fase TIMERS**: Não garante execução **exata** no tempo especificado. O argumento de `setTimeout(cb, ms)` define o **tempo mínimo** até a execução, não o tempo exato. Se o poll phase estiver processando um callback pesado quando o timer expira, o callback do timer só será executado na próxima iteração.
+
+**Fase POLL**: Esta é a fase mais complexa. O loop calcula quanto tempo deve bloquear esperando por I/O, baseado em: (a) se há timers pendentes (define um timeout máximo) e (b) se há callbacks em `setImmediate()` (não bloqueia). Se o poll queue estiver vazio e não houver `setImmediate()` pendente, o loop **bloqueia aqui** esperando novos eventos de I/O — isso é o que permite que um servidor Node.js idle não consuma CPU.
+
+**Fase CHECK**: `setImmediate()` é garantido de executar **após** o poll phase completar. Isso é o que diferencia `setImmediate()` de `setTimeout(fn, 0)` — o último vai para a fase timers do **próximo** tick (em contextos ambíguos).
+
+---
+
+## Microtasks vs Macrotasks: hierarquia completa
+
+Entender a prioridade de execução é essencial para prever comportamento assíncrono. A hierarquia é:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  PRIORIDADE DE EXECUÇÃO (maior → menor)                 │
+├─────────────────────────────────────────────────────────┤
+│                                                         │
+│  1. Código síncrono (Call Stack)                        │
+│     ↓ (quando Call Stack esvazia)                       │
+│                                                         │
+│  2. process.nextTick() queue        ← MICROTASK         │
+│     ↓ (só avança quando queue esvazia)                  │
+│                                                         │
+│  3. Promise microtask queue         ← MICROTASK         │
+│     (Promise.then, Promise.catch,                       │
+│      Promise.finally, queueMicrotask)                   │
+│     ↓ (só avança quando queue esvazia)                  │
+│                                                         │
+│  4. Fase atual do Event Loop        ← MACROTASK         │
+│     (setTimeout, setInterval,                           │
+│      setImmediate, I/O callbacks)                       │
+│                                                         │
+│  IMPORTANTE: passos 2-3 se repetem entre CADA fase      │
+│  e entre CADA callback de macrotask (desde Node 11+)    │
+└─────────────────────────────────────────────────────────┘
+```
+
+### Mudança de comportamento no Node.js 11+
+
+Antes do Node.js 11, microtasks só eram drenadas entre **fases** do Event Loop. A partir do Node.js 11, o comportamento foi alinhado com os browsers: microtasks são drenadas **entre cada macrotask individual**, não apenas entre fases. Isso é crítico para a previsibilidade.
+
+```javascript
+// Demonstração da mudança Node 11+
+setTimeout(() => {
+  console.log('timeout 1');
+  Promise.resolve().then(() => console.log('promise inside timeout 1'));
+}, 0);
+
+setTimeout(() => {
+  console.log('timeout 2');
+}, 0);
+
+// Node 10:  timeout 1 → timeout 2 → promise inside timeout 1
+// Node 11+: timeout 1 → promise inside timeout 1 → timeout 2
+//
+// No Node 11+, a microtask queue é drenada ENTRE cada callback
+// da mesma fase, não apenas entre fases.
+```
+
+---
+
+## Exercícios de ordem de execução (nível avançado)
+
+### Exercício 1: O clássico
+
+```javascript
+console.log('1');
+
+setTimeout(() => console.log('2'), 0);
+
+Promise.resolve().then(() => console.log('3'));
+
+process.nextTick(() => console.log('4'));
+
+setImmediate(() => console.log('5'));
+
+console.log('6');
+
+// Saída: 1, 6, 4, 3, 2, 5
+//
+// Raciocínio:
+// - '1' e '6': código síncrono, executa imediatamente
+// - '4': process.nextTick tem prioridade máxima entre microtasks
+// - '3': Promise.then é microtask, prioridade sobre macrotasks
+// - '2': setTimeout(fn, 0) vai para a fase timers
+// - '5': setImmediate vai para a fase check (após poll)
+//
+// NOTA: a ordem entre '2' e '5' pode variar quando chamados
+// do módulo principal (depende do tempo de setup do timer).
+// Mas dentro de um callback de I/O, setImmediate SEMPRE
+// executa antes de setTimeout(fn, 0).
+```
+
+### Exercício 2: nextTick recursivo e starvation
+
+```javascript
+// PERIGO: process.nextTick() recursivo causa starvation
+// porque a nextTick queue é drenada COMPLETAMENTE antes
+// de o Event Loop avançar para qualquer fase.
+
+function recursiveNextTick(count) {
+  if (count >= 5) return;
+  process.nextTick(() => {
+    console.log(`nextTick ${count}`);
+    recursiveNextTick(count + 1);
+  });
+}
+
+recursiveNextTick(0);
+
+setTimeout(() => console.log('setTimeout — pode nunca executar!'), 0);
+
+// Se o nextTick fosse infinito, o setTimeout NUNCA executaria.
+// A queue de nextTick é drenada completamente antes de avançar.
+//
+// Por isso, a documentação do Node.js recomenda queueMicrotask()
+// ou setImmediate() em vez de process.nextTick() recursivo.
+```
+
+### Exercício 3: setTimeout vs setImmediate dentro de I/O
+
+```javascript
+const fs = require('fs');
+
+// Fora de I/O: ordem INDETERMINADA
+setTimeout(() => console.log('timeout'), 0);
+setImmediate(() => console.log('immediate'));
+// Pode ser: timeout → immediate OU immediate → timeout
+// Depende de performance do sistema no momento de boot.
+
+// Dentro de I/O callback: ordem DETERMINÍSTICA
+fs.readFile(__filename, () => {
+  setTimeout(() => console.log('timeout'), 0);
+  setImmediate(() => console.log('immediate'));
+});
+// SEMPRE: immediate → timeout
+//
+// Por quê? Dentro de um callback de I/O, estamos na fase poll.
+// Ao terminar, o loop vai para check (setImmediate) ANTES de
+// voltar para timers na próxima iteração.
+```
+
+### Exercício 4: Promises aninhadas e microtask ordering
+
+```javascript
+Promise.resolve()
+  .then(() => {
+    console.log('promise 1');
+    return Promise.resolve('inner');
+  })
+  .then((val) => {
+    console.log(`promise 2: ${val}`);
+  });
+
+Promise.resolve().then(() => {
+  console.log('promise 3');
+});
+
+process.nextTick(() => {
+  console.log('nextTick 1');
+  process.nextTick(() => console.log('nextTick 2'));
+});
+
+// Saída: nextTick 1, nextTick 2, promise 1, promise 3, promise 2: inner
+//
+// Raciocínio:
+// - nextTick queue é drenada PRIMEIRO (incluindo nextTicks agendados dentro)
+// - Depois, promise queue: 'promise 1' e 'promise 3' estão na mesma "rodada"
+// - 'promise 2' só é agendado quando o then de 'promise 1' resolve,
+//   então entra na PRÓXIMA rodada de microtask drain
+//
+// NOTA: return Promise.resolve() dentro de .then() adiciona 2 microticks
+// extras de atraso (spec ECMAScript, "PromiseResolveThenableJob").
+```
+
+---
+
+## Thread Pool do libuv
+
+O libuv mantém uma thread pool para operações que **não possuem API assíncrona nativa no kernel**. Por padrão, essa pool tem **4 threads**.
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  OPERAÇÕES QUE USAM A THREAD POOL                       │
+├─────────────────────────────────────────────────────────┤
+│                                                         │
+│  fs.*  (todas as operações de filesystem)               │
+│    - fs.readFile, fs.writeFile, fs.stat, fs.readdir     │
+│    - EXCETO: fs.watch (usa kernel async: inotify/kqueue)│
+│                                                         │
+│  dns.lookup()                                           │
+│    - Usa getaddrinfo() do SO (bloqueante)               │
+│    - NOTA: dns.resolve() NÃO usa thread pool            │
+│      (usa c-ares, que é assíncrono via rede)            │
+│                                                         │
+│  crypto.*                                               │
+│    - crypto.pbkdf2, crypto.scrypt                       │
+│    - crypto.randomBytes (acima de certo tamanho)        │
+│                                                         │
+│  zlib.*                                                 │
+│    - zlib.deflate, zlib.inflate, zlib.gzip              │
+│                                                         │
+├─────────────────────────────────────────────────────────┤
+│  OPERAÇÕES QUE USAM KERNEL ASYNC (NÃO thread pool)     │
+├─────────────────────────────────────────────────────────┤
+│                                                         │
+│  TCP/UDP sockets (net, http, https)                     │
+│  DNS resolução (dns.resolve — via c-ares)               │
+│  Pipes                                                  │
+│  Sinais (signals)                                       │
+│  Child process stdio                                    │
+│                                                         │
+└─────────────────────────────────────────────────────────┘
+```
+
+### Demonstração do gargalo da thread pool
+
+```javascript
+const crypto = require('crypto');
+const start = Date.now();
+
+// UV_THREADPOOL_SIZE=4 (padrão)
+// Cada pbkdf2 leva ~500ms em uma thread
+
+for (let i = 1; i <= 8; i++) {
+  crypto.pbkdf2('senha', 'salt', 100000, 64, 'sha512', () => {
+    console.log(`${i}: ${Date.now() - start}ms`);
+  });
+}
+
+// Saída aproximada:
+// 1: 520ms   ← batch 1 (4 threads)
+// 2: 525ms
+// 3: 530ms
+// 4: 535ms
+// 5: 1045ms  ← batch 2 (esperou uma thread liberar)
+// 6: 1050ms
+// 7: 1055ms
+// 8: 1060ms
+//
+// As primeiras 4 rodam em paralelo (4 threads).
+// As próximas 4 esperam uma thread disponível.
+// Para aumentar: UV_THREADPOOL_SIZE=16 node app.js (máximo: 1024)
+```
+
+### Impacto do dns.lookup() na thread pool
+
+```javascript
+// ARMADILHA COMUM EM PRODUÇÃO:
+// http.get() usa dns.lookup() por padrão, que consome uma thread
+// da pool. Se você faz muitas requisições HTTP com hostnames,
+// pode esgotar a thread pool e bloquear operações de fs.*
+
+const http = require('http');
+
+// Problema: 4 requests simultâneas com dns.lookup()
+// podem bloquear a thread pool inteira
+for (let i = 0; i < 100; i++) {
+  http.get('http://api.example.com/data', (res) => {
+    // Se as 4 threads estão fazendo dns.lookup(),
+    // chamadas a fs.readFile() ficam na fila esperando
+  });
+}
+
+// Soluções:
+// 1. Aumentar UV_THREADPOOL_SIZE
+// 2. Usar dns.resolve() (usa c-ares, não a thread pool)
+// 3. Implementar cache de DNS local
+// 4. Usar lookup: false nas opções de http.Agent (se possível)
+```
+
+---
+
+## Event Loop Starvation: detecção e mitigação
+
+Event Loop starvation ocorre quando a thread principal fica ocupada com computação síncrona, impedindo o processamento de callbacks de I/O e timers. Em produção, isso se manifesta como **latência alta e timeouts inexplicáveis**.
+
+### Causas comuns
+
+```javascript
+// 1. Operações CPU-intensive na thread principal
+app.get('/fibonacci', (req, res) => {
+  const n = parseInt(req.query.n);
+  const result = fibonacci(n); // Bloqueia TUDO se n for grande
+  res.json({ result });
+});
+
+// 2. JSON.parse/JSON.stringify com payloads enormes
+app.post('/import', (req, res) => {
+  const data = JSON.parse(hugeJsonString); // 100MB de JSON = segundos de bloqueio
+  // ...
+});
+
+// 3. RegExp catastrófica (ReDoS)
+const evilRegex = /^(a+)+$/;
+evilRegex.test('a'.repeat(30) + '!'); // Exponencial: trava por minutos
+
+// 4. Iterações síncronas sobre datasets grandes
+const result = enormeArray.sort((a, b) => complexCompare(a, b));
+
+// 5. Serialização/deserialização (protobuf, msgpack) síncrona
+```
+
+### Estratégias de mitigação
+
+```javascript
+// ESTRATÉGIA 1: Worker Threads (Node.js 12+)
+// Para computação CPU-intensive na mesma instância
+const { Worker, isMainThread, parentPort } = require('worker_threads');
+
+if (isMainThread) {
+  app.get('/hash', async (req, res) => {
+    const result = await runInWorker(req.body.password);
+    res.json({ hash: result });
+  });
+
+  function runInWorker(data) {
+    return new Promise((resolve, reject) => {
+      const worker = new Worker(__filename, { workerData: data });
+      worker.on('message', resolve);
+      worker.on('error', reject);
+    });
+  }
+} else {
+  const { workerData } = require('worker_threads');
+  const hash = crypto.pbkdf2Sync(workerData, 'salt', 100000, 64, 'sha512');
+  parentPort.postMessage(hash.toString('hex'));
+}
+
+// ESTRATÉGIA 2: Quebrar computação em chunks com setImmediate()
+// Permite que o Event Loop processe outros callbacks entre chunks
+function processarEmChunks(items, processItem, callback) {
+  let index = 0;
+  const CHUNK_SIZE = 100;
+
+  function processChunk() {
+    const end = Math.min(index + CHUNK_SIZE, items.length);
+    for (; index < end; index++) {
+      processItem(items[index]);
+    }
+    if (index < items.length) {
+      // Devolve controle ao Event Loop antes do próximo chunk
+      setImmediate(processChunk);
+    } else {
+      callback();
+    }
+  }
+
+  processChunk();
+}
+
+// ESTRATÉGIA 3: Child Process para isolamento completo
+const { fork } = require('child_process');
+
+app.get('/relatorio', async (req, res) => {
+  const child = fork('./gerar-relatorio.js');
+  child.send({ filtros: req.query });
+  child.on('message', (resultado) => {
+    res.json(resultado);
+  });
+  child.on('error', (err) => {
+    res.status(500).json({ error: err.message });
+  });
+});
+
+// ESTRATÉGIA 4: Cluster mode para utilizar múltiplos cores
+const cluster = require('cluster');
+const numCPUs = require('os').cpus().length;
+
+if (cluster.isPrimary) {
+  for (let i = 0; i < numCPUs; i++) {
+    cluster.fork();
+  }
+  cluster.on('exit', (worker) => {
+    console.log(`Worker ${worker.process.pid} morreu, reiniciando...`);
+    cluster.fork();
+  });
+} else {
+  // Cada worker tem seu próprio Event Loop
+  app.listen(3000);
+}
+```
+
+---
+
+## Timers: precisão e armadilhas
+
+### setTimeout e setInterval não são precisos
+
+```javascript
+// O argumento de delay é um MÍNIMO, não um valor exato.
+// Fatores que afetam a precisão:
+
+// 1. Resolução do timer do SO (~1ms no Linux, ~15.6ms no Windows antigo)
+// 2. Carga do Event Loop (callbacks anteriores na fila)
+// 3. Timer coalescing (o SO pode agrupar timers para economia de energia)
+// 4. Minimum delay: browsers impõem 4ms mínimo para timers aninhados (nível 5+)
+
+// Demonstração de imprecisão:
+const start = process.hrtime.bigint();
+
+setTimeout(() => {
+  const elapsed = Number(process.hrtime.bigint() - start) / 1e6;
+  console.log(`setTimeout(1) executou após: ${elapsed.toFixed(2)}ms`);
+  // Tipicamente: 1.05ms - 2.5ms (nunca exatamente 1ms)
+}, 1);
+
+// setTimeout(fn, 0) é internamente convertido para setTimeout(fn, 1)
+// no Node.js. Não existe timer com delay 0 — o mínimo é 1ms.
+
+// ARMADILHA: setInterval drift
+// setInterval NÃO compensa o tempo de execução do callback.
+// Se o callback leva 50ms e o interval é 100ms, o intervalo
+// real entre inícios será ~100ms, não 100ms entre fins.
+
+// Solução: self-adjusting timer
+function precisoInterval(callback, interval) {
+  let expected = Date.now() + interval;
+
+  function step() {
+    const drift = Date.now() - expected;
+    callback();
+    expected += interval;
+    setTimeout(step, Math.max(0, interval - drift));
+  }
+
+  setTimeout(step, interval);
+}
+```
+
+---
+
+## Browser Event Loop: diferenças fundamentais do Node.js
+
+O Event Loop do browser segue a especificação **HTML Living Standard** e é significativamente diferente do Node.js. A principal diferença é a integração com o **rendering pipeline**.
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│            BROWSER EVENT LOOP (simplificado)                │
+│                                                             │
+│  ┌───────────────────────────────────────────────────────┐  │
+│  │  1. Pega a task mais antiga da Task Queue             │  │
+│  │     (setTimeout, eventos DOM, fetch callbacks)        │  │
+│  └───────────────────────┬───────────────────────────────┘  │
+│                          ▼                                  │
+│  ┌───────────────────────────────────────────────────────┐  │
+│  │  2. Executa TODAS as microtasks                       │  │
+│  │     (Promise.then, queueMicrotask, MutationObserver)  │  │
+│  └───────────────────────┬───────────────────────────────┘  │
+│                          ▼                                  │
+│  ┌───────────────────────────────────────────────────────┐  │
+│  │  3. RENDERING (se necessário — tipicamente 60fps)     │  │
+│  │     a. requestAnimationFrame callbacks                │  │
+│  │     b. Style calculation (recalcular CSS)             │  │
+│  │     c. Layout (calcular geometria dos elementos)      │  │
+│  │     d. Paint (rasterizar pixels)                      │  │
+│  │     e. Composite (compor camadas na GPU)              │  │
+│  └───────────────────────┬───────────────────────────────┘  │
+│                          ▼                                  │
+│  ┌───────────────────────────────────────────────────────┐  │
+│  │  4. requestIdleCallback (se houver tempo ocioso)      │  │
+│  └───────────────────────┬───────────────────────────────┘  │
+│                          │                                  │
+│                          └──── volta ao passo 1 ────────────│
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Diferenças-chave
+
+```javascript
+// 1. Browsers NÃO têm process.nextTick()
+// O equivalente mais próximo é queueMicrotask()
+
+queueMicrotask(() => console.log('microtask'));
+Promise.resolve().then(() => console.log('promise'));
+// Ambos são microtasks no mesmo nível de prioridade no browser.
+
+// 2. requestAnimationFrame (rAF) roda ANTES do paint
+// Ideal para animações e medições de layout
+function animar() {
+  elemento.style.transform = `translateX(${posicao}px)`;
+  posicao += 2;
+  if (posicao < 500) {
+    requestAnimationFrame(animar);
+  }
+}
+requestAnimationFrame(animar);
+
+// 3. requestIdleCallback roda quando o browser está ocioso
+// Ideal para trabalho não-urgente (analytics, prefetch)
+requestIdleCallback((deadline) => {
+  while (deadline.timeRemaining() > 0 && tarefasPendentes.length > 0) {
+    processarTarefa(tarefasPendentes.pop());
+  }
+}, { timeout: 2000 }); // timeout máximo de 2s
+
+// 4. Task Queues separadas por prioridade
+// Browsers modernos implementam múltiplas task queues:
+// - User interaction (clicks, teclado) — ALTA prioridade
+// - Network/fetch callbacks — MÉDIA prioridade
+// - setTimeout/setInterval — BAIXA prioridade
+// O browser pode priorizar interação do usuário sobre timers.
+```
+
+---
+
+## I/O Multiplexing: a base de tudo
+
+O Event Loop depende de APIs do kernel para monitorar múltiplos file descriptors de forma eficiente. A evolução dessas APIs é fundamental para entender o desempenho.
+
+```
+┌───────────────────────────────────────────────────────────────────┐
+│  EVOLUÇÃO DO I/O MULTIPLEXING                                     │
+├──────────┬────────────┬───────────────────────────────────────────┤
+│  API     │ SO         │ Características                           │
+├──────────┼────────────┼───────────────────────────────────────────┤
+│ select   │ POSIX      │ Limite de 1024 FDs (FD_SETSIZE)          │
+│          │            │ O(n) para verificar FDs prontos           │
+│          │            │ Copia todo o fd_set a cada chamada        │
+├──────────┼────────────┼───────────────────────────────────────────┤
+│ poll     │ POSIX      │ Sem limite fixo de FDs                    │
+│          │            │ Ainda O(n) para verificar FDs             │
+│          │            │ Usa array de pollfd (mais flexível)       │
+├──────────┼────────────┼───────────────────────────────────────────┤
+│ epoll    │ Linux 2.6+ │ O(1) para eventos (event-driven)         │
+│          │            │ Kernel mantém estado (não copia a cada    │
+│          │            │ chamada). Edge/Level triggered.           │
+│          │            │ Escala para milhões de conexões.          │
+├──────────┼────────────┼───────────────────────────────────────────┤
+│ kqueue   │ macOS/BSD  │ Similar ao epoll. Suporta múltiplos      │
+│          │            │ tipos de evento (FD, signal, timer,       │
+│          │            │ vnode changes). API unificada.            │
+├──────────┼────────────┼───────────────────────────────────────────┤
+│ IOCP     │ Windows    │ Completion-based (não readiness-based).   │
+│          │            │ O kernel notifica quando I/O COMPLETOU,   │
+│          │            │ não quando está pronto. Proactor pattern. │
+└──────────┴────────────┴───────────────────────────────────────────┘
+```
+
+O libuv abstrai essas diferenças. Ele usa **epoll** no Linux, **kqueue** no macOS/BSD e **IOCP** no Windows. Essa abstração é o que permite que o Node.js seja cross-platform com desempenho nativo em cada SO.
+
+```
+// Modelo Reactor (Linux/macOS via epoll/kqueue):
+//   1. Registra FDs de interesse
+//   2. Bloqueia esperando algum FD ficar "pronto" (readable/writable)
+//   3. Kernel notifica: "FD 42 tem dados para ler"
+//   4. Aplicação faz read() — ainda pode bloquear brevemente
+//
+// Modelo Proactor (Windows via IOCP):
+//   1. Inicia operação de I/O assíncrona (ReadFile overlapped)
+//   2. Kernel executa a operação inteira
+//   3. Kernel notifica: "Read no FD 42 completou, aqui estão os dados"
+//   4. Aplicação já tem os dados — zero bloqueio
+//
+// O libuv emula o modelo proactor em todas as plataformas,
+// mesmo quando o kernel subjacente é reactor (Linux/macOS).
+```
+
+---
+
+## Comparação com outros modelos de concorrência
+
+```
+┌──────────────────────────────────────────────────────────────────────────┐
+│  MODELO             │ LINGUAGEM     │ TRADE-OFFS                        │
+├─────────────────────┼───────────────┼───────────────────────────────────┤
+│ Event Loop          │ Node.js       │ Excelente para I/O-bound.         │
+│ (single-threaded)   │               │ Ruim para CPU-bound.              │
+│                     │               │ Sem overhead de context switch.   │
+│                     │               │ Sem race conditions em JS puro.   │
+├─────────────────────┼───────────────┼───────────────────────────────────┤
+│ Thread-per-request  │ Java (Tomcat) │ Cada request = 1 thread do SO.    │
+│                     │               │ ~1MB stack por thread.            │
+│                     │               │ Context switch caro (~1-10us).    │
+│                     │               │ Limite prático: ~10k threads.     │
+├─────────────────────┼───────────────┼───────────────────────────────────┤
+│ Virtual Threads     │ Java 21+      │ Threads leves gerenciadas pela    │
+│ (Project Loom)      │               │ JVM. ~1k bytes por thread.        │
+│                     │               │ Milhões de threads simultâneas.   │
+│                     │               │ Modelo síncrono, runtime async.   │
+├─────────────────────┼───────────────┼───────────────────────────────────┤
+│ Goroutines          │ Go            │ Green threads com scheduler M:N.  │
+│                     │               │ ~2KB stack inicial (cresce).      │
+│                     │               │ Channels para comunicação.        │
+│                     │               │ Preemption desde Go 1.14.         │
+├─────────────────────┼───────────────┼───────────────────────────────────┤
+│ Actor Model         │ Erlang/Elixir │ Processos isolados e leves.       │
+│                     │               │ Mailbox para comunicação.         │
+│                     │               │ Fault tolerance via supervisors.  │
+│                     │               │ Preemptive scheduling.            │
+├─────────────────────┼───────────────┼───────────────────────────────────┤
+│ async/await         │ Rust (tokio)  │ Zero-cost abstractions.           │
+│ (Futures)           │               │ Sem runtime overhead (compile-    │
+│                     │               │ time state machines).             │
+│                     │               │ Controle total de alocação.       │
+├─────────────────────┼───────────────┼───────────────────────────────────┤
+│ Multiplexed I/O     │ C (nginx)     │ Event loop manual com epoll.      │
+│                     │               │ Performance máxima.               │
+│                     │               │ Complexidade máxima de código.    │
+└─────────────────────┴───────────────┴───────────────────────────────────┘
+```
+
+A vantagem do Event Loop do Node.js é a **simplicidade do modelo mental**: não há locks, mutexes, deadlocks ou race conditions no código JavaScript (SharedArrayBuffer é exceção). O custo é que qualquer computação síncrona pesada bloqueia todo o sistema.
+
+---
+
+## Monitoramento do Event Loop em produção
+
+Medir o **Event Loop Lag** é essencial para detectar starvation antes que afete os usuários. O lag representa quanto tempo um callback fica esperando na fila antes de ser executado.
+
+```javascript
+// MÉTODO 1: Medição manual com setTimeout
+// Simples mas eficaz — mede o atraso real do Event Loop
+function medirEventLoopLag() {
+  const INTERVALO = 1000; // 1 segundo
+  let anterior = process.hrtime.bigint();
+
+  setInterval(() => {
+    const agora = process.hrtime.bigint();
+    const elapsed = Number(agora - anterior) / 1e6; // ms
+    const lag = elapsed - INTERVALO;
+    console.log(`Event Loop lag: ${lag.toFixed(2)}ms`);
+    anterior = agora;
+  }, INTERVALO);
+}
+
+// MÉTODO 2: perf_hooks (Node.js 12+) — mais preciso
+const { monitorEventLoopDelay } = require('perf_hooks');
+
+const histogram = monitorEventLoopDelay({ resolution: 20 }); // 20ms
+histogram.enable();
+
+setInterval(() => {
+  console.log(`EL delay — min: ${ns2ms(histogram.min)}ms, ` +
+    `max: ${ns2ms(histogram.max)}ms, ` +
+    `mean: ${ns2ms(histogram.mean)}ms, ` +
+    `p99: ${ns2ms(histogram.percentile(99))}ms`);
+  histogram.reset();
+}, 5000);
+
+function ns2ms(ns) { return (ns / 1e6).toFixed(2); }
+
+// MÉTODO 3: Exportar métricas para Prometheus
+const client = require('prom-client');
+
+// Coletor built-in do prom-client já expõe:
+// - nodejs_eventloop_lag_seconds (gauge)
+// - nodejs_eventloop_lag_p50_seconds (summary)
+// - nodejs_eventloop_lag_p99_seconds (summary)
+const collectDefaultMetrics = client.collectDefaultMetrics;
+collectDefaultMetrics({ prefix: 'app_' });
+
+// Alertas recomendados:
+// - WARN:  p99 > 100ms
+// - CRIT:  p99 > 500ms
+// - FATAL: p99 > 1000ms (provavelmente bloqueio síncrono)
+```
+
+### Diagnóstico com --prof e clinic.js
+
+```bash
+# Gerar profile V8 para identificar funções bloqueantes
+node --prof app.js
+# Após coletar, processar o log:
+node --prof-process isolate-*.log > processed.txt
+
+# Clinic.js — ferramenta visual de diagnóstico
+npx clinic doctor -- node app.js
+# Gera relatório HTML mostrando:
+# - Event Loop delay ao longo do tempo
+# - CPU usage por fase do Event Loop
+# - GC (Garbage Collection) pauses
+# - Active handles/requests
+
+# Flame graph para identificar hot paths
+npx clinic flame -- node app.js
+# Mostra exatamente quais funções consomem mais tempo
+# na thread principal do Event Loop
+```
+
+### Checklist de performance para Event Loop em produção
+
+```
+1. UV_THREADPOOL_SIZE ajustado para a carga de trabalho
+   - Regra geral: num_cores * 2 para I/O-heavy
+   - Máximo: 1024 threads
+
+2. Nenhuma operação síncrona em hot paths
+   - Proibido: fs.*Sync, crypto.*Sync, JSON.parse de payloads grandes
+   - Use ESLint rule: no-sync
+
+3. Monitoramento ativo de Event Loop lag
+   - perf_hooks.monitorEventLoopDelay() com histograma
+   - Alertas em p99 > 100ms
+
+4. Computação CPU-intensive isolada
+   - worker_threads para operações na mesma instância
+   - child_process.fork() para isolamento de memória
+   - Fila de trabalho (BullMQ/Agenda) para jobs assíncronos
+
+5. DNS caching implementado
+   - dns.lookup() consome thread pool
+   - Use cacheable-lookup ou dns.resolve() com cache manual
+
+6. Streaming para payloads grandes
+   - Nunca buffer inteiro em memória (JSON.parse de 100MB)
+   - Use streams: JSONStream, csv-parser, readline
+
+7. Proteção contra ReDoS
+   - Validar/limitar input antes de aplicar regex
+   - Use re2 (engine sem backtracking) para regex de user input
+```
+
+---
+
+## Resumo mental: o modelo completo
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                                                                 │
+│  Código JS executa na V8 (Call Stack)                           │
+│       │                                                         │
+│       ▼                                                         │
+│  Encontrou operação assíncrona?                                 │
+│       │                                                         │
+│       ├── I/O de rede (TCP/HTTP) ──► kernel async (epoll/kqueue)│
+│       │                                                         │
+│       ├── I/O de disco (fs.*) ────► libuv thread pool           │
+│       │                                                         │
+│       ├── DNS lookup ─────────────► libuv thread pool           │
+│       │                                                         │
+│       ├── crypto/zlib ────────────► libuv thread pool           │
+│       │                                                         │
+│       ├── setTimeout ─────────────► heap de timers (min-heap)   │
+│       │                                                         │
+│       ├── setImmediate ───────────► check queue                 │
+│       │                                                         │
+│       ├── Promise.then ───────────► microtask queue             │
+│       │                                                         │
+│       └── process.nextTick ───────► nextTick queue              │
+│                                                                 │
+│  Event Loop (libuv) orquestra tudo:                             │
+│  - Drena nextTick + microtasks entre cada fase                  │
+│  - Percorre timers → pending → poll → check → close            │
+│  - Bloqueia no poll quando não há trabalho pendente             │
+│  - Encerra quando não há mais handles/requests ativos           │
+│                                                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+O Event Loop é elegante na sua simplicidade: uma única thread que nunca espera, delegando todo trabalho bloqueante para o kernel ou para threads auxiliares. Dominar seus mecanismos internos - fases, prioridades de microtasks, thread pool, e estratégias de mitigação de starvation - é o que separa um desenvolvedor Node.js que "funciona" de um que constrói sistemas resilientes e performáticos em escala de produção.

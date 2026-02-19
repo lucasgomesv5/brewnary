@@ -1,0 +1,367 @@
+---
+title: "WebSockets e Comunicação Real-time"
+description: "Protocolo WebSocket, Server-Sent Events, Socket.IO, scaling com Redis Pub/Sub, padrões de presença e tipagem de mensagens"
+track: "backend"
+order: 20
+section: "Escalabilidade"
+priority: "medium"
+tags: ["websocket", "real-time", "socket.io", "SSE", "pub-sub", "redis", "scaling"]
+prerequisites: ["rest-apis", "event-loop"]
+keyTakeaways:
+  - "WebSocket (RFC 6455) estabelece uma conexão bidirecional persistente sobre TCP — ideal para dados que fluem em ambas as direções (chat, gaming, colaboração)"
+  - "Server-Sent Events (SSE) são unidirecionais (server → client) sobre HTTP — mais simples que WebSocket para notificações, feeds e dashboards"
+  - "WebSocket começa como HTTP Upgrade e depois opera em frames binários/texto com overhead mínimo (~2 bytes por frame vs headers HTTP inteiros)"
+  - "Scaling WebSockets para múltiplas instâncias exige um backbone de pub/sub (Redis, NATS) para propagar mensagens entre processos"
+  - "Socket.IO adiciona reconexão automática, fallback para polling, rooms, namespaces e acknowledgments — mas NÃO é WebSocket puro"
+---
+
+# WebSockets e Comunicação Real-time
+
+HTTP foi projetado para request-response: o cliente pede, o servidor responde, a conexão encerra (logicamente). Para aplicações que precisam de atualizações em tempo real — chat, dashboards ao vivo, editores colaborativos, gaming — esse modelo é insuficiente. WebSockets e Server-Sent Events resolvem isso de formas diferentes.
+
+---
+
+## 1. O Problema: Limitações do HTTP para Real-time
+
+### 1.1 Polling (Ingênuo)
+
+```javascript
+// ❌ Short polling — request a cada N segundos
+setInterval(async () => {
+  const res = await fetch('/api/messages');
+  const messages = await res.json();
+  render(messages);
+}, 1000);
+// Problemas: 1 request/s × 10.000 usuários = 10.000 req/s no servidor
+// A maioria retorna "sem novidades" — desperdício massivo
+```
+
+### 1.2 Long Polling
+
+```javascript
+// Melhor que short polling, mas ainda HTTP
+async function longPoll() {
+  const res = await fetch('/api/messages?since=lastId');
+  const messages = await res.json();
+  render(messages);
+  longPoll(); // Reconecta imediatamente
+}
+// O servidor segura a conexão aberta até ter dados novos
+// Reduz requests vazios, mas cada resposta exige nova conexão HTTP
+```
+
+---
+
+## 2. WebSocket (RFC 6455)
+
+### 2.1 O Handshake
+
+WebSocket começa como uma requisição HTTP com `Upgrade`:
+
+```http
+GET /chat HTTP/1.1
+Host: server.example.com
+Upgrade: websocket
+Connection: Upgrade
+Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==
+Sec-WebSocket-Version: 13
+```
+
+```http
+HTTP/1.1 101 Switching Protocols
+Upgrade: websocket
+Connection: Upgrade
+Sec-WebSocket-Accept: s3pPLMBiTxaQ9kYGzzhZRbK+xOo=
+```
+
+Após o handshake, a conexão TCP permanece aberta e ambos os lados podem enviar dados a qualquer momento.
+
+### 2.2 Servidor WebSocket com Node.js
+
+```javascript
+import { WebSocketServer } from 'ws';
+
+const wss = new WebSocketServer({ port: 8080 });
+
+// Set para rastrear conexões ativas
+const clients = new Set();
+
+wss.on('connection', (ws) => {
+  clients.add(ws);
+  console.log(`Conectado. Total: ${clients.size}`);
+
+  ws.on('message', (data) => {
+    const message = JSON.parse(data);
+
+    // Broadcast para todos os outros clientes
+    for (const client of clients) {
+      if (client !== ws && client.readyState === ws.OPEN) {
+        client.send(JSON.stringify(message));
+      }
+    }
+  });
+
+  ws.on('close', () => {
+    clients.delete(ws);
+  });
+
+  // Heartbeat para detectar conexões mortas
+  ws.isAlive = true;
+  ws.on('pong', () => { ws.isAlive = true; });
+});
+
+// Ping a cada 30s para detectar desconexões
+setInterval(() => {
+  for (const ws of wss.clients) {
+    if (!ws.isAlive) return ws.terminate();
+    ws.isAlive = false;
+    ws.ping();
+  }
+}, 30000);
+```
+
+### 2.3 Cliente WebSocket
+
+```javascript
+const ws = new WebSocket('ws://localhost:8080');
+
+ws.onopen = () => {
+  console.log('Conectado');
+  ws.send(JSON.stringify({ type: 'join', room: 'general' }));
+};
+
+ws.onmessage = (event) => {
+  const message = JSON.parse(event.data);
+  console.log('Recebido:', message);
+};
+
+ws.onclose = (event) => {
+  console.log(`Desconectado: ${event.code} ${event.reason}`);
+  // Reconexão com backoff exponencial
+  setTimeout(() => reconnect(), Math.min(1000 * 2 ** attempts, 30000));
+};
+
+ws.onerror = (error) => {
+  console.error('Erro:', error);
+};
+```
+
+---
+
+## 3. Server-Sent Events (SSE)
+
+SSE é unidirecional (server → client) sobre HTTP padrão. Mais simples que WebSocket quando só o servidor precisa enviar dados.
+
+### 3.1 Servidor SSE
+
+```javascript
+// Express
+app.get('/events', (req, res) => {
+  res.setHeader('Content-Type', 'text/event-stream');
+  res.setHeader('Cache-Control', 'no-cache');
+  res.setHeader('Connection', 'keep-alive');
+
+  // Envia evento a cada segundo
+  const interval = setInterval(() => {
+    const data = { timestamp: Date.now(), value: Math.random() };
+    res.write(`data: ${JSON.stringify(data)}\n\n`);
+  }, 1000);
+
+  // Eventos nomeados
+  res.write(`event: notification\ndata: {"msg": "Bem-vindo!"}\n\n`);
+
+  req.on('close', () => {
+    clearInterval(interval);
+  });
+});
+```
+
+### 3.2 Cliente SSE
+
+```javascript
+const source = new EventSource('/events');
+
+// Eventos genéricos (sem nome)
+source.onmessage = (event) => {
+  const data = JSON.parse(event.data);
+  console.log('Dados:', data);
+};
+
+// Eventos nomeados
+source.addEventListener('notification', (event) => {
+  const data = JSON.parse(event.data);
+  console.log('Notificação:', data.msg);
+});
+
+// Reconexão automática embutida no protocolo!
+source.onerror = () => {
+  console.log('Reconectando automaticamente...');
+};
+```
+
+### 3.3 WebSocket vs SSE
+
+| Aspecto | WebSocket | SSE |
+|---------|-----------|-----|
+| Direção | Bidirecional | Server → Client |
+| Protocolo | ws:// (TCP próprio) | HTTP padrão |
+| Reconexão | Manual | Automática |
+| Dados binários | Sim | Não (texto) |
+| Proxies/firewalls | Pode ser bloqueado | Funciona sempre (é HTTP) |
+| Complexidade | Maior | Menor |
+| Caso de uso | Chat, gaming, colaboração | Notificações, feeds, dashboards |
+
+---
+
+## 4. Scaling WebSockets
+
+### 4.1 O Problema: Múltiplas Instâncias
+
+Com um servidor, broadcast é simples (iterar sobre `clients`). Com múltiplas instâncias atrás de um load balancer, um cliente conectado na instância A não recebe mensagens de clientes na instância B.
+
+### 4.2 Redis Pub/Sub como Backbone
+
+```javascript
+import { createClient } from 'redis';
+
+const pub = createClient();
+const sub = createClient();
+await pub.connect();
+await sub.connect();
+
+// Quando receber mensagem de um cliente local, publica no Redis
+ws.on('message', (data) => {
+  pub.publish('chat:general', data);
+});
+
+// Todas as instâncias escutam o canal Redis
+await sub.subscribe('chat:general', (message) => {
+  // Envia para todos os clientes locais desta instância
+  for (const client of localClients) {
+    if (client.readyState === WebSocket.OPEN) {
+      client.send(message);
+    }
+  }
+});
+```
+
+### 4.3 Sticky Sessions
+
+WebSocket requer que todas as mensagens de uma conexão cheguem à mesma instância. Configure o load balancer para **sticky sessions** (baseado em IP ou cookie):
+
+```nginx
+upstream websocket_servers {
+    ip_hash;  # Sticky sessions por IP
+    server app1:8080;
+    server app2:8080;
+    server app3:8080;
+}
+
+server {
+    location /ws {
+        proxy_pass http://websocket_servers;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+    }
+}
+```
+
+---
+
+## 5. Socket.IO
+
+Socket.IO não é WebSocket puro — é uma abstração que adiciona features sobre WebSocket (com fallback para HTTP long-polling):
+
+```javascript
+// Servidor
+import { Server } from 'socket.io';
+import { createAdapter } from '@socket.io/redis-adapter';
+
+const io = new Server(server, {
+  cors: { origin: '*' },
+});
+
+// Redis adapter para scaling multi-instância (embutido)
+const pubClient = createClient({ url: 'redis://localhost:6379' });
+const subClient = pubClient.duplicate();
+await pubClient.connect();
+await subClient.connect();
+io.adapter(createAdapter(pubClient, subClient));
+
+io.on('connection', (socket) => {
+  // Rooms: agrupamento lógico de sockets
+  socket.join('room:general');
+
+  // Broadcast para a room (exclui o sender)
+  socket.on('chat:message', (data) => {
+    socket.to('room:general').emit('chat:message', {
+      ...data,
+      userId: socket.data.userId,
+      timestamp: Date.now(),
+    });
+  });
+
+  // Acknowledgment: confirmação de recebimento
+  socket.on('message:send', (data, callback) => {
+    saveToDatabase(data);
+    callback({ status: 'ok', id: data.id });
+  });
+
+  // Presença
+  socket.on('disconnect', () => {
+    io.to('room:general').emit('user:left', { userId: socket.data.userId });
+  });
+});
+```
+
+---
+
+## 6. Tipagem de Mensagens
+
+Em produção, mensagens não-tipadas viram bugs. Defina um protocolo:
+
+```typescript
+// Protocolo tipado para WebSocket
+type ClientMessage =
+  | { type: 'chat:send'; roomId: string; content: string }
+  | { type: 'room:join'; roomId: string }
+  | { type: 'room:leave'; roomId: string }
+  | { type: 'typing:start'; roomId: string }
+  | { type: 'typing:stop'; roomId: string };
+
+type ServerMessage =
+  | { type: 'chat:message'; roomId: string; userId: string; content: string; timestamp: number }
+  | { type: 'user:joined'; roomId: string; userId: string }
+  | { type: 'user:left'; roomId: string; userId: string }
+  | { type: 'typing:update'; roomId: string; users: string[] }
+  | { type: 'error'; code: string; message: string };
+
+// Validação no servidor
+function handleMessage(ws: WebSocket, raw: string) {
+  const message: ClientMessage = JSON.parse(raw);
+
+  switch (message.type) {
+    case 'chat:send':
+      broadcast(message.roomId, {
+        type: 'chat:message',
+        roomId: message.roomId,
+        userId: ws.userId,
+        content: message.content,
+        timestamp: Date.now(),
+      });
+      break;
+    // ...
+  }
+}
+```
+
+---
+
+## 7. Referências e Aprofundamento
+
+- **RFC 6455** — The WebSocket Protocol (especificação formal)
+- **MDN: WebSocket API** — referência da API do browser
+- **MDN: Server-Sent Events** — referência da API EventSource
+- **Socket.IO Documentation** — guia completo com adapters e scaling
+- **"Designing Data-Intensive Applications"** (Kleppmann) — capítulo sobre stream processing

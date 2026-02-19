@@ -1,0 +1,1387 @@
+---
+title: "Java — Fundamentos e Ecossistema"
+description: "JVM, tipos, OOP, generics, collections, streams, concorrência, módulos, Maven/Gradle, Spring Boot e os padrões que dominam o backend enterprise"
+track: "backend"
+order: 7
+section: "Java"
+priority: "high"
+tags: ["java", "jvm", "spring-boot", "oop", "collections", "streams", "concorrência", "maven"]
+prerequisites: []
+keyTakeaways:
+  - "A JVM é uma máquina virtual que executa bytecode — compilação AOT (GraalVM) e JIT (HotSpot C2) permitem performance próxima de C em muitos cenários"
+  - "Java é fortemente tipada com generics (type erasure), um sistema de collections rico e Streams API para processamento funcional"
+  - "Spring Boot é o framework dominante: IoC container, auto-configuration, starters e profiles simplificam aplicações enterprise"
+  - "Concorrência em Java evoluiu: de synchronized/wait/notify para Executors, CompletableFuture e Virtual Threads (Project Loom)"
+  - "Maven e Gradle gerenciam builds e dependências — entender o lifecycle e dependency management é essencial para projetos reais"
+---
+
+## Por que Java
+
+Java foi criada por James Gosling na Sun Microsystems em 1995. O slogan original era **"Write Once, Run Anywhere"** — a ideia de que o mesmo bytecode roda em qualquer plataforma com uma JVM. Quase 30 anos depois, Java continua sendo uma das linguagens mais usadas no mundo, especialmente no backend enterprise.
+
+A Sun foi adquirida pela Oracle em 2010, que assumiu o desenvolvimento da linguagem e da JVM. Desde o Java 9 (2017), o modelo de releases mudou para um ciclo de **6 meses** com versões LTS (Long-Term Support) a cada 2 anos:
+
+```
+Timeline de versões LTS relevantes:
+  Java 8  (2014) — Lambdas, Streams API, Optional      [LTS, ainda amplamente usado]
+  Java 11 (2018) — Modularidade estável, HTTP Client    [LTS]
+  Java 17 (2021) — Sealed classes, pattern matching     [LTS]
+  Java 21 (2023) — Virtual Threads, record patterns     [LTS, recomendado para novos projetos]
+  Java 25 (2025) — Próximo LTS previsto                 [LTS]
+```
+
+### Onde Java domina
+
+- **Backend enterprise** — bancos, seguradoras, telecoms, governo. Spring Boot e Jakarta EE são os frameworks dominantes.
+- **Android** — Kotlin é a linguagem preferida, mas a runtime é baseada na JVM (ART) e bilhões de linhas de Java existem em apps Android.
+- **Big Data** — Hadoop, Spark, Kafka, Flink, Elasticsearch — todo o ecossistema big data da Apache Foundation é escrito em Java ou Scala (JVM).
+- **Microserviços** — Spring Boot, Quarkus, Micronaut competem nesse espaço.
+
+### O ecossistema JVM
+
+Java não é apenas a linguagem — é a plataforma. Outras linguagens rodam na JVM e interoperam com bibliotecas Java:
+
+```
+┌──────────────────────────────────────────────────────┐
+│                   ECOSSISTEMA JVM                      │
+│                                                        │
+│  Linguagens:  Java  |  Kotlin  |  Scala  |  Clojure   │
+│               Groovy |  JRuby  |  Jython              │
+│                                                        │
+│  Build Tools: Maven  |  Gradle  |  Bazel              │
+│                                                        │
+│  Frameworks:  Spring Boot  |  Quarkus  |  Micronaut   │
+│               Jakarta EE   |  Vert.x                  │
+│                                                        │
+│  Runtime:     HotSpot (Oracle/OpenJDK)                │
+│               GraalVM  |  Eclipse OpenJ9              │
+│               Amazon Corretto  |  Azul Zulu           │
+└──────────────────────────────────────────────────────┘
+```
+
+---
+
+## JVM e Compilação
+
+A JVM (Java Virtual Machine) é uma máquina de stack que executa **bytecode**. O processo de compilação em Java é dividido em duas fases:
+
+```
+             Compile-time                    Runtime
+  ┌────────┐           ┌──────────┐         ┌───────────┐
+  │ .java  │──javac──►│ .class   │──JVM──►│ Código de │
+  │(source)│          │(bytecode)│        │  máquina  │
+  └────────┘          └──────────┘        └───────────┘
+                                              ▲
+                                              │
+                                     JIT Compilation
+                                     (C1 e C2 compilers)
+```
+
+### Bytecode e Class Loading
+
+O `javac` compila `.java` em `.class` (bytecode). O bytecode é uma representação intermediária independente de plataforma. Cada `.class` é carregado pelo **ClassLoader** em tempo de execução.
+
+```
+ClassLoader Hierarchy:
+  Bootstrap ClassLoader     ← carrega rt.jar (classes core: java.lang.*, java.util.*)
+       │
+  Platform ClassLoader      ← carrega módulos da plataforma (java.sql, java.xml)
+       │
+  Application ClassLoader   ← carrega classes da aplicação (classpath)
+       │
+  Custom ClassLoaders        ← frameworks (Spring, Tomcat) usam seus próprios
+```
+
+O modelo de delegação funciona bottom-up: antes de carregar uma classe, o ClassLoader delega para o pai. Isso garante que `java.lang.String` seja sempre a mesma classe, independente do classpath da aplicação.
+
+### JIT Compilation: C1 e C2
+
+A JVM não interpreta bytecode para sempre. O **JIT (Just-In-Time) compiler** identifica "hot spots" (código executado frequentemente) e os compila para código de máquina nativo.
+
+```
+┌───────────────────────────────────────────────────────┐
+│              PIPELINE DE EXECUÇÃO HOTSPOT              │
+│                                                        │
+│  Bytecode                                              │
+│     │                                                  │
+│     ▼                                                  │
+│  Interpreter  (execução imediata, sem otimização)      │
+│     │                                                  │
+│     │  método chamado ~1.500 vezes                     │
+│     ▼                                                  │
+│  C1 Compiler  (compilação rápida, otimizações leves)   │
+│     │          inlining simples, branch profiling       │
+│     │                                                  │
+│     │  método chamado ~10.000 vezes                    │
+│     ▼                                                  │
+│  C2 Compiler  (compilação lenta, otimizações agressivas)│
+│               escape analysis, loop unrolling,          │
+│               vectorização, inlining profundo           │
+│               → performance próxima de C/C++           │
+└───────────────────────────────────────────────────────┘
+```
+
+Esse modelo de **tiered compilation** explica por que aplicações Java "aquecem" — os primeiros requests são lentos (interpretados), mas após warmup a performance estabiliza em níveis muito altos.
+
+### Garbage Collection
+
+A JVM gerencia memória automaticamente. O heap é dividido em gerações:
+
+```
+┌──────────────────────────────────────────────────┐
+│                    JVM HEAP                        │
+│                                                    │
+│  ┌─────────────────────┐  ┌────────────────────┐  │
+│  │    Young Generation  │  │  Old Generation    │  │
+│  │  ┌──────┬──────────┐│  │                    │  │
+│  │  │ Eden │ Survivor ││  │  Objetos que       │  │
+│  │  │      │  S0 | S1 ││  │  sobreviveram      │  │
+│  │  │(novos│          ││  │  múltiplos GCs      │  │
+│  │  │ obj) │          ││  │                    │  │
+│  │  └──────┴──────────┘│  │                    │  │
+│  └─────────────────────┘  └────────────────────┘  │
+│     Minor GC (rápido)       Major GC (lento)       │
+│     ~ms                     ~10-100ms              │
+└──────────────────────────────────────────────────┘
+```
+
+**Algoritmos de GC disponíveis:**
+
+| GC | Flag | Característica | Quando usar |
+|-----|------|---------------|-------------|
+| G1 | `-XX:+UseG1GC` | Default desde Java 9. Divide heap em regiões. Pausas previsíveis (~200ms target). | Workloads genéricos, heaps de 4-32 GB |
+| ZGC | `-XX:+UseZGC` | Pausas sub-milissegundo (< 1ms). Concurrent. | Heaps grandes (TB), latência crítica |
+| Shenandoah | `-XX:+UseShenandoahGC` | Similar ao ZGC, pausas ultra-baixas. | Alternativa ao ZGC (Red Hat) |
+| Parallel | `-XX:+UseParallelGC` | Throughput máximo, pausas maiores. | Batch processing, throughput > latência |
+| Serial | `-XX:+UseSerialGC` | Single-threaded. Menor footprint. | Containers com pouca memória, CLIs |
+
+### GraalVM e Native Image
+
+GraalVM oferece compilação **AOT (Ahead-of-Time)** via `native-image`, gerando um executável nativo que não precisa de JVM para rodar:
+
+```
+JVM tradicional:                  GraalVM Native Image:
+  Startup: ~2-5 segundos           Startup: ~50ms
+  Memória: ~200-500 MB             Memória: ~30-80 MB
+  Peak perf: excelente (C2)        Peak perf: boa (mas sem JIT)
+  Ideal: serviços long-running     Ideal: serverless, CLIs, containers
+```
+
+```bash
+# Compilar para native image (requer GraalVM instalado)
+mvn package -Pnative
+
+# Ou com Gradle
+./gradlew nativeCompile
+```
+
+Frameworks como Quarkus e Micronaut foram projetados para native image. Spring Boot 3+ também suporta, mas com restrições em reflection e proxies dinâmicos.
+
+---
+
+## Sintaxe e Tipos
+
+### Primitivos vs Objetos
+
+Java tem 8 tipos primitivos que vivem na stack (não são objetos):
+
+```java
+// Primitivos — stack, sem overhead de objeto
+byte    b = 127;          // 8 bits,  -128 a 127
+short   s = 32_767;       // 16 bits, -32768 a 32767
+int     i = 2_147_483_647;// 32 bits (default para inteiros)
+long    l = 9_223_372_036_854_775_807L; // 64 bits
+float   f = 3.14f;        // 32 bits IEEE 754
+double  d = 3.141592653;  // 64 bits IEEE 754 (default para decimais)
+boolean flag = true;       // true ou false
+char    c = 'A';           // 16 bits Unicode (UTF-16)
+
+// Wrappers (objetos) — heap, autoboxing/unboxing
+Integer  wi = 42;          // autoboxing: int → Integer
+int      ui = wi;          // unboxing: Integer → int
+```
+
+**Armadilha do autoboxing:**
+
+```java
+Integer a = 127;
+Integer b = 127;
+System.out.println(a == b);   // true  (cache de -128 a 127)
+
+Integer c = 128;
+Integer d = 128;
+System.out.println(c == d);   // false (objetos diferentes no heap!)
+System.out.println(c.equals(d)); // true (comparação por valor)
+```
+
+A JVM mantém um cache de `Integer` de -128 a 127 (Integer Cache). Fora desse range, cada autoboxing cria um objeto novo. **Sempre use `.equals()` para comparar wrappers.**
+
+### String Pool
+
+Strings literais são internadas automaticamente em um pool na memória:
+
+```java
+String s1 = "Java";          // vai para o String Pool
+String s2 = "Java";          // reutiliza a mesma referência do pool
+String s3 = new String("Java"); // cria um objeto NOVO no heap
+
+System.out.println(s1 == s2);   // true  (mesma referência no pool)
+System.out.println(s1 == s3);   // false (referências diferentes)
+System.out.println(s1.equals(s3)); // true  (mesmo conteúdo)
+```
+
+Strings em Java são **imutáveis**. Concatenação em loop cria objetos intermediários — use `StringBuilder` para concatenação intensiva:
+
+```java
+// Ruim — cria N objetos intermediários
+String result = "";
+for (int i = 0; i < 10_000; i++) {
+    result += i + ",";  // cada += cria um novo String
+}
+
+// Correto — um único buffer mutável
+StringBuilder sb = new StringBuilder();
+for (int i = 0; i < 10_000; i++) {
+    sb.append(i).append(",");
+}
+String result = sb.toString();
+```
+
+### Records (Java 16+)
+
+Records eliminam o boilerplate de classes de dados imutáveis. O compilador gera `equals()`, `hashCode()`, `toString()` e getters automaticamente:
+
+```java
+// Antes de records — 40+ linhas de boilerplate
+public class UserDTO {
+    private final String name;
+    private final String email;
+    private final int age;
+
+    public UserDTO(String name, String email, int age) {
+        this.name = name;
+        this.email = email;
+        this.age = age;
+    }
+
+    // + getters, equals, hashCode, toString...
+}
+
+// Com record — 1 linha
+public record UserDTO(String name, String email, int age) {}
+
+// Uso
+var user = new UserDTO("Lucas", "lucas@dev.com", 28);
+String name = user.name();  // getter gerado (sem prefixo "get")
+```
+
+Records podem ter construtores compactos para validação:
+
+```java
+public record Email(String value) {
+    public Email {  // construtor compacto — sem parênteses, sem atribuição
+        if (value == null || !value.contains("@")) {
+            throw new IllegalArgumentException("Email inválido: " + value);
+        }
+        value = value.trim().toLowerCase();  // reatribui o parâmetro
+    }
+}
+```
+
+### Sealed Classes (Java 17+)
+
+Sealed classes restringem quem pode estendê-las — modelam hierarquias fechadas:
+
+```java
+public sealed interface Shape
+    permits Circle, Rectangle, Triangle {
+    double area();
+}
+
+public record Circle(double radius) implements Shape {
+    public double area() { return Math.PI * radius * radius; }
+}
+
+public record Rectangle(double width, double height) implements Shape {
+    public double area() { return width * height; }
+}
+
+public record Triangle(double base, double height) implements Shape {
+    public double area() { return 0.5 * base * height; }
+}
+```
+
+### Pattern Matching (Java 21+)
+
+Pattern matching elimina casts manuais e permite switch expressions poderosas:
+
+```java
+// Pattern matching para instanceof (Java 16+)
+if (obj instanceof String s && s.length() > 5) {
+    System.out.println(s.toUpperCase());  // s já é String, sem cast
+}
+
+// Switch com pattern matching (Java 21+)
+String describe(Shape shape) {
+    return switch (shape) {
+        case Circle c when c.radius() > 100 -> "Círculo grande: r=" + c.radius();
+        case Circle c    -> "Círculo: r=" + c.radius();
+        case Rectangle r -> "Retângulo: %sx%s".formatted(r.width(), r.height());
+        case Triangle t  -> "Triângulo: base=" + t.base();
+        // Não precisa de default — o compilador sabe que Shape é sealed
+    };
+}
+```
+
+### var (Java 10+)
+
+Inferência de tipo local — o compilador deduz o tipo. Só funciona em variáveis locais:
+
+```java
+var users = new ArrayList<String>();    // tipo: ArrayList<String>
+var stream = users.stream();            // tipo: Stream<String>
+var count = users.size();               // tipo: int
+
+// Não funciona em:
+// - campos de classe
+// - parâmetros de método
+// - retorno de método
+```
+
+---
+
+## OOP em Java
+
+### Classes, Interfaces e Abstract Classes
+
+```java
+// Interface — contrato puro (pode ter default methods desde Java 8)
+public interface Notifier {
+    void send(String to, String message);
+
+    default void sendBatch(List<String> recipients, String message) {
+        recipients.forEach(r -> send(r, message));  // implementação default
+    }
+}
+
+// Abstract class — pode ter estado e implementação parcial
+public abstract class AbstractRepository<T, ID> {
+    protected final DataSource dataSource;
+
+    protected AbstractRepository(DataSource dataSource) {
+        this.dataSource = dataSource;
+    }
+
+    public abstract T findById(ID id);
+    public abstract void save(T entity);
+
+    // Método concreto compartilhado
+    protected Connection getConnection() throws SQLException {
+        return dataSource.getConnection();
+    }
+}
+
+// Classe concreta
+public class UserRepository extends AbstractRepository<User, Long> {
+    public UserRepository(DataSource ds) {
+        super(ds);
+    }
+
+    @Override
+    public User findById(Long id) {
+        // implementação com JDBC
+    }
+
+    @Override
+    public void save(User entity) {
+        // implementação com JDBC
+    }
+}
+```
+
+### Enums com Comportamento
+
+Enums em Java são classes completas — podem ter campos, construtores e métodos:
+
+```java
+public enum OrderStatus {
+    DRAFT("Rascunho") {
+        @Override
+        public boolean canTransitionTo(OrderStatus target) {
+            return target == CONFIRMED;
+        }
+    },
+    CONFIRMED("Confirmado") {
+        @Override
+        public boolean canTransitionTo(OrderStatus target) {
+            return target == SHIPPED || target == CANCELLED;
+        }
+    },
+    SHIPPED("Enviado") {
+        @Override
+        public boolean canTransitionTo(OrderStatus target) {
+            return target == DELIVERED;
+        }
+    },
+    DELIVERED("Entregue") {
+        @Override
+        public boolean canTransitionTo(OrderStatus target) {
+            return false;  // estado final
+        }
+    },
+    CANCELLED("Cancelado") {
+        @Override
+        public boolean canTransitionTo(OrderStatus target) {
+            return false;  // estado final
+        }
+    };
+
+    private final String label;
+
+    OrderStatus(String label) {
+        this.label = label;
+    }
+
+    public String getLabel() { return label; }
+    public abstract boolean canTransitionTo(OrderStatus target);
+}
+```
+
+### Composição sobre Herança
+
+Herança cria acoplamento forte e hierarquias frágeis. Composição (via injeção de dependência) é preferível na maioria dos casos:
+
+```java
+// RUIM — herança para reutilização de código
+class EmailNotifier extends Logger {  // EmailNotifier É-UM Logger? Não faz sentido.
+    void notify(String msg) {
+        log("Enviando email: " + msg);  // herdado de Logger
+        // enviar email...
+    }
+}
+
+// BOM — composição
+class EmailNotifier {
+    private final Logger logger;       // EmailNotifier USA um Logger
+    private final EmailClient client;
+
+    EmailNotifier(Logger logger, EmailClient client) {
+        this.logger = logger;
+        this.client = client;
+    }
+
+    void notify(String to, String msg) {
+        logger.info("Enviando email para {}: {}", to, msg);
+        client.send(to, msg);
+    }
+}
+```
+
+**Regra prática:** use herança quando existe uma relação "É-UM" genuína e o contrato do pai é estável. Use composição (e interfaces) para todo o resto.
+
+### SOLID na Prática
+
+```java
+// S — Single Responsibility
+// Cada classe tem uma única razão para mudar
+class OrderValidator {
+    boolean isValid(Order order) { /* validação */ }
+}
+class OrderPersistence {
+    void save(Order order) { /* persistência */ }
+}
+class OrderNotification {
+    void notifyCustomer(Order order) { /* notificação */ }
+}
+
+// O — Open/Closed
+// Aberto para extensão, fechado para modificação
+interface DiscountStrategy {
+    Money calculate(Order order);
+}
+class PercentageDiscount implements DiscountStrategy {
+    public Money calculate(Order order) { /* ... */ }
+}
+class FixedDiscount implements DiscountStrategy {
+    public Money calculate(Order order) { /* ... */ }
+}
+// Novo desconto = nova classe, sem alterar código existente
+
+// L — Liskov Substitution
+// Subtipos devem ser substituíveis por seus tipos base
+// Se Bird tem fly(), Penguin não deveria estender Bird diretamente
+
+// I — Interface Segregation
+// Interfaces específicas > interfaces genéricas
+interface Readable { byte[] read(); }
+interface Writable { void write(byte[] data); }
+// Em vez de uma interface monolítica ReadWriteExecuteDeleteArchive...
+
+// D — Dependency Inversion
+// Dependa de abstrações, não de implementações concretas
+class OrderService {
+    private final OrderRepository repository;  // interface, não PostgresOrderRepository
+    OrderService(OrderRepository repository) {
+        this.repository = repository;
+    }
+}
+```
+
+---
+
+## Generics e Type System
+
+Java usa **type erasure** — informações de tipo genérico existem apenas em tempo de compilação e são removidas no bytecode:
+
+```java
+// Em tempo de compilação:
+List<String> strings = new ArrayList<>();
+List<Integer> numbers = new ArrayList<>();
+
+// Após type erasure (bytecode):
+List strings = new ArrayList();  // tipo genérico apagado
+List numbers = new ArrayList();  // ambos são simplesmente List
+
+// Consequência: não é possível fazer isso:
+// if (obj instanceof List<String>) {}  // erro de compilação
+// new T()                              // impossível — T é apagado
+// T[] array = new T[10];               // impossível
+```
+
+### Bounded Type Parameters
+
+```java
+// Upper bound — T deve ser Comparable
+public static <T extends Comparable<T>> T max(T a, T b) {
+    return a.compareTo(b) >= 0 ? a : b;
+}
+
+// Múltiplos bounds — T deve ser Serializable E Comparable
+public static <T extends Serializable & Comparable<T>> void process(T item) {
+    // ...
+}
+
+// Wildcards
+public static double sum(List<? extends Number> numbers) {
+    return numbers.stream().mapToDouble(Number::doubleValue).sum();
+}
+
+// PECS: Producer Extends, Consumer Super
+// ? extends T → leitura (producer)
+// ? super T   → escrita (consumer)
+public static <T> void copy(List<? extends T> src, List<? super T> dest) {
+    for (T item : src) {
+        dest.add(item);
+    }
+}
+```
+
+---
+
+## Collections e Streams
+
+### Hierarquia de Collections
+
+```
+                       Iterable<E>
+                           │
+                      Collection<E>
+                     /     |        \
+                List<E>  Set<E>    Queue<E>
+                  |        |          |
+             ┌────┴───┐  ┌─┴──┐   ┌──┴──────┐
+         ArrayList  LinkedList  HashSet  TreeSet  PriorityQueue
+         (array     (doubly    (O(1)    (O(log n) (heap)
+          dinâmico)  linked)    hash)    sorted)
+
+                       Map<K,V>  (NÃO é Collection)
+                      /    |      \
+               HashMap  TreeMap  LinkedHashMap
+               (O(1))  (O(log n) (ordem de inserção)
+                        sorted)
+```
+
+### Escolhendo a Implementação Certa
+
+| Interface | Implementação | Acesso | Inserção | Busca | Ordem |
+|-----------|--------------|--------|----------|-------|-------|
+| List | ArrayList | O(1) index | O(n) meio, O(1) fim | O(n) | Inserção |
+| List | LinkedList | O(n) | O(1) início/fim | O(n) | Inserção |
+| Set | HashSet | - | O(1) amortizado | O(1) amortizado | Nenhuma |
+| Set | TreeSet | - | O(log n) | O(log n) | Natural/Comparator |
+| Set | LinkedHashSet | - | O(1) amortizado | O(1) amortizado | Inserção |
+| Map | HashMap | O(1) | O(1) amortizado | O(1) amortizado | Nenhuma |
+| Map | TreeMap | O(log n) | O(log n) | O(log n) | Chave ordenada |
+| Queue | ArrayDeque | O(1) ends | O(1) ends | O(n) | FIFO/LIFO |
+| Queue | PriorityQueue | O(1) peek | O(log n) | O(n) | Prioridade (heap) |
+
+### Coleções Imutáveis
+
+```java
+// Java 9+ — factory methods que retornam coleções imutáveis
+List<String> languages = List.of("Java", "Kotlin", "Scala");
+Set<Integer> primes = Set.of(2, 3, 5, 7, 11);
+Map<String, Integer> scores = Map.of("Alice", 95, "Bob", 87);
+
+// Tentativa de modificação lança UnsupportedOperationException
+// languages.add("Go");  // UnsupportedOperationException
+
+// Collections.unmodifiableList — wrapper imutável sobre lista mutável
+List<String> mutable = new ArrayList<>(List.of("A", "B", "C"));
+List<String> unmodifiable = Collections.unmodifiableList(mutable);
+// unmodifiable.add("D");  // UnsupportedOperationException
+// MAS: mutable.add("D") ainda funciona e afeta unmodifiable!
+
+// Para cópia defensiva verdadeiramente imutável:
+List<String> safeCopy = List.copyOf(mutable);  // Java 10+
+```
+
+### Streams API
+
+Streams são pipelines de processamento declarativo sobre coleções. São **lazy** (operações intermediárias não executam até um terminal ser chamado) e **single-use** (não podem ser reutilizados):
+
+```java
+List<Order> orders = getOrders();
+
+// Pipeline: filter → map → collect
+List<String> highValueCustomers = orders.stream()
+    .filter(o -> o.getTotal().compareTo(BigDecimal.valueOf(1000)) > 0)  // intermediária
+    .map(Order::getCustomerEmail)         // intermediária
+    .distinct()                            // intermediária
+    .sorted()                              // intermediária
+    .collect(Collectors.toList());          // terminal — executa o pipeline
+
+// Reduce — acumula valores
+BigDecimal totalRevenue = orders.stream()
+    .map(Order::getTotal)
+    .reduce(BigDecimal.ZERO, BigDecimal::add);
+
+// Grouping
+Map<OrderStatus, List<Order>> byStatus = orders.stream()
+    .collect(Collectors.groupingBy(Order::getStatus));
+
+// Grouping com downstream collector
+Map<OrderStatus, Long> countByStatus = orders.stream()
+    .collect(Collectors.groupingBy(Order::getStatus, Collectors.counting()));
+
+// Partitioning (split em dois grupos: true/false)
+Map<Boolean, List<Order>> partitioned = orders.stream()
+    .collect(Collectors.partitioningBy(o -> o.getTotal().compareTo(BigDecimal.valueOf(500)) > 0));
+
+// flatMap — "achata" streams aninhados
+List<OrderItem> allItems = orders.stream()
+    .flatMap(o -> o.getItems().stream())   // Stream<Order> → Stream<OrderItem>
+    .collect(Collectors.toList());
+
+// toMap com merge function para lidar com chaves duplicadas
+Map<String, BigDecimal> revenueByCustomer = orders.stream()
+    .collect(Collectors.toMap(
+        Order::getCustomerEmail,
+        Order::getTotal,
+        BigDecimal::add   // merge: soma quando a chave é duplicada
+    ));
+```
+
+### Parallel Streams — Cuidado
+
+```java
+// Parallel streams usam o ForkJoinPool.commonPool()
+long count = orders.parallelStream()
+    .filter(o -> o.getStatus() == OrderStatus.CONFIRMED)
+    .count();
+
+// QUANDO usar parallel streams:
+//   - Dataset grande (> 10.000 elementos)
+//   - Operações CPU-bound (não I/O)
+//   - Sem efeitos colaterais
+//   - Sem operações ordered
+
+// QUANDO NÃO usar:
+//   - Datasets pequenos (overhead > ganho)
+//   - Operações com I/O (bloqueiam threads do common pool)
+//   - Quando a ordem importa
+//   - Dentro de um servidor web (common pool é compartilhado!)
+```
+
+### Optional
+
+Optional modela a ausência de valor sem null. Não é um substituto genérico para null — use em retornos de métodos que podem ou não ter resultado:
+
+```java
+// Criação
+Optional<User> user = Optional.of(someUser);           // valor obrigatório (NPE se null)
+Optional<User> maybe = Optional.ofNullable(nullableUser); // aceita null
+Optional<User> empty = Optional.empty();                // sem valor
+
+// Uso correto — transformações e fallbacks
+String email = findUserById(id)
+    .map(User::getEmail)
+    .map(String::toLowerCase)
+    .orElse("unknown@default.com");
+
+// orElseThrow — quando a ausência é um erro
+User user = findUserById(id)
+    .orElseThrow(() -> new UserNotFoundException(id));
+
+// ANTI-PATTERNS — não faça isso:
+// optional.get()                    → NoSuchElementException se vazio
+// optional.isPresent() + get()      → é basicamente um null check com extra steps
+// Optional como parâmetro de método → poluição de API
+// Optional em campos de classe      → não é serializável, overhead
+```
+
+---
+
+## Concorrência
+
+Java tem o suporte a concorrência mais maduro entre as linguagens mainstream. A evolução foi gradual:
+
+```
+Java 1.0 (1996)    Thread, Runnable, synchronized, wait/notify
+Java 5   (2004)    java.util.concurrent: Executors, ConcurrentHashMap, Locks, Atomic*
+Java 7   (2011)    Fork/Join Framework
+Java 8   (2014)    CompletableFuture, parallel streams
+Java 21  (2023)    Virtual Threads (Project Loom), Structured Concurrency (preview)
+```
+
+### Thread e Runnable
+
+```java
+// Forma básica — raramente usado diretamente em código moderno
+Thread thread = new Thread(() -> {
+    System.out.println("Executando em: " + Thread.currentThread().getName());
+});
+thread.start();  // start(), não run()! run() executa na thread atual
+
+// synchronized — exclusão mútua
+class Counter {
+    private int count = 0;
+
+    public synchronized void increment() {  // lock implícito no this
+        count++;  // não é atômico sem synchronized: read → increment → write
+    }
+
+    public synchronized int getCount() {
+        return count;
+    }
+}
+```
+
+**Problemas com synchronized:** granularidade grossa (lock no objeto inteiro), risco de deadlock se múltiplos locks são adquiridos em ordens diferentes, não suporta tryLock com timeout.
+
+### Executors e Thread Pools
+
+```java
+// Thread pool fixa — para workloads CPU-bound
+ExecutorService cpuPool = Executors.newFixedThreadPool(
+    Runtime.getRuntime().availableProcessors()
+);
+
+// Cached thread pool — para workloads I/O-bound com muitas tasks curtas
+ExecutorService ioPool = Executors.newCachedThreadPool();
+
+// Scheduled pool — para tasks periódicas
+ScheduledExecutorService scheduler = Executors.newScheduledThreadPool(2);
+scheduler.scheduleAtFixedRate(
+    () -> System.out.println("Health check"),
+    0, 30, TimeUnit.SECONDS
+);
+
+// Submeter tasks
+Future<String> future = cpuPool.submit(() -> {
+    // trabalho pesado
+    return "resultado";
+});
+
+String result = future.get(5, TimeUnit.SECONDS);  // bloqueia até resultado ou timeout
+
+// SEMPRE fazer shutdown
+cpuPool.shutdown();
+if (!cpuPool.awaitTermination(30, TimeUnit.SECONDS)) {
+    cpuPool.shutdownNow();
+}
+```
+
+### CompletableFuture
+
+CompletableFuture é a API de programação assíncrona composicional de Java. Permite encadear operações sem bloquear threads:
+
+```java
+CompletableFuture<UserProfile> profileFuture =
+    CompletableFuture.supplyAsync(() -> userService.findById(userId))
+        .thenApply(user -> enrichWithPreferences(user))
+        .thenApply(user -> enrichWithAvatar(user))
+        .exceptionally(ex -> {
+            log.error("Falha ao carregar perfil: {}", ex.getMessage());
+            return UserProfile.defaultProfile();
+        });
+
+// Composição de múltiplos futures — execução paralela
+CompletableFuture<Order> orderFuture = CompletableFuture.supplyAsync(
+    () -> orderService.findLatest(userId)
+);
+CompletableFuture<List<Notification>> notifFuture = CompletableFuture.supplyAsync(
+    () -> notificationService.findUnread(userId)
+);
+CompletableFuture<UserStats> statsFuture = CompletableFuture.supplyAsync(
+    () -> analyticsService.getStats(userId)
+);
+
+// Esperar todos completarem
+CompletableFuture<DashboardData> dashboard =
+    CompletableFuture.allOf(orderFuture, notifFuture, statsFuture)
+        .thenApply(ignored -> new DashboardData(
+            orderFuture.join(),
+            notifFuture.join(),
+            statsFuture.join()
+        ));
+```
+
+### Virtual Threads (Project Loom — Java 21+)
+
+Virtual Threads mudam fundamentalmente a concorrência em Java. São threads extremamente leves gerenciadas pela JVM (não pelo OS), permitindo milhões de threads simultâneas:
+
+```
+Platform Threads (antes):              Virtual Threads (Java 21+):
+  1 thread = 1 OS thread                1 virtual thread = ~poucos KB
+  Stack: ~1 MB cada                     Milhões simultâneas
+  Limite prático: ~5.000-10.000         Sem pool — cria e descarta
+  I/O bloqueia a OS thread              I/O "bloqueia" a virtual thread,
+                                         mas a carrier thread é liberada
+
+┌────────────────────────────────────────────────────┐
+│                   JVM                               │
+│  Virtual Thread 1 ─┐                                │
+│  Virtual Thread 2 ─┤   mount/unmount                │
+│  Virtual Thread 3 ─┼──► Carrier Thread (OS) 1       │
+│  ...               │                                │
+│  Virtual Thread N ─┤   mount/unmount                │
+│                    └──► Carrier Thread (OS) 2       │
+│                                                     │
+│  Carrier threads = Runtime.availableProcessors()    │
+│  Virtual threads = pode ser milhões                 │
+└────────────────────────────────────────────────────┘
+```
+
+```java
+// Criar virtual threads
+Thread vt = Thread.ofVirtual().name("worker-", 0).start(() -> {
+    // código que pode bloquear em I/O sem problema
+    var result = httpClient.send(request, BodyHandlers.ofString());
+    processResult(result);
+});
+
+// Executor de virtual threads — UMA virtual thread por task
+try (var executor = Executors.newVirtualThreadPerTaskExecutor()) {
+    List<Future<String>> futures = new ArrayList<>();
+
+    for (int i = 0; i < 100_000; i++) {
+        futures.add(executor.submit(() -> {
+            // Cada task roda em sua própria virtual thread
+            // I/O blocking é OK — a carrier thread é liberada
+            return fetchDataFromExternalAPI();
+        }));
+    }
+
+    // 100.000 requests concorrentes — impossível com platform threads
+    for (Future<String> f : futures) {
+        System.out.println(f.get());
+    }
+}
+
+// Spring Boot 3.2+ com virtual threads — apenas uma propriedade:
+// spring.threads.virtual.enabled=true
+// Cada request HTTP é tratado por uma virtual thread
+```
+
+**Quando usar Virtual Threads:**
+- Workloads I/O-bound (HTTP requests, queries ao banco, chamadas a serviços)
+- Cenários com alta concorrência (milhares de requests simultâneos)
+- Substituição direta de thread pools para I/O
+
+**Quando NÃO usar:**
+- Workloads CPU-bound (sem ganho — use platform threads com pool fixo)
+- Código com `synchronized` extensivo (pinning — a carrier thread fica presa)
+
+### Structured Concurrency (Preview — Java 21+)
+
+Structured concurrency garante que subtasks concorrentes são tratadas como uma unidade — se uma falha, as outras são canceladas:
+
+```java
+// Preview API — pode mudar
+try (var scope = new StructuredTaskScope.ShutdownOnFailure()) {
+    Subtask<User> userTask  = scope.fork(() -> userService.findById(id));
+    Subtask<Order> orderTask = scope.fork(() -> orderService.findLatest(id));
+    Subtask<List<Review>> reviewTask = scope.fork(() -> reviewService.findByUser(id));
+
+    scope.join();            // espera todas completarem
+    scope.throwIfFailed();   // propaga exceção se alguma falhou
+
+    // Todas completaram com sucesso
+    return new UserDashboard(
+        userTask.get(),
+        orderTask.get(),
+        reviewTask.get()
+    );
+}
+// Se userTask falhar, orderTask e reviewTask são canceladas automaticamente
+// Sem resource leak, sem tasks órfãs
+```
+
+---
+
+## Ecossistema e Build Tools
+
+### Maven
+
+Maven é o build tool mais estabelecido do ecossistema Java. Usa um modelo declarativo baseado em XML (`pom.xml`) e segue o princípio de **convention over configuration**.
+
+```xml
+<!-- pom.xml — projeto típico Spring Boot -->
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0
+         https://maven.apache.org/xsd/maven-4.0.0.xsd">
+    <modelVersion>4.0.0</modelVersion>
+
+    <parent>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-starter-parent</artifactId>
+        <version>3.3.0</version>
+    </parent>
+
+    <groupId>com.brewnary</groupId>
+    <artifactId>api</artifactId>
+    <version>1.0.0-SNAPSHOT</version>
+    <packaging>jar</packaging>
+
+    <properties>
+        <java.version>21</java.version>
+    </properties>
+
+    <dependencies>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-web</artifactId>
+            <!-- versão herdada do parent -->
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-data-jpa</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>org.postgresql</groupId>
+            <artifactId>postgresql</artifactId>
+            <scope>runtime</scope>
+        </dependency>
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-test</artifactId>
+            <scope>test</scope>
+        </dependency>
+    </dependencies>
+
+    <build>
+        <plugins>
+            <plugin>
+                <groupId>org.springframework.boot</groupId>
+                <artifactId>spring-boot-maven-plugin</artifactId>
+            </plugin>
+        </plugins>
+    </build>
+</project>
+```
+
+### Maven Lifecycle
+
+```
+┌───────────────────────────────────────────────────────────────┐
+│                    MAVEN BUILD LIFECYCLE                        │
+│                                                                 │
+│  validate → compile → test → package → verify → install → deploy│
+│                                                                 │
+│  Cada fase executa todas as anteriores:                         │
+│    mvn package = validate + compile + test + package            │
+│    mvn install = todas até install (copia para .m2 local)       │
+│    mvn deploy  = todas até deploy (publica no repositório)      │
+│                                                                 │
+│  Comandos comuns:                                               │
+│    mvn clean compile        → limpa target/ e compila           │
+│    mvn test                 → roda testes unitários             │
+│    mvn package -DskipTests  → gera JAR sem rodar testes         │
+│    mvn dependency:tree      → visualiza árvore de dependências  │
+│    mvn versions:display-dependency-updates → mostra updates     │
+└───────────────────────────────────────────────────────────────┘
+```
+
+### Dependency Scopes
+
+| Scope | Compilação | Teste | Runtime | Exemplo |
+|-------|-----------|-------|---------|---------|
+| compile (default) | Sim | Sim | Sim | spring-boot-starter-web |
+| provided | Sim | Sim | Não | servlet-api (container fornece) |
+| runtime | Não | Sim | Sim | postgresql (driver JDBC) |
+| test | Não | Sim | Não | JUnit, Mockito |
+| system | Sim | Sim | Sim | JAR local (evitar) |
+
+### Gradle (Kotlin DSL)
+
+Gradle é mais flexível e rápido que Maven (build cache, execução incremental, paralela). O Kotlin DSL (`build.gradle.kts`) oferece autocomplete e type safety:
+
+```kotlin
+// build.gradle.kts
+plugins {
+    java
+    id("org.springframework.boot") version "3.3.0"
+    id("io.spring.dependency-management") version "1.1.5"
+}
+
+group = "com.brewnary"
+version = "1.0.0-SNAPSHOT"
+
+java {
+    toolchain {
+        languageVersion = JavaLanguageVersion.of(21)
+    }
+}
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    implementation("org.springframework.boot:spring-boot-starter-web")
+    implementation("org.springframework.boot:spring-boot-starter-data-jpa")
+    runtimeOnly("org.postgresql:postgresql")
+    testImplementation("org.springframework.boot:spring-boot-starter-test")
+}
+
+tasks.test {
+    useJUnitPlatform()
+}
+```
+
+```bash
+# Comandos Gradle equivalentes
+./gradlew build           # compila, testa e gera JAR
+./gradlew test            # roda testes
+./gradlew bootRun         # inicia a aplicação Spring Boot
+./gradlew dependencies    # árvore de dependências
+./gradlew build -x test   # build sem testes
+```
+
+### Maven vs Gradle
+
+| Aspecto | Maven | Gradle |
+|---------|-------|--------|
+| Config | XML (declarativo) | Groovy/Kotlin (programático) |
+| Performance | Sem cache incremental | Build cache, incremental, paralelo |
+| Curva | Mais simples, mais rígido | Mais flexível, mais complexo |
+| Ecosistema | Mais plugins, mais documentação | Crescendo, default do Android |
+| Multi-module | Funciona bem | Funciona melhor (composite builds) |
+
+---
+
+## Spring Boot Essencial
+
+Spring Boot é o framework dominante para backend Java. Abstrai a complexidade do Spring Framework com **auto-configuration**, **starters** e **opinionated defaults**.
+
+### IoC e Dependency Injection
+
+O **IoC Container** (ApplicationContext) gerencia o ciclo de vida dos beans e injeta dependências automaticamente:
+
+```java
+// @Component — registra a classe como bean gerenciado pelo Spring
+// Estereótipos semânticos:
+//   @Service    — lógica de negócio
+//   @Repository — acesso a dados (+ tradução de exceções)
+//   @Controller — endpoints HTTP (Spring MVC)
+//   @RestController — @Controller + @ResponseBody
+
+@Service
+public class OrderService {
+
+    private final OrderRepository repository;
+    private final PaymentGateway paymentGateway;
+    private final EventPublisher eventPublisher;
+
+    // Constructor injection — forma recomendada
+    // Spring injeta automaticamente os beans correspondentes
+    public OrderService(
+            OrderRepository repository,
+            PaymentGateway paymentGateway,
+            EventPublisher eventPublisher) {
+        this.repository = repository;
+        this.paymentGateway = paymentGateway;
+        this.eventPublisher = eventPublisher;
+    }
+
+    @Transactional
+    public OrderResponse createOrder(CreateOrderRequest request) {
+        Order order = Order.create(request.customerId(), request.items());
+        paymentGateway.authorize(order.total());
+        repository.save(order);
+        eventPublisher.publish(new OrderCreatedEvent(order.id()));
+        return OrderResponse.from(order);
+    }
+}
+```
+
+### REST Controllers
+
+```java
+@RestController
+@RequestMapping("/api/v1/orders")
+public class OrderController {
+
+    private final OrderService orderService;
+
+    public OrderController(OrderService orderService) {
+        this.orderService = orderService;
+    }
+
+    @GetMapping
+    public ResponseEntity<Page<OrderSummary>> listOrders(
+            @RequestParam(defaultValue = "0") int page,
+            @RequestParam(defaultValue = "20") int size,
+            @RequestParam(required = false) OrderStatus status) {
+
+        Pageable pageable = PageRequest.of(page, size, Sort.by("createdAt").descending());
+        Page<OrderSummary> orders = orderService.findAll(status, pageable);
+        return ResponseEntity.ok(orders);
+    }
+
+    @GetMapping("/{id}")
+    public ResponseEntity<OrderResponse> getOrder(@PathVariable Long id) {
+        return orderService.findById(id)
+            .map(ResponseEntity::ok)
+            .orElse(ResponseEntity.notFound().build());
+    }
+
+    @PostMapping
+    public ResponseEntity<OrderResponse> createOrder(
+            @Valid @RequestBody CreateOrderRequest request) {
+        OrderResponse order = orderService.createOrder(request);
+        URI location = URI.create("/api/v1/orders/" + order.id());
+        return ResponseEntity.created(location).body(order);
+    }
+
+    @PatchMapping("/{id}/cancel")
+    public ResponseEntity<OrderResponse> cancelOrder(@PathVariable Long id) {
+        OrderResponse order = orderService.cancel(id);
+        return ResponseEntity.ok(order);
+    }
+
+    // Exception handler local ao controller
+    @ExceptionHandler(OrderNotFoundException.class)
+    public ResponseEntity<ProblemDetail> handleNotFound(OrderNotFoundException ex) {
+        ProblemDetail problem = ProblemDetail.forStatusAndDetail(
+            HttpStatus.NOT_FOUND, ex.getMessage()
+        );
+        problem.setTitle("Pedido não encontrado");
+        return ResponseEntity.status(HttpStatus.NOT_FOUND).body(problem);
+    }
+}
+```
+
+### JPA e Hibernate
+
+```java
+@Entity
+@Table(name = "orders")
+public class Order {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.IDENTITY)
+    private Long id;
+
+    @Column(nullable = false)
+    private String customerId;
+
+    @Enumerated(EnumType.STRING)
+    @Column(nullable = false)
+    private OrderStatus status;
+
+    @OneToMany(mappedBy = "order", cascade = CascadeType.ALL, orphanRemoval = true)
+    private List<OrderItem> items = new ArrayList<>();
+
+    @Column(nullable = false, updatable = false)
+    private LocalDateTime createdAt;
+
+    @Column(nullable = false)
+    private LocalDateTime updatedAt;
+
+    @PrePersist
+    void prePersist() {
+        createdAt = LocalDateTime.now();
+        updatedAt = createdAt;
+    }
+
+    @PreUpdate
+    void preUpdate() {
+        updatedAt = LocalDateTime.now();
+    }
+
+    // getters, lógica de domínio...
+}
+
+// Repository — Spring Data JPA gera a implementação automaticamente
+public interface OrderRepository extends JpaRepository<Order, Long> {
+
+    // Query derivada do nome do método
+    List<Order> findByCustomerIdAndStatus(String customerId, OrderStatus status);
+
+    // Query JPQL customizada
+    @Query("SELECT o FROM Order o JOIN FETCH o.items WHERE o.id = :id")
+    Optional<Order> findByIdWithItems(@Param("id") Long id);
+
+    // Query nativa quando necessário
+    @Query(value = "SELECT * FROM orders WHERE created_at > :since", nativeQuery = true)
+    List<Order> findRecentOrders(@Param("since") LocalDateTime since);
+
+    // Paginação
+    Page<Order> findByStatus(OrderStatus status, Pageable pageable);
+}
+```
+
+### Profiles e Configuração
+
+```yaml
+# application.yml — configuração default
+spring:
+  application:
+    name: brewnary-api
+  datasource:
+    url: jdbc:postgresql://localhost:5432/brewnary
+    username: ${DB_USERNAME:brewnary}
+    password: ${DB_PASSWORD:secret}
+  jpa:
+    open-in-view: false  # SEMPRE desabilitar — evita queries lazy fora da transação
+    hibernate:
+      ddl-auto: validate  # em prod: validate (nunca update/create)
+    properties:
+      hibernate:
+        default_batch_fetch_size: 20  # mitiga N+1
+
+server:
+  port: ${PORT:8080}
+
+---
+# application-dev.yml — profile de desenvolvimento
+spring:
+  config:
+    activate:
+      on-profile: dev
+  jpa:
+    show-sql: true
+    hibernate:
+      ddl-auto: create-drop
+
+---
+# application-prod.yml — profile de produção
+spring:
+  config:
+    activate:
+      on-profile: prod
+  datasource:
+    hikari:
+      maximum-pool-size: 20
+      minimum-idle: 5
+      connection-timeout: 30000
+```
+
+```bash
+# Ativar profile
+java -jar app.jar --spring.profiles.active=prod
+# ou via variável de ambiente
+SPRING_PROFILES_ACTIVE=prod java -jar app.jar
+```
+
+### Actuator — Observabilidade
+
+Spring Boot Actuator expõe endpoints de health check, métricas e informações da aplicação:
+
+```xml
+<dependency>
+    <groupId>org.springframework.boot</groupId>
+    <artifactId>spring-boot-starter-actuator</artifactId>
+</dependency>
+```
+
+```yaml
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health, info, metrics, prometheus
+  endpoint:
+    health:
+      show-details: when-authorized
+```
+
+```
+GET /actuator/health         → status da aplicação + dependências (DB, Redis, etc.)
+GET /actuator/metrics        → lista de métricas disponíveis
+GET /actuator/prometheus     → métricas em formato Prometheus (scrape target)
+GET /actuator/info           → informações customizáveis da aplicação
+```
+
+### Estrutura Recomendada de Projeto
+
+```
+src/
+├── main/
+│   ├── java/com/brewnary/api/
+│   │   ├── Application.java                  ← @SpringBootApplication (entry point)
+│   │   ├── order/                             ← package por domínio, não por camada
+│   │   │   ├── Order.java                     ← entity
+│   │   │   ├── OrderItem.java                 ← entity
+│   │   │   ├── OrderStatus.java               ← enum
+│   │   │   ├── OrderRepository.java           ← interface JPA
+│   │   │   ├── OrderService.java              ← lógica de negócio
+│   │   │   ├── OrderController.java           ← REST controller
+│   │   │   ├── CreateOrderRequest.java        ← DTO (record)
+│   │   │   ├── OrderResponse.java             ← DTO (record)
+│   │   │   └── OrderNotFoundException.java    ← exceção de domínio
+│   │   ├── customer/
+│   │   │   ├── Customer.java
+│   │   │   ├── CustomerRepository.java
+│   │   │   └── ...
+│   │   └── shared/
+│   │       ├── exception/
+│   │       │   └── GlobalExceptionHandler.java ← @ControllerAdvice
+│   │       └── config/
+│   │           └── SecurityConfig.java
+│   └── resources/
+│       ├── application.yml
+│       ├── application-dev.yml
+│       ├── application-prod.yml
+│       └── db/migration/                       ← Flyway migrations
+│           ├── V1__create_orders.sql
+│           └── V2__create_customers.sql
+└── test/
+    └── java/com/brewnary/api/
+        ├── order/
+        │   ├── OrderServiceTest.java           ← testes unitários
+        │   ├── OrderControllerTest.java        ← @WebMvcTest
+        │   └── OrderRepositoryTest.java        ← @DataJpaTest
+        └── integration/
+            └── OrderIntegrationTest.java       ← @SpringBootTest + Testcontainers
+```
+
+A organização por domínio (package-by-feature) escala melhor que organização por camada (package-by-layer). Cada pacote de domínio contém tudo relacionado àquele conceito — controller, service, repository, DTOs, exceções.
+
+---
+
+## Exercícios
+
+1. **JVM e GC**: Execute uma aplicação Java com `-verbose:gc -Xlog:gc*` e analise os logs de GC. Compare o comportamento de G1 vs ZGC com um benchmark que aloca muitos objetos de vida curta. Meça latência de pausa em cada algoritmo.
+
+2. **Records e Pattern Matching**: Modele um sistema de pagamentos usando sealed interfaces e records. Implemente `Payment` com subtipos `CreditCard`, `Pix`, `BankSlip`. Use pattern matching em switch para calcular taxas diferentes por tipo de pagamento.
+
+3. **Streams avançado**: Dado uma lista de transações financeiras, use Streams para: agrupar por categoria, calcular soma e média por grupo, encontrar a transação de maior valor por mês, e gerar um relatório com `Collectors.teeing()`.
+
+4. **Virtual Threads vs Platform Threads**: Crie um benchmark que faz 10.000 chamadas HTTP simuladas (com `Thread.sleep` para simular I/O). Compare tempo total usando `newFixedThreadPool(200)` vs `newVirtualThreadPerTaskExecutor()`. Meça memória com `Runtime.getRuntime().totalMemory()`.
+
+5. **Spring Boot completo**: Construa uma API REST com Spring Boot 3, Java 21, PostgreSQL (via Docker), Flyway para migrations, paginação cursor-based, error handling com `ProblemDetail` (RFC 7807), virtual threads habilitadas, e testes com Testcontainers.

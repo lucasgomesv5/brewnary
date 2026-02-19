@@ -1,0 +1,71 @@
+---
+title: "Refactoring"
+author: "Martin Fowler"
+description: "Tecnicas catalogadas para melhorar a estrutura interna do codigo sem mudar o comportamento externo"
+category: "Codigo"
+priority: "recommended"
+order: 6
+coverColor: "#10B981"
+---
+
+## Por que ler
+
+Refactoring nao e "reescrever". E melhorar a estrutura interna do codigo SEM mudar o comportamento externo. Este livro cataloga tecnicas especificas com nome e receita.
+
+## Conceitos-chave do livro
+
+**Code Smells -- Sinais de que algo precisa mudar:**
+```
+Long Method:       Função com mais de ~20 linhas
+Large Class:       Classe fazendo muitas coisas
+Feature Envy:      Método que usa mais dados de OUTRA classe
+Primitive Obsession: Usar string/number em vez de objetos de domínio
+Shotgun Surgery:   Uma mudança afeta muitos arquivos
+```
+
+**Refactoring mais usados:**
+```javascript
+// EXTRACT FUNCTION — O mais comum
+// Antes:
+function processOrder(order) {
+  // 20 linhas de validação...
+  // 15 linhas de cálculo de desconto...
+  // 10 linhas de criação do pedido...
+}
+
+// Depois:
+function processOrder(order) {
+  validateOrder(order);
+  const discount = calculateDiscount(order);
+  return createOrder(order, discount);
+}
+
+// INTRODUCE PARAMETER OBJECT
+// Antes: muitos parâmetros
+function searchProducts(query, minPrice, maxPrice, category, sortBy) { }
+
+// Depois: objeto de filtro
+function searchProducts(filters) { }
+// filters = { query, priceRange: { min, max }, category, sortBy }
+
+// REPLACE CONDITIONAL WITH POLYMORPHISM
+// Antes: switch/if gigante
+function calculateArea(shape) {
+  switch (shape.type) {
+    case 'circle': return Math.PI * shape.radius ** 2;
+    case 'rectangle': return shape.width * shape.height;
+    case 'triangle': return (shape.base * shape.height) / 2;
+  }
+}
+
+// Depois: cada shape sabe calcular sua área
+class Circle {
+  area() { return Math.PI * this.radius ** 2; }
+}
+class Rectangle {
+  area() { return this.width * this.height; }
+}
+```
+
+**A Regra de Ouro do Refactoring:**
+Sempre tenha TESTES antes de refatorar. Refactoring sem testes e cirurgia sem anestesia -- qualquer coisa pode dar errado e voce nao vai saber.
