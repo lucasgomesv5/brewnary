@@ -127,6 +127,13 @@ export default function BinarySearchVisualizer() {
       onReset={handleReset}
       isComplete={currentStep >= steps.length - 1}
       color="#10B981"
+      eli5={`A busca binária funciona em listas ordenadas. Compara o elemento do meio com o alvo: se é igual, encontrou. Se o alvo é menor, descarta a metade direita. Se é maior, descarta a esquerda. Repete até encontrar ou a lista ficar vazia.
+
+Cada comparação elimina metade dos elementos restantes. Por isso a complexidade é O(log n) — para uma lista de 1 milhão de elementos, no máximo 20 comparações bastam.
+
+Pré-requisito fundamental: a lista precisa estar ordenada. Se não estiver, primeiro ordene (O(n log n)) ou use outra estrutura.
+
+Variações importantes: lower_bound (primeiro elemento ≥ alvo), upper_bound (primeiro elemento > alvo), e busca em espaço contínuo (bisection method). É a base para entender árvores binárias de busca, B-trees e muitas otimizações em bancos de dados.`}
       codeView={<AlgorithmCodeView codes={ALGORITHM_CODES['binary-search']} color="#10B981" />}
     >
       <div className="py-4">

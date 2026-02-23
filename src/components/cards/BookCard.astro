@@ -4,19 +4,10 @@ interface Props {
   author: string;
   description: string;
   category: string;
-  priority: string;
   coverColor?: string;
 }
 
-const { title, author, description, category, priority, coverColor = '#8B5CF6' } = Astro.props;
-
-const priorityConfig = {
-  essential: { label: 'Essencial' },
-  recommended: { label: 'Recomendado' },
-  bonus: { label: 'Complementar' },
-} as Record<string, { label: string }>;
-
-const p = priorityConfig[priority] || priorityConfig.recommended;
+const { title, author, description, category, coverColor = '#8B5CF6' } = Astro.props;
 ---
 
 <div
@@ -25,13 +16,12 @@ const p = priorityConfig[priority] || priorityConfig.recommended;
   <div class="h-1" style={`background-color: ${coverColor}`}></div>
 
   <div class="p-5">
-    <div class="mb-2 flex items-start justify-between">
+    <div class="mb-2">
       <span
         class="rounded-full bg-[var(--color-border)]/50 px-2 py-0.5 text-xs font-medium text-[var(--color-text-muted)]"
       >
         {category}
       </span>
-      <span class="text-xs text-[var(--color-text-muted)]">{p.label}</span>
     </div>
 
     <h3 class="mb-1 text-base leading-snug font-bold">

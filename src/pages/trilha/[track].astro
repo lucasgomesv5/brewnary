@@ -3,7 +3,6 @@ import MainLayout from '../../layouts/MainLayout.astro';
 import { getCollection } from 'astro:content';
 import { tracks, getTrack, toSlug } from '../../lib/tracks';
 
-
 export function getStaticPaths() {
   return tracks.map((t) => ({ params: { track: t.id } }));
 }
@@ -83,7 +82,6 @@ if (hasSections) {
                       <div class="min-w-0 flex-1">
                         <div class="flex items-center gap-2">
                           <h3 class="text-sm font-medium">{lesson.data.title}</h3>
-
                         </div>
                         <p class="truncate text-xs text-[var(--color-text-muted)]">{lesson.data.description}</p>
                       </div>
@@ -119,7 +117,6 @@ if (hasSections) {
               <div class="min-w-0 flex-1">
                 <div class="flex items-center gap-2">
                   <h3 class="text-sm font-medium">{lesson.data.title}</h3>
-                  {lesson.data.priority !== 'medium' && <PriorityBadge level={lesson.data.priority} />}
                 </div>
                 <p class="truncate text-xs text-[var(--color-text-muted)]">{lesson.data.description}</p>
               </div>

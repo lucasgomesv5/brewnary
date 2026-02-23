@@ -1,0 +1,881 @@
+---
+import MainLayout from '../layouts/MainLayout.astro';
+import TwoSumVisualizer from '../components/react/algorithms/arrays/TwoSumVisualizer';
+import HashTableVisualizer from '../components/react/algorithms/hash/HashTableVisualizer';
+import TwoPointersVisualizer from '../components/react/algorithms/two-pointers/TwoPointersVisualizer';
+import SlidingWindowVisualizer from '../components/react/algorithms/sliding-window/SlidingWindowVisualizer';
+import BinarySearchVisualizer from '../components/react/algorithms/searching/BinarySearchVisualizer';
+import PrefixSumVisualizer from '../components/react/algorithms/prefix-sum/PrefixSumVisualizer';
+import ReverseListVisualizer from '../components/react/algorithms/linked-list/ReverseListVisualizer';
+import ValidParenthesesVisualizer from '../components/react/algorithms/stacks-queues/ValidParenthesesVisualizer';
+import BSTTraversalVisualizer from '../components/react/algorithms/trees/BSTTraversalVisualizer';
+import HeapVisualizer from '../components/react/algorithms/heaps/HeapVisualizer';
+import TrieVisualizer from '../components/react/algorithms/tries/TrieVisualizer';
+import BFSVisualizer from '../components/react/algorithms/graph/BFSVisualizer';
+import MergeSort from '../components/react/algorithms/sorting/MergeSort';
+import SubsetsVisualizer from '../components/react/algorithms/backtracking/SubsetsVisualizer';
+import ClimbingStairsVisualizer from '../components/react/algorithms/dp/ClimbingStairsVisualizer';
+import IntervalSchedulingVisualizer from '../components/react/algorithms/greedy/IntervalSchedulingVisualizer';
+import MergeIntervalsVisualizer from '../components/react/algorithms/intervals/MergeIntervalsVisualizer';
+import SingleNumberVisualizer from '../components/react/algorithms/bit/SingleNumberVisualizer';
+import TopoSortVisualizer from '../components/react/algorithms/graph-advanced/TopoSortVisualizer';
+
+const difficulties = {
+  easy: { label: 'Easy', color: '#10B981', bg: 'rgba(16,185,129,0.1)' },
+  medium: { label: 'Medium', color: '#F59E0B', bg: 'rgba(245,158,11,0.1)' },
+  hard: { label: 'Hard', color: '#EF4444', bg: 'rgba(239,68,68,0.1)' },
+};
+
+type Difficulty = keyof typeof difficulties;
+
+interface Problem {
+  title: string;
+  slug: string;
+  difficulty: Difficulty;
+  hint: string;
+}
+
+interface Section {
+  id: string;
+  title: string;
+  color: string;
+  description: string;
+  complexity?: string;
+  diagram: string;
+  diagramCaption?: string;
+  problems: Problem[];
+  lessonHref?: string;
+}
+
+const sections: Section[] = [
+  {
+    id: 'arrays',
+    title: 'Arrays & Strings',
+    color: '#8B5CF6',
+    description: 'Sequência contígua na memória com acesso O(1) por índice. Strings são arrays de caracteres. A base de quase todos os problemas de entrevista.',
+    complexity: 'Acesso: O(1) · Busca: O(n) · Inserção/Remoção: O(n)',
+    diagram: `  Índice:    0     1     2     3     4     5
+           ┌─────┬─────┬─────┬─────┬─────┬─────┐
+  Array:   │  3  │  7  │  1  │  9  │  4  │  2  │
+           └─────┴─────┴─────┴─────┴─────┴─────┘
+  Endereço: 0x00  0x04  0x08  0x0C  0x10  0x14
+
+  ► Elementos contíguos na memória
+  ► endereço(i) = base + i × tamanho_elemento
+  ► Cache-friendly: CPU carrega blocos inteiros (cache line = 64 bytes)`,
+    diagramCaption: 'Layout de um array de inteiros (4 bytes cada) na memória',
+    problems: [
+      { title: 'Two Sum', slug: 'two-sum', difficulty: 'easy', hint: 'Use hash map para lookup O(1) do complemento' },
+      { title: 'Best Time to Buy and Sell Stock', slug: 'best-time-to-buy-and-sell-stock', difficulty: 'easy', hint: 'Mantenha o mínimo visto até agora e calcule o lucro em cada passo' },
+      { title: 'Product of Array Except Self', slug: 'product-of-array-except-self', difficulty: 'medium', hint: 'Dois passes: prefix product da esquerda e suffix product da direita' },
+      { title: 'Container With Most Water', slug: 'container-with-most-water', difficulty: 'medium', hint: 'Two pointers das extremidades, movendo o ponteiro menor' },
+      { title: 'Trapping Rain Water', slug: 'trapping-rain-water', difficulty: 'hard', hint: 'Para cada posição, água = min(maxLeft, maxRight) - height. Use two pointers ou prefix max' },
+    ],
+    lessonHref: '/trilha/cs/arrays',
+  },
+  {
+    id: 'hash-tables',
+    title: 'Hash Tables',
+    color: '#2563EB',
+    description: 'Estrutura que mapeia chaves a valores usando função hash. Acesso, inserção e remoção em O(1) amortizado. Fundamental para otimizar busca.',
+    complexity: 'Inserção: O(1)* · Busca: O(1)* · Remoção: O(1)* (*amortizado)',
+    diagram: `  Chave     Hash Function     Bucket      Valor
+  ─────     ─────────────     ──────      ─────
+  "nome" ──► hash("nome") ──► [0] ─────► "Lucas"
+  "age"  ──► hash("age")  ──► [1] ─────► 25
+  "lang" ──► hash("lang") ──► [1] ─┐
+                                    └──► "lang" → "TS" (colisão: chaining)
+  "city" ──► hash("city") ──► [3] ─────► "SP"
+
+  Bucket Array:
+  ┌───────────────────────────────────────────────┐
+  │ [0]: "nome"→"Lucas"                           │
+  │ [1]: "age"→25 → "lang"→"TS"  ← linked list   │
+  │ [2]: (vazio)                                  │
+  │ [3]: "city"→"SP"                              │
+  └───────────────────────────────────────────────┘`,
+    diagramCaption: 'Hash table com chaining para resolução de colisões',
+    problems: [
+      { title: 'Valid Anagram', slug: 'valid-anagram', difficulty: 'easy', hint: 'Conte a frequência de cada caractere com hash map' },
+      { title: 'Group Anagrams', slug: 'group-anagrams', difficulty: 'medium', hint: 'Use a string ordenada como chave do hash map' },
+      { title: 'Longest Consecutive Sequence', slug: 'longest-consecutive-sequence', difficulty: 'medium', hint: 'Coloque tudo num Set. Para cada início de sequência (n-1 não existe), conte o comprimento' },
+      { title: 'Subarray Sum Equals K', slug: 'subarray-sum-equals-k', difficulty: 'medium', hint: 'Prefix sum + hash map: conta quantos prefix sums anteriores = prefixSum - k' },
+      { title: 'LRU Cache', slug: 'lru-cache', difficulty: 'medium', hint: 'Hash map + doubly linked list. Map aponta para nodes da lista' },
+    ],
+    lessonHref: '/trilha/cs/hash-tables',
+  },
+  {
+    id: 'two-pointers',
+    title: 'Two Pointers',
+    color: '#EC4899',
+    description: 'Técnica que usa dois ponteiros percorrendo o array (geralmente das extremidades para o centro, ou ambos do início). Reduz O(n²) para O(n).',
+    complexity: 'Tempo: O(n) · Espaço: O(1)',
+    diagram: `  Array ordenado: [1, 2, 3, 5, 8, 11, 15]
+                   ↑                    ↑
+                  left               right
+                   └──── target = 13 ────┘
+
+  Passo 1: arr[left] + arr[right] = 1 + 15 = 16 > 13
+           → right-- (soma muito grande)
+
+  Passo 2: arr[left] + arr[right] = 1 + 11 = 12 < 13
+           → left++ (soma muito pequena)
+
+  Passo 3: arr[left] + arr[right] = 2 + 11 = 13 ✓ Encontrado!
+
+  ► Os ponteiros convergem: a cada passo eliminamos um candidato
+  ► Invariante: a solução está sempre entre left e right`,
+    diagramCaption: 'Two Pointers convergindo para encontrar par com soma alvo',
+    problems: [
+      { title: 'Valid Palindrome', slug: 'valid-palindrome', difficulty: 'easy', hint: 'left e right convergem, ignorando não-alfanuméricos' },
+      { title: 'Two Sum II (Sorted)', slug: 'two-sum-ii-input-array-is-sorted', difficulty: 'medium', hint: 'Two pointers clássico: soma < target → left++, soma > target → right--' },
+      { title: '3Sum', slug: '3sum', difficulty: 'medium', hint: 'Ordene, fixe um elemento, use two pointers no restante. Pule duplicatas' },
+      { title: 'Container With Most Water', slug: 'container-with-most-water', difficulty: 'medium', hint: 'Mova sempre o ponteiro com menor altura (não pode melhorar mantendo ele)' },
+    ],
+    lessonHref: '/trilha/cs/arrays',
+  },
+  {
+    id: 'sliding-window',
+    title: 'Sliding Window',
+    color: '#06B6D4',
+    description: 'Janela que desliza sobre uma sequência, mantendo um estado agregado. Evita recalcular do zero a cada posição. Ideal para subarrays/substrings contíguos.',
+    complexity: 'Tempo: O(n) · Espaço: O(1) ou O(k)',
+    diagram: `  Array: [2, 1, 5, 1, 3, 2, 8, 1, 3]     k = 3
+
+  Janela 1:  [2, 1, 5] 1, 3, 2, 8, 1, 3   soma = 8
+              └───────┘
+  Janela 2:   2,[1, 5, 1] 3, 2, 8, 1, 3   soma = 8 - 2 + 1 = 7
+                 └───────┘
+  Janela 3:   2, 1,[5, 1, 3] 2, 8, 1, 3   soma = 7 - 1 + 3 = 9
+                    └───────┘
+  Janela 4:   2, 1, 5,[1, 3, 2] 8, 1, 3   soma = 9 - 5 + 2 = 6
+                       └───────┘
+              ...
+  ► A cada passo: soma += novo_elemento - elemento_que_saiu
+  ► Atualização em O(1) em vez de recalcular O(k)`,
+    diagramCaption: 'Sliding Window de tamanho fixo k=3 calculando soma máxima',
+    problems: [
+      { title: 'Best Time to Buy and Sell Stock', slug: 'best-time-to-buy-and-sell-stock', difficulty: 'easy', hint: 'Sliding window degenerado: mantenha mínimo à esquerda, calcule lucro' },
+      { title: 'Longest Substring Without Repeating Characters', slug: 'longest-substring-without-repeating-characters', difficulty: 'medium', hint: 'Janela variável + Set/Map. Quando encontrar duplicata, encolha a janela pela esquerda' },
+      { title: 'Permutation in String', slug: 'permutation-in-string', difficulty: 'medium', hint: 'Janela fixa do tamanho de s1. Compare frequências de caracteres' },
+      { title: 'Minimum Window Substring', slug: 'minimum-window-substring', difficulty: 'hard', hint: 'Janela variável: expanda pela direita até conter tudo, encolha pela esquerda para minimizar' },
+      { title: 'Sliding Window Maximum', slug: 'sliding-window-maximum', difficulty: 'hard', hint: 'Monotonic deque: mantém índices em ordem decrescente de valor' },
+    ],
+    lessonHref: '/trilha/cs/arrays',
+  },
+  {
+    id: 'binary-search',
+    title: 'Binary Search',
+    color: '#10B981',
+    description: 'Busca em espaço ordenado descartando metade a cada passo. Não se limita a arrays — funciona em qualquer espaço de busca monotônico.',
+    complexity: 'Tempo: O(log n) · Espaço: O(1)',
+    diagram: `  Array ordenado: [2, 5, 8, 12, 16, 23, 38, 56, 72, 91]
+  Target: 23
+
+  Passo 1: [2, 5, 8, 12, 16, 23, 38, 56, 72, 91]
+            L              M                    R
+            mid=16 < 23 → descarta metade esquerda
+
+  Passo 2:                 [23, 38, 56, 72, 91]
+                            L       M        R
+                            mid=56 > 23 → descarta metade direita
+
+  Passo 3:                 [23, 38]
+                            L   R
+                            M
+                            mid=23 = 23 ✓ Encontrado!
+
+  ► 10 elementos → 3 comparações (log₂(10) ≈ 3.3)
+  ► 1 bilhão de elementos → máximo 30 comparações`,
+    diagramCaption: 'Binary Search descartando metade do espaço a cada iteração',
+    problems: [
+      { title: 'Binary Search', slug: 'binary-search', difficulty: 'easy', hint: 'Implementação clássica. Cuidado com mid = left + (right - left) / 2' },
+      { title: 'Search a 2D Matrix', slug: 'search-a-2d-matrix', difficulty: 'medium', hint: 'Trate a matriz como array 1D: index → row = i/cols, col = i%cols' },
+      { title: 'Koko Eating Bananas', slug: 'koko-eating-bananas', difficulty: 'medium', hint: 'Binary search na resposta: busque o menor k tal que termina em h horas' },
+      { title: 'Search in Rotated Sorted Array', slug: 'search-in-rotated-sorted-array', difficulty: 'medium', hint: 'Uma metade sempre está ordenada. Determine qual e se o target está nela' },
+      { title: 'Median of Two Sorted Arrays', slug: 'median-of-two-sorted-arrays', difficulty: 'hard', hint: 'Binary search no menor array. Particione ambos para que left_total = right_total' },
+    ],
+    lessonHref: '/trilha/cs/busca-e-ordenacao',
+  },
+  {
+    id: 'prefix-sum',
+    title: 'Prefix Sum',
+    color: '#F59E0B',
+    description: 'Pré-computa somas acumuladas para responder consultas de range em O(1). Base para muitos problemas de subarray e programação competitiva.',
+    complexity: 'Construção: O(n) · Consulta: O(1)',
+    diagram: `  Array original:    [3,  1,  4,  1,  5,  9,  2,  6]
+  Índice:              0   1   2   3   4   5   6   7
+
+  Prefix Sum:        [0,  3,  4,  8,  9, 14, 23, 25, 31]
+  Índice:             0   1   2   3   4   5   6   7   8
+
+  ► prefix[i] = soma de arr[0..i-1]
+
+  Consulta: soma de arr[2..5] = ?
+  ─────────────────────────────
+  prefix[6] - prefix[2] = 23 - 4 = 19
+  Verificação: 4 + 1 + 5 + 9 = 19 ✓
+
+  ┌───┬───┬───┬───┬───┬───┬───┬───┐
+  │ 3 │ 1 │ 4 │ 1 │ 5 │ 9 │ 2 │ 6 │
+  └───┴───┴─┬─┴───┴───┴─┬─┴───┴───┘
+            └─── range ──┘
+            soma = prefix[r+1] - prefix[l]`,
+    diagramCaption: 'Prefix Sum permite consultas de range em tempo constante',
+    problems: [
+      { title: 'Running Sum of 1d Array', slug: 'running-sum-of-1d-array', difficulty: 'easy', hint: 'Implementação direta de prefix sum' },
+      { title: 'Subarray Sum Equals K', slug: 'subarray-sum-equals-k', difficulty: 'medium', hint: 'prefix[j] - prefix[i] = k ↔ prefix[i] = prefix[j] - k. Use hash map' },
+      { title: 'Range Sum Query - Immutable', slug: 'range-sum-query-immutable', difficulty: 'easy', hint: 'Pré-compute prefix sum no construtor, responda queries em O(1)' },
+      { title: 'Product of Array Except Self', slug: 'product-of-array-except-self', difficulty: 'medium', hint: 'Prefix product pela esquerda × suffix product pela direita' },
+    ],
+    lessonHref: '/trilha/cs/arrays',
+  },
+  {
+    id: 'linked-lists',
+    title: 'Linked Lists',
+    color: '#a855f7',
+    description: 'Coleção de nós onde cada nó aponta para o próximo. Inserção/remoção em O(1) dado o ponteiro, mas acesso por índice é O(n). Trade-off oposto ao array.',
+    complexity: 'Acesso: O(n) · Busca: O(n) · Inserção/Remoção: O(1)*',
+    diagram: `  Singly Linked List:
+  ┌──────┬───┐    ┌──────┬───┐    ┌──────┬───┐    ┌──────┬──────┐
+  │  10  │ ──┼───►│  20  │ ──┼───►│  30  │ ──┼───►│  40  │ null │
+  └──────┴───┘    └──────┴───┘    └──────┴───┘    └──────┴──────┘
+   head                                             tail
+
+  Doubly Linked List:
+       ┌────────────────────────────────────┐
+       │                                    ▼
+  ┌────┼──┬───┐    ┌──────┬───┐    ┌──────┬───┐
+  │ null│10│ ──┼───►│◄──20 │ ──┼───►│◄──30 │nul│
+  └─────┴──┘       └──────┴───┘    └──────┴───┘
+   head                              tail
+
+  ► Inserção no meio (dado ponteiro): redirecione 1-2 ponteiros → O(1)
+  ► Sem localidade de cache: nós espalhados na memória (heap)`,
+    diagramCaption: 'Singly e Doubly Linked List com ponteiros entre nós',
+    problems: [
+      { title: 'Reverse Linked List', slug: 'reverse-linked-list', difficulty: 'easy', hint: 'Três ponteiros: prev, current, next. Inverta os links iterativamente' },
+      { title: 'Merge Two Sorted Lists', slug: 'merge-two-sorted-lists', difficulty: 'easy', hint: 'Use dummy head. Compare e avance o ponteiro menor' },
+      { title: 'Linked List Cycle', slug: 'linked-list-cycle', difficulty: 'easy', hint: 'Floyd\'s tortoise and hare: slow (1 passo) e fast (2 passos). Se encontram → ciclo' },
+      { title: 'Reorder List', slug: 'reorder-list', difficulty: 'medium', hint: '3 passos: encontre o meio, inverta segunda metade, intercale as duas metades' },
+      { title: 'Merge k Sorted Lists', slug: 'merge-k-sorted-lists', difficulty: 'hard', hint: 'Min-heap com k elementos (um de cada lista). Extraia o mínimo e insira o próximo' },
+    ],
+    lessonHref: '/trilha/cs/linked-lists',
+  },
+  {
+    id: 'stacks-queues',
+    title: 'Stacks & Queues',
+    color: '#f97316',
+    description: 'Stack: LIFO (Last In, First Out). Queue: FIFO (First In, First Out). Fundamentais para parsing, BFS, DFS e problemas de ordem.',
+    complexity: 'Push/Pop/Enqueue/Dequeue: O(1)',
+    diagram: `  STACK (LIFO)                    QUEUE (FIFO)
+  ┌─────────┐                     ┌─────────────────────┐
+  │  push ▼ │ pop ▲               enqueue ►│ 1 │ 2 │ 3 │► dequeue
+  ├─────────┤                     └─────────────────────┘
+  │    5    │ ← top               front ↑           ↑ back
+  ├─────────┤
+  │    3    │                     MONOTONIC STACK (decrescente):
+  ├─────────┤                     Entrada: [2, 1, 5, 6, 2, 3]
+  │    1    │                     Stack:   [6, 3] — mantém ordem
+  └─────────┘                     ► Usado para "next greater element"
+
+  ► Stack: undo/redo, DFS, validação de parênteses
+  ► Queue: BFS, cache FIFO, task scheduling
+  ► Monotonic Stack: O(n) para problemas "próximo maior/menor"`,
+    diagramCaption: 'Stack (LIFO) e Queue (FIFO) com operações básicas',
+    problems: [
+      { title: 'Valid Parentheses', slug: 'valid-parentheses', difficulty: 'easy', hint: 'Stack: push abertura, pop e compare ao encontrar fechamento' },
+      { title: 'Min Stack', slug: 'min-stack', difficulty: 'medium', hint: 'Dois stacks: um normal e um que rastreia o mínimo atual' },
+      { title: 'Evaluate Reverse Polish Notation', slug: 'evaluate-reverse-polish-notation', difficulty: 'medium', hint: 'Stack de operandos. Ao encontrar operador: pop dois, calcule, push resultado' },
+      { title: 'Daily Temperatures', slug: 'daily-temperatures', difficulty: 'medium', hint: 'Monotonic stack decrescente. Ao encontrar temp maior: pop e calcule distância' },
+      { title: 'Largest Rectangle in Histogram', slug: 'largest-rectangle-in-histogram', difficulty: 'hard', hint: 'Monotonic stack crescente. Para cada barra: calcule largura usando stack' },
+    ],
+    lessonHref: '/trilha/cs/stacks-e-queues',
+  },
+  {
+    id: 'trees',
+    title: 'Trees (Binary Tree & BST)',
+    color: '#8B5CF6',
+    description: 'Estrutura hierárquica com nós e arestas. Binary Search Tree (BST) mantém: esquerda < raiz < direita, permitindo busca em O(log n) quando balanceada.',
+    complexity: 'BST balanceada — Busca/Inserção/Remoção: O(log n)',
+    diagram: `  Binary Search Tree:
+                    ┌────┐
+                    │ 15 │ ← root
+                    └─┬──┘
+              ┌───────┴───────┐
+            ┌─┴──┐          ┌─┴──┐
+            │ 10 │          │ 25 │
+            └─┬──┘          └─┬──┘
+          ┌───┴───┐       ┌───┴───┐
+        ┌─┴─┐   ┌─┴──┐ ┌─┴──┐  ┌─┴──┐
+        │ 5 │   │ 12 │ │ 20 │  │ 30 │
+        └───┘   └────┘ └────┘  └────┘
+
+  Traversals:
+  ► In-order   (L, Root, R):  5, 10, 12, 15, 20, 25, 30  ← ordenado!
+  ► Pre-order  (Root, L, R):  15, 10, 5, 12, 25, 20, 30
+  ► Post-order (L, R, Root):  5, 12, 10, 20, 30, 25, 15
+  ► Level-order (BFS):        15, 10, 25, 5, 12, 20, 30
+
+  ► BST invariante: left.val < node.val < right.val
+  ► Altura balanceada: h = O(log n)`,
+    diagramCaption: 'Binary Search Tree com 7 nós e os 4 tipos de traversal',
+    problems: [
+      { title: 'Invert Binary Tree', slug: 'invert-binary-tree', difficulty: 'easy', hint: 'Recursão: troque left e right de cada nó, recursivamente' },
+      { title: 'Maximum Depth of Binary Tree', slug: 'maximum-depth-of-binary-tree', difficulty: 'easy', hint: 'return 1 + max(depth(left), depth(right)). Base: null → 0' },
+      { title: 'Validate Binary Search Tree', slug: 'validate-binary-search-tree', difficulty: 'medium', hint: 'Passe min/max bounds recursivamente. Ou: in-order traversal deve ser crescente' },
+      { title: 'Binary Tree Level Order Traversal', slug: 'binary-tree-level-order-traversal', difficulty: 'medium', hint: 'BFS com fila. Processe level.length nós por nível' },
+      { title: 'Serialize and Deserialize Binary Tree', slug: 'serialize-and-deserialize-binary-tree', difficulty: 'hard', hint: 'Pre-order com marcador "null". Deserialize com fila/índice recursivo' },
+    ],
+    lessonHref: '/trilha/cs/trees',
+  },
+  {
+    id: 'heaps',
+    title: 'Heaps / Priority Queue',
+    color: '#EF4444',
+    description: 'Árvore binária completa onde cada pai ≥ filhos (max-heap) ou ≤ filhos (min-heap). Representada como array. Essencial para top-k, mediana e scheduling.',
+    complexity: 'Insert: O(log n) · Extract Min/Max: O(log n) · Peek: O(1)',
+    diagram: `  Min-Heap (array representation):
+
+  Árvore:              Array:
+       ┌──┐            ┌───┬───┬───┬───┬───┬───┬───┐
+       │ 1│            │ 1 │ 3 │ 5 │ 4 │ 8 │ 7 │ 6 │
+       └┬─┘            └───┴───┴───┴───┴───┴───┴───┘
+     ┌──┴──┐            [0]  [1]  [2]  [3]  [4]  [5]  [6]
+   ┌─┴┐  ┌─┴┐
+   │ 3│  │ 5│          Relações no array:
+   └┬─┘  └┬─┘          ► Pai de i:        ⌊(i-1)/2⌋
+  ┌─┴┐ ┌─┴┐            ► Filho esquerdo:  2i + 1
+  │ 4│ │ 8│ │ 7│ │ 6│  ► Filho direito:   2i + 2
+  └──┘ └──┘ └──┘ └──┘
+                        Insert: adicione no final, bubble up (sift up)
+                        Extract: troque root com último, bubble down`,
+    diagramCaption: 'Min-Heap como árvore e como array com fórmulas de navegação',
+    problems: [
+      { title: 'Kth Largest Element in a Stream', slug: 'kth-largest-element-in-a-stream', difficulty: 'easy', hint: 'Min-heap de tamanho k. O topo é sempre o k-ésimo maior' },
+      { title: 'Last Stone Weight', slug: 'last-stone-weight', difficulty: 'easy', hint: 'Max-heap. Extraia os dois maiores, insira a diferença se > 0' },
+      { title: 'K Closest Points to Origin', slug: 'k-closest-points-to-origin', difficulty: 'medium', hint: 'Max-heap de tamanho k por distância. Ou quickselect para O(n) médio' },
+      { title: 'Task Scheduler', slug: 'task-scheduler', difficulty: 'medium', hint: 'Max-heap de frequências + cooldown queue. Simule ciclos' },
+      { title: 'Find Median from Data Stream', slug: 'find-median-from-data-stream', difficulty: 'hard', hint: 'Dois heaps: max-heap (metade menor) + min-heap (metade maior). Balance os tamanhos' },
+    ],
+    lessonHref: '/trilha/cs/trees',
+  },
+  {
+    id: 'tries',
+    title: 'Tries (Prefix Tree)',
+    color: '#06B6D4',
+    description: 'Árvore onde cada aresta representa um caractere. Busca por prefixo em O(m) onde m é o comprimento da palavra. Usado em autocomplete e spell checkers.',
+    complexity: 'Insert: O(m) · Search: O(m) · Prefix Search: O(m)',
+    diagram: `  Palavras inseridas: ["cat", "car", "card", "care", "do", "dog"]
+
+  root
+  ├── c
+  │   └── a
+  │       ├── t ●          ← "cat" (● = fim de palavra)
+  │       └── r ●          ← "car"
+  │           ├── d ●      ← "card"
+  │           └── e ●      ← "care"
+  └── d
+      └── o ●              ← "do"
+          └── g ●          ← "dog"
+
+  Busca "car":  root → c → a → r → encontrado (● = true) ✓
+  Busca "can":  root → c → a → n → não existe ✗
+  Prefixo "ca": root → c → a → existe! Retorna ["cat","car","card","care"]
+
+  ► Cada nó tem até 26 filhos (alphabet size)
+  ► Compartilha prefixos: economia de espaço para strings similares`,
+    diagramCaption: 'Trie com 6 palavras compartilhando prefixos comuns',
+    problems: [
+      { title: 'Implement Trie (Prefix Tree)', slug: 'implement-trie-prefix-tree', difficulty: 'medium', hint: 'Nó com children[26] + isEnd. Insert/search/startsWith iterativos' },
+      { title: 'Design Add and Search Words', slug: 'design-add-and-search-words-data-structure', difficulty: 'medium', hint: 'Trie + DFS. "." wildcard: tente todos os filhos recursivamente' },
+      { title: 'Word Search II', slug: 'word-search-ii', difficulty: 'hard', hint: 'Construa trie das palavras. DFS na grid usando o trie como guia. Prune ramos vazios' },
+    ],
+    lessonHref: '/trilha/cs/trees',
+  },
+  {
+    id: 'graphs',
+    title: 'Graphs — BFS & DFS',
+    color: '#2563EB',
+    description: 'Grafos modelam relações entre entidades. BFS explora nível a nível (menor caminho). DFS explora em profundidade (ciclos, componentes conexos).',
+    complexity: 'BFS/DFS: O(V + E) · Espaço: O(V)',
+    diagram: `  Grafo:                    Adjacency List:
+      ┌───┐                 0: [1, 2]
+      │ 0 │                 1: [0, 3, 4]
+      └─┬─┘                 2: [0, 4]
+     ┌──┴──┐                3: [1, 5]
+   ┌─┴─┐ ┌─┴─┐             4: [1, 2, 5]
+   │ 1 │ │ 2 │             5: [3, 4]
+   └─┬─┘ └─┬─┘
+  ┌──┴──┐   │              BFS (from 0):
+┌─┴─┐ ┌─┴─┐│              Nível 0: {0}
+│ 3 │ │ 4 │◄┘              Nível 1: {1, 2}
+└─┬─┘ └─┬─┘               Nível 2: {3, 4}
+  └──┬───┘                 Nível 3: {5}
+   ┌─┴─┐
+   │ 5 │                   DFS (from 0):
+   └───┘                   0 → 1 → 3 → 5 → 4 → 2
+
+  ► BFS usa Queue (FIFO) — encontra menor caminho em grafos não-ponderados
+  ► DFS usa Stack (LIFO) / Recursão — detecta ciclos, topo sort, componentes`,
+    diagramCaption: 'Grafo não-direcionado com BFS (nível a nível) e DFS (profundidade)',
+    problems: [
+      { title: 'Number of Islands', slug: 'number-of-islands', difficulty: 'medium', hint: 'DFS/BFS em cada "1" não visitado. Marque como visitado. Conte componentes' },
+      { title: 'Clone Graph', slug: 'clone-graph', difficulty: 'medium', hint: 'DFS + hash map old→new. Crie clone ao visitar, conecte vizinhos recursivamente' },
+      { title: 'Course Schedule', slug: 'course-schedule', difficulty: 'medium', hint: 'Detecte ciclo em grafo direcionado. Topological sort com DFS ou Kahn\'s (BFS)' },
+      { title: 'Pacific Atlantic Water Flow', slug: 'pacific-atlantic-water-flow', difficulty: 'medium', hint: 'BFS/DFS reverso: comece dos oceanos e suba. Interseção = resposta' },
+      { title: 'Word Ladder', slug: 'word-ladder', difficulty: 'hard', hint: 'BFS onde cada palavra é um nó. Vizinhos: palavras que diferem em 1 caractere' },
+    ],
+    lessonHref: '/trilha/cs/graphs',
+  },
+  {
+    id: 'sorting',
+    title: 'Algoritmos de Ordenação',
+    color: '#EC4899',
+    description: 'Organizar elementos em ordem. Lower bound de comparação: Ω(n log n). Entender trade-offs entre estabilidade, espaço e caso médio vs pior caso.',
+    complexity: 'Comparação: Ω(n log n) · Não-comparativo: O(n)',
+    diagram: `  ┌──────────────┬─────────┬───────────┬──────────┬────────┬─────────┐
+  │  Algoritmo   │ Melhor  │   Médio   │   Pior   │ Espaço │ Estável │
+  ├──────────────┼─────────┼───────────┼──────────┼────────┼─────────┤
+  │ Bubble Sort  │  O(n)   │  O(n²)    │  O(n²)   │  O(1)  │   Sim   │
+  │ Insertion    │  O(n)   │  O(n²)    │  O(n²)   │  O(1)  │   Sim   │
+  │ Merge Sort   │O(n logn)│ O(n logn) │O(n logn) │  O(n)  │   Sim   │
+  │ Quick Sort   │O(n logn)│ O(n logn) │  O(n²)   │O(logn) │   Não   │
+  │ Heap Sort    │O(n logn)│ O(n logn) │O(n logn) │  O(1)  │   Não   │
+  │ Counting     │ O(n+k)  │  O(n+k)   │  O(n+k)  │ O(n+k) │   Sim   │
+  │ Radix Sort   │ O(dn)   │  O(dn)    │  O(dn)   │ O(n+k) │   Sim   │
+  └──────────────┴─────────┴───────────┴──────────┴────────┴─────────┘
+
+  Merge Sort (divide & merge):
+  [38, 27, 43, 3, 9, 82, 10]
+       ┌────────┴────────┐
+  [38, 27, 43, 3]   [9, 82, 10]         divide
+     ┌────┴────┐      ┌───┴───┐
+  [38,27] [43,3]   [9,82]  [10]         divide
+  [27,38] [3,43]   [9,82]  [10]         sort pairs
+     └────┬────┘      └───┬───┘
+  [3, 27, 38, 43]  [9, 10, 82]          merge
+       └────────┬────────┘
+  [3, 9, 10, 27, 38, 43, 82]            merge final`,
+    diagramCaption: 'Tabela comparativa + Merge Sort dividindo e combinando',
+    problems: [
+      { title: 'Sort Colors', slug: 'sort-colors', difficulty: 'medium', hint: 'Dutch National Flag: 3 ponteiros (low, mid, high). Particione em 0s, 1s, 2s' },
+      { title: 'Top K Frequent Elements', slug: 'top-k-frequent-elements', difficulty: 'medium', hint: 'Counting + bucket sort por frequência. Ou heap de tamanho k' },
+      { title: 'Kth Largest Element in an Array', slug: 'kth-largest-element-in-an-array', difficulty: 'medium', hint: 'Quickselect (partição do quicksort): O(n) médio. Ou min-heap de tamanho k' },
+      { title: 'Merge Intervals', slug: 'merge-intervals', difficulty: 'medium', hint: 'Ordene por start. Itere e merge se overlap (current.start <= last.end)' },
+    ],
+    lessonHref: '/trilha/cs/busca-e-ordenacao',
+  },
+  {
+    id: 'backtracking',
+    title: 'Recursão & Backtracking',
+    color: '#f97316',
+    description: 'Construir soluções incrementalmente e abandonar caminhos inválidos (pruning). Gera permutações, combinações e resolve constraint satisfaction problems.',
+    complexity: 'Tempo: O(2ⁿ) ou O(n!) com pruning · Espaço: O(n) stack',
+    diagram: `  Backtracking para subsets de [1, 2, 3]:
+
+                         []
+                ┌────────┼────────┐
+               [1]      [2]      [3]
+            ┌───┴──┐     │
+          [1,2]  [1,3] [2,3]
+            │
+          [1,2,3]
+
+  Framework:
+  ┌─────────────────────────────────────┐
+  │  BACKTRACK(escolhas, estado):       │
+  │    se é solução: registrar          │
+  │    para cada escolha:               │
+  │      se válida (PRUNE inválidas):   │
+  │        fazer escolha                │
+  │        BACKTRACK(restantes, estado) │
+  │        desfazer escolha ← backtrack │
+  └─────────────────────────────────────┘
+
+  ► A árvore de decisão é explorada com DFS
+  ► Pruning corta ramos inteiros → drástica redução prática
+  ► "Desfazer escolha" é o que diferencia de DFS normal`,
+    diagramCaption: 'Árvore de decisão para subsets com backtracking',
+    problems: [
+      { title: 'Subsets', slug: 'subsets', difficulty: 'medium', hint: 'Para cada elemento: incluir ou não incluir. Backtrack gerando todas combinações' },
+      { title: 'Permutations', slug: 'permutations', difficulty: 'medium', hint: 'Para cada posição, tente cada número não usado. Backtrack removendo do resultado' },
+      { title: 'Combination Sum', slug: 'combination-sum', difficulty: 'medium', hint: 'Backtrack com reutilização. Ordene e pule se candidato > remaining target' },
+      { title: 'N-Queens', slug: 'n-queens', difficulty: 'hard', hint: 'Uma rainha por linha. Verifique coluna e diagonais. Use sets ou bitmask para O(1) check' },
+      { title: 'Word Search', slug: 'word-search', difficulty: 'medium', hint: 'DFS na grid. Marque visitado, tente 4 direções, desmarque ao voltar (backtrack)' },
+    ],
+    lessonHref: '/trilha/cs/recursao-e-dp',
+  },
+  {
+    id: 'dp',
+    title: 'Programação Dinâmica',
+    color: '#8B5CF6',
+    description: 'Resolve problemas com subproblemas sobrepostos e subestrutura ótima. Memoization (top-down) ou tabulação (bottom-up). De O(2ⁿ) para O(n).',
+    complexity: 'Tempo: O(estados × transição) · Espaço: O(estados)',
+    diagram: `  Fibonacci — de O(2ⁿ) para O(n):
+
+  Recursão ingênua (recalcula):        Com Memoization:
+          fib(5)                              fib(5)
+         ╱     ╲                             ╱     ╲
+      fib(4)  fib(3)                      fib(4)  fib(3) ← cache hit!
+      ╱   ╲    ╱   ╲                      ╱   ╲
+   fib(3) fib(2) fib(2) fib(1)        fib(3) fib(2) ← cache!
+   ╱   ╲   ...   ...                  ╱   ╲
+  ...  ...                          fib(2) fib(1) ← cache!
+  → 2ⁿ chamadas!                   → n chamadas (cada valor calculado 1x)
+
+  Bottom-up (tabulação):
+  ┌───┬───┬───┬───┬───┬───┬───┐
+  │ 0 │ 1 │ 1 │ 2 │ 3 │ 5 │ 8 │  dp[i] = dp[i-1] + dp[i-2]
+  └───┴───┴───┴───┴───┴───┴───┘
+   f0  f1  f2  f3  f4  f5  f6   → preenche da esquerda para a direita
+
+  Otimizado O(1) espaço: só precisa dos 2 valores anteriores (rolling)
+
+  ► Identificar estado → escrever recorrência → caso base → resposta
+  ► Top-down: mais intuitivo · Bottom-up: mais eficiente`,
+    diagramCaption: 'DP transforma recursão exponencial em solução polinomial',
+    problems: [
+      { title: 'Climbing Stairs', slug: 'climbing-stairs', difficulty: 'easy', hint: 'dp[i] = dp[i-1] + dp[i-2]. É literalmente Fibonacci!' },
+      { title: 'House Robber', slug: 'house-robber', difficulty: 'medium', hint: 'dp[i] = max(dp[i-1], dp[i-2] + nums[i]). Roubar ou pular' },
+      { title: 'Coin Change', slug: 'coin-change', difficulty: 'medium', hint: 'dp[amount] = min(dp[amount - coin] + 1) para cada moeda. Unbounded knapsack' },
+      { title: 'Longest Increasing Subsequence', slug: 'longest-increasing-subsequence', difficulty: 'medium', hint: 'O(n²): dp[i] = max(dp[j]+1) para j<i com arr[j]<arr[i]. O(n logn): patience sort' },
+      { title: 'Edit Distance', slug: 'edit-distance', difficulty: 'medium', hint: '2D DP: dp[i][j] = custo para transformar s1[0..i] em s2[0..j]. 3 operações' },
+    ],
+    lessonHref: '/trilha/cs/recursao-e-dp',
+  },
+  {
+    id: 'greedy',
+    title: 'Greedy Algorithms',
+    color: '#10B981',
+    description: 'Faz a escolha localmente ótima a cada passo, esperando encontrar o ótimo global. Funciona quando a "greedy choice property" é satisfeita.',
+    complexity: 'Geralmente O(n log n) com sort + O(n) scan',
+    diagram: `  Problema: Interval Scheduling — máximo de atividades não-conflitantes
+
+  Atividades (ordenadas por fim):
+  ──────────────────────────────────► tempo
+  ├──A──┤
+    ├────B────┤
+  ├─C─┤
+        ├──D──┤
+              ├──E──┤
+                  ├──F──┤
+                        ├──G──┤
+
+  Greedy: sempre escolha a atividade que termina mais cedo
+
+  Passo 1: Escolhe C (termina primeiro)     [C]
+  Passo 2: D não conflita com C → escolhe D [C, D]
+  Passo 3: E conflita com D → pula
+  Passo 4: F não conflita com D → escolhe F [C, D, F]
+  Passo 5: G não conflita com F → escolhe G [C, D, F, G]
+
+  Resultado: 4 atividades (ótimo!)
+
+  ► Ordene por critério → itere fazendo escolha gulosa
+  ► Prova: troca (exchange argument) — trocar por greedy nunca piora`,
+    diagramCaption: 'Interval Scheduling: greedy escolhendo atividade com menor fim',
+    problems: [
+      { title: 'Maximum Subarray', slug: 'maximum-subarray', difficulty: 'medium', hint: 'Kadane\'s: maxEndingHere = max(num, maxEndingHere + num). Greedy local → global' },
+      { title: 'Jump Game', slug: 'jump-game', difficulty: 'medium', hint: 'Mantenha o alcance máximo (farthest). Se i > farthest, impossível' },
+      { title: 'Jump Game II', slug: 'jump-game-ii', difficulty: 'medium', hint: 'BFS implícito: a cada "nível" (range), calcule o próximo farthest. Conte níveis' },
+      { title: 'Gas Station', slug: 'gas-station', difficulty: 'medium', hint: 'Se total_gas >= total_cost, solução existe. Reset start quando tank < 0' },
+      { title: 'Hand of Straights', slug: 'hand-of-straights', difficulty: 'medium', hint: 'Ordene. Use hash map de frequências. Para cada menor carta, tente formar grupo' },
+    ],
+    lessonHref: '/trilha/cs/busca-e-ordenacao',
+  },
+  {
+    id: 'intervals',
+    title: 'Intervals',
+    color: '#a855f7',
+    description: 'Problemas envolvendo intervalos [start, end]. Pattern: ordene por start ou end, depois itere verificando overlaps/merges.',
+    complexity: 'Sort: O(n log n) + Scan: O(n) = O(n log n)',
+    diagram: `  Merge Overlapping Intervals:
+
+  Input (desordenado):
+  ──────────────────────────────────► tempo
+  0   2   4   6   8  10  12  14  16  18
+  ├───┤           ├───────┤
+      ├───────┤       ├───┤
+                          ├───────┤
+  [1,3] [2,6] [8,12] [10,11] [13,18]
+
+  Após ordenar por start:
+  [1,3] [2,6] [8,12] [10,11] [13,18]
+
+  Merge:
+  [1,3] e [2,6] → overlap (2 ≤ 3) → merge → [1,6]
+  [1,6] e [8,12] → não overlap (8 > 6) → mantém
+  [8,12] e [10,11] → overlap (10 ≤ 12) → merge → [8,12]
+  [8,12] e [13,18] → não overlap (13 > 12) → mantém
+
+  Resultado: [[1,6], [8,12], [13,18]]
+
+  ► Regra de overlap: a.start ≤ b.end && b.start ≤ a.end`,
+    diagramCaption: 'Merge Intervals: ordene e combine intervalos sobrepostos',
+    problems: [
+      { title: 'Merge Intervals', slug: 'merge-intervals', difficulty: 'medium', hint: 'Ordene por start. Se current.start <= last.end: merge (max dos ends)' },
+      { title: 'Insert Interval', slug: 'insert-interval', difficulty: 'medium', hint: 'Adicione antes, merge overlaps no meio, adicione depois. Três fases' },
+      { title: 'Non-overlapping Intervals', slug: 'non-overlapping-intervals', difficulty: 'medium', hint: 'Greedy: ordene por end. Conte conflitos (keep o que termina antes)' },
+      { title: 'Meeting Rooms II', slug: 'meeting-rooms-ii', difficulty: 'medium', hint: 'Min-heap de end times. Para cada meeting: se start >= heap top, pop. Sempre push. Heap size = rooms' },
+    ],
+    lessonHref: '/trilha/cs/busca-e-ordenacao',
+  },
+  {
+    id: 'bit-manipulation',
+    title: 'Bit Manipulation',
+    color: '#EF4444',
+    description: 'Operações diretamente nos bits: AND, OR, XOR, shifts. Extremamente eficiente — uma instrução CPU. Usado em masks, flags e otimizações.',
+    complexity: 'Operações bitwise: O(1)',
+    diagram: `  Operações Fundamentais:
+  ─────────────────────────────────────────────
+  AND (&)  : 1010 & 1100 = 1000  (ambos 1)
+  OR  (|)  : 1010 | 1100 = 1110  (qualquer 1)
+  XOR (^)  : 1010 ^ 1100 = 0110  (diferentes)
+  NOT (~)  : ~1010       = 0101  (inverte)
+  LEFT  (<<): 0011 << 2  = 1100  (×4)
+  RIGHT (>>): 1100 >> 2  = 0011  (÷4)
+
+  Truques Clássicos:
+  ─────────────────────────────────────────────
+  n & (n-1)       → remove o bit mais baixo setado
+                    12 (1100) & 11 (1011) = 1000 (8)
+
+  n & (-n)        → isola o bit mais baixo setado
+                    12 (1100) & -12 (...0100) = 0100 (4)
+
+  n ^ n = 0       → XOR consigo mesmo = 0
+  n ^ 0 = n       → XOR com zero = identidade
+
+  ► a ^ b ^ b = a → encontrar elemento único em array
+  ► 1 << i        → bit mask para posição i
+  ► n >> i & 1    → checar se bit i está setado`,
+    diagramCaption: 'Operações bitwise e truques clássicos com manipulação de bits',
+    problems: [
+      { title: 'Single Number', slug: 'single-number', difficulty: 'easy', hint: 'XOR todos: a^a=0, 0^b=b. Todos duplicados se cancelam, sobra o único' },
+      { title: 'Number of 1 Bits', slug: 'number-of-1-bits', difficulty: 'easy', hint: 'n & (n-1) remove o lowest set bit. Conte quantas vezes até n=0' },
+      { title: 'Counting Bits', slug: 'counting-bits', difficulty: 'easy', hint: 'dp[i] = dp[i >> 1] + (i & 1). Ou dp[i] = dp[i & (i-1)] + 1' },
+      { title: 'Reverse Bits', slug: 'reverse-bits', difficulty: 'easy', hint: 'Extraia cada bit (n & 1), shift no resultado, shift no n. 32 iterações' },
+      { title: 'Missing Number', slug: 'missing-number', difficulty: 'easy', hint: 'XOR de 0..n com todos os elementos. Duplicados cancelam, sobra o faltante' },
+    ],
+    lessonHref: '/trilha/cs/big-o-notation',
+  },
+  {
+    id: 'graph-advanced',
+    title: 'Grafos Avançados',
+    color: '#F59E0B',
+    description: 'Topological Sort para DAGs, Union-Find para componentes conexos, Dijkstra para menores caminhos ponderados. Problemas que vão além de BFS/DFS simples.',
+    complexity: 'Topo Sort: O(V+E) · Union-Find: O(α(n))* · Dijkstra: O((V+E) log V)',
+    diagram: `  Topological Sort (Kahn's BFS):
+  Pré-requisitos de cursos: 0→1, 0→2, 1→3, 2→3
+
+    ┌───┐     ┌───┐
+    │ 0 │────►│ 1 │──┐
+    └─┬─┘     └───┘  │    Ordem topológica:
+      │               ▼    [0, 1, 2, 3] ou [0, 2, 1, 3]
+      │             ┌───┐
+      └────────────►│ 3 │  ► Só funciona em DAGs (sem ciclos)
+    ┌───┐           └───┘  ► Kahn: BFS com in-degree count
+    │ 2 │────────────►┘    ► DFS: post-order reverso
+    └───┘
+
+  Union-Find (Disjoint Sets):
+  ┌─────────────────────────────────────────┐
+  │  find(x): segue parent até root         │
+  │  union(x,y): conecta roots              │
+  │  + path compression: aponta direto root │
+  │  + union by rank: árvore baixa          │
+  │  → quase O(1) por operação (α(n))       │
+  └─────────────────────────────────────────┘`,
+    diagramCaption: 'Topological Sort em DAG e Union-Find para componentes conexos',
+    problems: [
+      { title: 'Course Schedule II', slug: 'course-schedule-ii', difficulty: 'medium', hint: 'Topological sort (Kahn\'s BFS): comece pelos nós com in-degree 0' },
+      { title: 'Redundant Connection', slug: 'redundant-connection', difficulty: 'medium', hint: 'Union-Find: adicione arestas uma a uma. Se find(u) == find(v), é redundante' },
+      { title: 'Number of Connected Components', slug: 'number-of-connected-components-in-an-undirected-graph', difficulty: 'medium', hint: 'Union-Find ou DFS. Conte quantos roots distintos existem' },
+      { title: 'Network Delay Time', slug: 'network-delay-time', difficulty: 'medium', hint: 'Dijkstra com min-heap. Retorne o max dos tempos mínimos' },
+      { title: 'Alien Dictionary', slug: 'alien-dictionary', difficulty: 'hard', hint: 'Compare palavras adjacentes para extrair arestas. Topological sort no grafo de caracteres' },
+    ],
+    lessonHref: '/trilha/cs/graphs',
+  },
+];
+
+const visualizerMap: Record<string, string> = {
+  'arrays': 'TwoSumVisualizer',
+  'hash-tables': 'HashTableVisualizer',
+  'two-pointers': 'TwoPointersVisualizer',
+  'sliding-window': 'SlidingWindowVisualizer',
+  'binary-search': 'BinarySearchVisualizer',
+  'prefix-sum': 'PrefixSumVisualizer',
+  'linked-lists': 'ReverseListVisualizer',
+  'stacks-queues': 'ValidParenthesesVisualizer',
+  'trees': 'BSTTraversalVisualizer',
+  'heaps': 'HeapVisualizer',
+  'tries': 'TrieVisualizer',
+  'graphs': 'BFSVisualizer',
+  'sorting': 'MergeSort',
+  'backtracking': 'SubsetsVisualizer',
+  'dp': 'ClimbingStairsVisualizer',
+  'greedy': 'IntervalSchedulingVisualizer',
+  'intervals': 'MergeIntervalsVisualizer',
+  'bit-manipulation': 'SingleNumberVisualizer',
+  'graph-advanced': 'TopoSortVisualizer',
+};
+---
+
+<MainLayout
+  title="Algoritmos & Estruturas de Dados"
+  description="Roadmap completo de DSA com visualizadores interativos, exercícios do LeetCode comentados e diagramas."
+>
+  <div class="mx-auto max-w-5xl px-4 py-12 sm:px-6">
+    <!-- Header -->
+    <div class="mb-12">
+      <h1 class="mb-3 text-3xl font-bold tracking-tight sm:text-4xl">Algoritmos & Estruturas de Dados</h1>
+      <p class="max-w-2xl text-sm leading-relaxed text-[var(--color-text-muted)]">
+        Roadmap completo de DSA para entrevistas e fundamentos de engenharia. Cada tópico inclui visualizadores interativos, complexidade e exercícios selecionados do LeetCode com dicas de resolução.
+      </p>
+      <div class="mt-4 flex flex-wrap gap-3">
+        <div class="flex items-center gap-1.5 text-xs text-[var(--color-text-muted)]">
+          <span class="inline-block h-2 w-2 rounded-full bg-[#10B981]"></span>
+          Easy
+        </div>
+        <div class="flex items-center gap-1.5 text-xs text-[var(--color-text-muted)]">
+          <span class="inline-block h-2 w-2 rounded-full bg-[#F59E0B]"></span>
+          Medium
+        </div>
+        <div class="flex items-center gap-1.5 text-xs text-[var(--color-text-muted)]">
+          <span class="inline-block h-2 w-2 rounded-full bg-[#EF4444]"></span>
+          Hard
+        </div>
+        <span class="text-xs text-[var(--color-text-muted)]">·</span>
+        <span class="text-xs text-[var(--color-text-muted)]">
+          {sections.length} tópicos · {sections.reduce((acc, s) => acc + s.problems.length, 0)} exercícios
+        </span>
+      </div>
+    </div>
+
+    <!-- Quick Navigation -->
+    <div class="mb-12 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-alt)] p-5">
+      <h2 class="mb-3 text-xs font-bold uppercase tracking-wider text-[var(--color-text-muted)]">Navegação Rápida</h2>
+      <div class="flex flex-wrap gap-2">
+        {sections.map((section) => (
+          <a
+            href={`#${section.id}`}
+            class="inline-flex items-center gap-1.5 rounded-md border border-[var(--color-border)] px-2.5 py-1 text-xs transition-colors hover:border-[var(--color-text-muted)] hover:text-[var(--color-text)]"
+          >
+            <span class="h-1.5 w-1.5 rounded-full" style={`background-color: ${section.color}`}></span>
+            {section.title}
+          </a>
+        ))}
+      </div>
+    </div>
+
+    <!-- Sections -->
+    <div class="space-y-10">
+      {sections.map((section, idx) => (
+        <section id={section.id} class="scroll-mt-20">
+          <div class="overflow-hidden rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-alt)]">
+            <!-- Section Header -->
+            <div class="border-b border-[var(--color-border)] px-5 py-4">
+              <div class="flex items-center gap-3">
+                <span class="font-mono text-xs text-[var(--color-text-muted)]">
+                  {String(idx + 1).padStart(2, '0')}
+                </span>
+                <div class="h-4 w-0.5 rounded-full" style={`background-color: ${section.color}`}></div>
+                <h2 class="text-lg font-bold">{section.title}</h2>
+              </div>
+              <p class="mt-1.5 text-sm text-[var(--color-text-muted)]">{section.description}</p>
+              {section.complexity && (
+                <p class="mt-1 font-mono text-xs text-[var(--color-text-muted)]">{section.complexity}</p>
+              )}
+            </div>
+
+            <!-- Interactive Visualizer -->
+            <div class="border-b border-[var(--color-border)]">
+              {section.id === 'arrays' && <TwoSumVisualizer client:visible />}
+              {section.id === 'hash-tables' && <HashTableVisualizer client:visible />}
+              {section.id === 'two-pointers' && <TwoPointersVisualizer client:visible />}
+              {section.id === 'sliding-window' && <SlidingWindowVisualizer client:visible />}
+              {section.id === 'binary-search' && <BinarySearchVisualizer client:visible />}
+              {section.id === 'prefix-sum' && <PrefixSumVisualizer client:visible />}
+              {section.id === 'linked-lists' && <ReverseListVisualizer client:visible />}
+              {section.id === 'stacks-queues' && <ValidParenthesesVisualizer client:visible />}
+              {section.id === 'trees' && <BSTTraversalVisualizer client:visible />}
+              {section.id === 'heaps' && <HeapVisualizer client:visible />}
+              {section.id === 'tries' && <TrieVisualizer client:visible />}
+              {section.id === 'graphs' && <BFSVisualizer client:visible />}
+              {section.id === 'sorting' && <MergeSort client:visible />}
+              {section.id === 'backtracking' && <SubsetsVisualizer client:visible />}
+              {section.id === 'dp' && <ClimbingStairsVisualizer client:visible />}
+              {section.id === 'greedy' && <IntervalSchedulingVisualizer client:visible />}
+              {section.id === 'intervals' && <MergeIntervalsVisualizer client:visible />}
+              {section.id === 'bit-manipulation' && <SingleNumberVisualizer client:visible />}
+              {section.id === 'graph-advanced' && <TopoSortVisualizer client:visible />}
+            </div>
+
+            <!-- Problems -->
+            <div class="px-5 py-4">
+              <div class="mb-3 flex items-center justify-between">
+                <h3 class="text-xs font-bold uppercase tracking-wider text-[var(--color-text-muted)]">
+                  Exercícios LeetCode
+                </h3>
+                <span class="text-[10px] text-[var(--color-text-muted)]">{section.problems.length} problemas</span>
+              </div>
+
+              <div class="space-y-2">
+                {section.problems.map((problem) => {
+                  const diff = difficulties[problem.difficulty];
+                  return (
+                    <div class="group rounded-lg border border-[var(--color-border)] px-4 py-3 transition-colors hover:border-[var(--color-text-muted)]">
+                      <div class="flex items-start gap-3">
+                        <span
+                          class="mt-0.5 shrink-0 rounded px-1.5 py-0.5 text-[10px] font-bold"
+                          style={`color: ${diff.color}; background-color: ${diff.bg}`}
+                        >
+                          {diff.label}
+                        </span>
+                        <div class="min-w-0 flex-1">
+                          <a
+                            href={`https://leetcode.com/problems/${problem.slug}/`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            class="text-sm font-medium transition-colors hover:text-[var(--color-accent)]"
+                          >
+                            {problem.title}
+                            <svg class="ml-1 inline-block h-3 w-3 opacity-50" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                              <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+                              <polyline points="15 3 21 3 21 9" />
+                              <line x1="10" y1="14" x2="21" y2="3" />
+                            </svg>
+                          </a>
+                          <p class="mt-0.5 text-xs text-[var(--color-text-muted)]">
+                            <span class="font-medium">Dica:</span> {problem.hint}
+                          </p>
+                        </div>
+                      </div>
+                    </div>
+                  );
+                })}
+              </div>
+
+              <!-- Action Links -->
+              {section.lessonHref && (
+                <div class="mt-4">
+                  <a
+                    href={section.lessonHref}
+                    class="inline-flex items-center gap-1.5 rounded-md border border-[var(--color-border)] px-3 py-1.5 text-xs transition-colors hover:border-[var(--color-text-muted)] hover:text-[var(--color-text)]"
+                  >
+                    <svg class="h-3.5 w-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                      <path d="M2 3h6a4 4 0 0 1 4 4v14a3 3 0 0 0-3-3H2z" />
+                      <path d="M22 3h-6a4 4 0 0 0-4 4v14a3 3 0 0 1 3-3h7z" />
+                    </svg>
+                    Lição completa
+                  </a>
+                </div>
+              )}
+            </div>
+          </div>
+        </section>
+      ))}
+    </div>
+  </div>
+</MainLayout>

@@ -105,6 +105,13 @@ export default function QuickSort() {
       onReset={handleReset}
       isComplete={currentStep >= steps.length - 1}
       color="#2563EB"
+      eli5={`O Quick Sort escolhe um elemento (pivô) e reorganiza a lista: tudo menor que o pivô vai para a esquerda, tudo maior para a direita. Depois aplica o mesmo processo recursivamente em cada lado.
+
+A partição é feita in-place, sem memória extra significativa. Dois ponteiros percorrem a lista — um buscando elementos maiores que o pivô (da esquerda) e outro buscando menores (da direita). Quando ambos encontram, trocam.
+
+No caso médio é O(n log n), mas no pior caso (pivô sempre o menor ou maior) degrada para O(n²). A escolha do pivô importa: mediana de três, pivô aleatório ou outros métodos ajudam a evitar o pior caso.
+
+Na prática é mais rápido que o Merge Sort para a maioria das entradas — por isso é o sort padrão em C (qsort) e na maioria das implementações de Arrays.sort. Não é estável, então elementos iguais podem trocar de posição relativa.`}
       codeView={<AlgorithmCodeView codes={ALGORITHM_CODES['quick-sort']} color="#2563EB" />}
     >
       <SortingVisualizer step={step} maxValue={maxValue} />

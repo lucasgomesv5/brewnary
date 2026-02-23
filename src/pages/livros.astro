@@ -5,59 +5,30 @@ import { getCollection } from 'astro:content';
 
 const allBooks = await getCollection('books');
 const books = allBooks.sort((a, b) => a.data.order - b.data.order);
-
-const essential = books.filter((b) => b.data.priority === 'essential');
-const recommended = books.filter((b) => b.data.priority === 'recommended');
 ---
 
-<MainLayout title="Livros" description="Curadoria de livros fundamentais em Engenharia de Software.">
+<MainLayout title="Livros" description="Livros recomendados sobre engenharia de software, algoritmos, arquitetura e carreira.">
   <div class="mx-auto max-w-5xl px-4 py-12 sm:px-6">
     <div class="mb-10">
       <h1 class="mb-3 text-3xl font-bold tracking-tight sm:text-4xl">Livros</h1>
       <p class="max-w-lg text-sm text-[var(--color-text-muted)]">
-        Curadoria de livros fundamentais. Organizados por relevância.
+        Livros recomendados por tópico.
       </p>
     </div>
 
-    {
-      essential.length > 0 && (
-        <section class="mb-10">
-          <h2 class="mb-4 text-lg font-bold">Fundamentais</h2>
-          <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {essential.map((book) => (
-              <BookCard
-                title={book.data.title}
-                author={book.data.author}
-                description={book.data.description}
-                category={book.data.category}
-                priority={book.data.priority}
-                coverColor={book.data.coverColor}
-              />
-            ))}
-          </div>
-        </section>
-      )
-    }
-
-    {
-      recommended.length > 0 && (
-        <section class="mb-10">
-          <h2 class="mb-4 text-lg font-bold">Recomendados</h2>
-          <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            {recommended.map((book) => (
-              <BookCard
-                title={book.data.title}
-                author={book.data.author}
-                description={book.data.description}
-                category={book.data.category}
-                priority={book.data.priority}
-                coverColor={book.data.coverColor}
-              />
-            ))}
-          </div>
-        </section>
-      )
-    }
+    <section class="mb-10">
+      <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
+        {books.map((book) => (
+          <BookCard
+            title={book.data.title}
+            author={book.data.author}
+            description={book.data.description}
+            category={book.data.category}
+            coverColor={book.data.coverColor}
+          />
+        ))}
+      </div>
+    </section>
 
     <section class="mt-14">
       <div class="rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-alt)] p-6">

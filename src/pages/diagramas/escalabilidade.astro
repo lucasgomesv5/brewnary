@@ -1,11 +1,11 @@
 ---
 import MainLayout from '../../layouts/MainLayout.astro';
-import YouTubeArchitectureDiagram from '../../components/react/diagrams/YouTubeArchitectureDiagram';
+import ScalingDiagram from '../../components/react/diagrams/ScalingDiagram';
 ---
 
 <MainLayout
-  title="Arquitetura do YouTube"
-  description="Diagrama interativo da arquitetura simplificada do YouTube: ingestão, transcodificação, CDN e recomendação."
+  title="Escalabilidade: Vertical vs Horizontal"
+  description="Diagrama interativo comparando estratégias de escalabilidade, load balancing, replicação e sharding."
 >
   <div class="mx-auto max-w-7xl px-4 py-8 sm:px-6">
     <div class="mb-6">
@@ -13,6 +13,6 @@ import YouTubeArchitectureDiagram from '../../components/react/diagrams/YouTubeA
         >← Voltar aos diagramas</a
       >
     </div>
-    <YouTubeArchitectureDiagram client:visible />
+    <ScalingDiagram client:visible />
   </div>
 </MainLayout>

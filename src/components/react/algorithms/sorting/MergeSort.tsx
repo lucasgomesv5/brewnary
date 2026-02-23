@@ -123,6 +123,13 @@ export default function MergeSort() {
       onReset={handleReset}
       isComplete={currentStep >= steps.length - 1}
       color="#EC4899"
+      eli5={`O Merge Sort usa a estratégia dividir para conquistar: divide a lista ao meio recursivamente até ter sublistas de 1 elemento (que já estão ordenadas por definição), e depois combina (merge) essas sublistas de volta em ordem.
+
+A etapa de merge é a chave: com duas sublistas já ordenadas, basta comparar o primeiro elemento de cada uma e pegar o menor. Isso garante O(n) por nível de recursão.
+
+Complexidade: sempre O(n log n), independente da entrada. O log n vem dos níveis de divisão (dividir n ao meio repetidamente) e o n vem do merge em cada nível. A desvantagem é usar O(n) de memória extra para as sublistas temporárias.
+
+É estável (mantém a ordem relativa de elementos iguais) e previsível — por isso é a base do TimSort, usado no Python e Java.`}
       codeView={<AlgorithmCodeView codes={ALGORITHM_CODES['merge-sort']} color="#EC4899" />}
     >
       <SortingVisualizer step={step} maxValue={maxValue} />

@@ -123,6 +123,15 @@ export default function BFSVisualizer() {
       onReset={handleReset}
       isComplete={currentStep >= steps.length - 1}
       color="#F59E0B"
+      eli5={`O BFS (Busca em Largura) explora um grafo nível por nível: primeiro visita todos os vizinhos diretos, depois os vizinhos dos vizinhos, e assim por diante. Usa uma fila (FIFO) para controlar a ordem.
+
+Funcionamento: começa pelo nó inicial, coloca todos os vizinhos na fila. Remove o primeiro da fila, visita, e adiciona seus vizinhos não-visitados. Repete até a fila esvaziar.
+
+Propriedade fundamental: o BFS encontra o caminho mais curto (em número de arestas) entre dois nós em grafos não-ponderados. Isso acontece porque ele sempre visita nós na ordem da distância.
+
+Complexidade: O(V + E), onde V é o número de vértices e E o número de arestas. Cada nó e cada aresta são processados uma vez.
+
+Aplicações: menor caminho em grafos não-ponderados, busca em redes sociais (graus de separação), web crawlers, detecção de componentes conectados, e Level Order Traversal em árvores.`}
       codeView={<AlgorithmCodeView codes={ALGORITHM_CODES['bfs']} color="#F59E0B" />}
     >
       <GraphVisualizer nodes={NODES} edges={EDGES} step={step} color="#F59E0B" />

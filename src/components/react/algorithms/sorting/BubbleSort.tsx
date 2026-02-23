@@ -78,6 +78,11 @@ export default function BubbleSort() {
       onReset={handleReset}
       isComplete={currentStep >= steps.length - 1}
       color="#8B5CF6"
+      eli5={`O Bubble Sort compara dois elementos vizinhos e troca se estão fora de ordem. Esse processo se repete do início ao fim da lista, e a cada passada completa o maior elemento "borbulha" para sua posição final.
+
+Por que é O(n²)? No pior caso (lista invertida), cada passada move apenas um elemento para o lugar certo. São n passadas, cada uma percorrendo até n elementos. Para listas pequenas funciona bem, mas para milhares de itens fica lento.
+
+Na prática quase nunca é usado em produção — Merge Sort e Quick Sort são muito mais eficientes. Mas o Bubble Sort é útil para entender o conceito de ordenação por comparação e a ideia de invariante de loop: após k passadas, os k maiores elementos já estão na posição correta.`}
       codeView={<AlgorithmCodeView codes={ALGORITHM_CODES['bubble-sort']} color="#8B5CF6" />}
     >
       <SortingVisualizer step={step} maxValue={maxValue} />

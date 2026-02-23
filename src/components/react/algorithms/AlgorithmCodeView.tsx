@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useState, useEffect, useRef } from 'react';
 
 const LANGS = ['js', 'py', 'cpp'] as const;
 const LANG_LABELS: Record<(typeof LANGS)[number], string> = {
@@ -10,10 +10,20 @@ const LANG_LABELS: Record<(typeof LANGS)[number], string> = {
 interface Props {
   codes: Record<'js' | 'py' | 'cpp', string>;
   color?: string;
+  highlightedLines?: Record<'js' | 'py' | 'cpp', number>;
 }
 
-export default function AlgorithmCodeView({ codes, color = '#8B5CF6' }: Props) {
+export default function AlgorithmCodeView({ codes, color = '#8B5CF6', highlightedLines }: Props) {
   const [lang, setLang] = useState<(typeof LANGS)[number]>('js');
+  const activeLineRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (activeLineRef.current) {
+      activeLineRef.current.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+    }
+  }, [highlightedLines, lang]);
+
+  const activeLine = highlightedLines?.[lang];
 
   return (
     <div>
@@ -38,28 +48,51 @@ export default function AlgorithmCodeView({ codes, color = '#8B5CF6' }: Props) {
       </div>
 
       <div className="overflow-x-auto rounded-lg border border-[var(--color-border)] bg-[var(--color-bg)]">
-        <pre className="p-4 font-mono text-xs leading-relaxed">
-          <code>
-            {codes[lang].split('\n').map((line, i) => {
-              const isComment =
-                line.trimStart().startsWith('//') ||
-                line.trimStart().startsWith('#') ||
-                line.trimStart().startsWith('/*') ||
-                line.trimStart().startsWith('*');
+        <div className="max-h-80 overflow-y-auto">
+          <pre className="font-mono text-xs leading-relaxed">
+            <code>
+              {codes[lang].split('\n').map((line, i) => {
+                const lineNum = i + 1;
+                const isActive = activeLine === lineNum;
+                const isComment =
+                  line.trimStart().startsWith('//') ||
+                  line.trimStart().startsWith('#') ||
+                  line.trimStart().startsWith('/*') ||
+                  line.trimStart().startsWith('*');
 
-              return (
-                <span key={i}>
-                  {isComment ? (
-                    <span style={{ color: 'var(--color-text-muted)' }}>{line}</span>
-                  ) : (
-                    <span style={{ color: 'var(--color-text)' }}>{line}</span>
-                  )}
-                  {'\n'}
-                </span>
-              );
-            })}
-          </code>
-        </pre>
+                return (
+                  <div
+                    key={i}
+                    ref={isActive ? activeLineRef : undefined}
+                    className="flex transition-colors duration-150"
+                    style={
+                      isActive
+                        ? {
+                            backgroundColor: `${color}15`,
+                            borderLeft: `2px solid ${color}`,
+                          }
+                        : { borderLeft: '2px solid transparent' }
+                    }
+                  >
+                    <span
+                      className="inline-block w-8 shrink-0 select-none pr-2 text-right"
+                      style={{ color: isActive ? color : 'var(--color-text-muted)', opacity: isActive ? 1 : 0.4 }}
+                    >
+                      {lineNum}
+                    </span>
+                    <span className="px-2 py-px">
+                      {isComment ? (
+                        <span style={{ color: 'var(--color-text-muted)' }}>{line}</span>
+                      ) : (
+                        <span style={{ color: 'var(--color-text)' }}>{line}</span>
+                      )}
+                    </span>
+                  </div>
+                );
+              })}
+            </code>
+          </pre>
+        </div>
       </div>
     </div>
   );

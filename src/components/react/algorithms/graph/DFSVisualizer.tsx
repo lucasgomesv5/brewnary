@@ -127,6 +127,15 @@ export default function DFSVisualizer() {
       onReset={handleReset}
       isComplete={currentStep >= steps.length - 1}
       color="#EF4444"
+      eli5={`O DFS (Busca em Profundidade) explora um grafo indo o mais fundo possível por cada caminho antes de voltar (backtrack) e tentar outro. Usa uma pilha (LIFO) — pode ser explícita ou via recursão.
+
+Funcionamento: começa por um nó, escolhe um vizinho não-visitado e repete. Quando chega num nó sem vizinhos não-visitados, volta para o anterior e tenta outro caminho. Continua até visitar tudo acessível.
+
+Diferença do BFS: o DFS não garante o menor caminho, mas usa menos memória — armazena apenas o caminho atual (O(h) onde h é a profundidade), enquanto o BFS pode armazenar um nível inteiro (O(w) onde w é a largura).
+
+Complexidade: O(V + E), mesma do BFS. A diferença é na ordem de visitação e no uso de memória.
+
+Aplicações: detecção de ciclos, ordenação topológica, resolver labirintos, encontrar componentes fortemente conectados (Tarjan, Kosaraju), e verificar se um grafo é bipartido.`}
       codeView={<AlgorithmCodeView codes={ALGORITHM_CODES['dfs']} color="#EF4444" />}
     >
       <GraphVisualizer nodes={NODES} edges={EDGES} step={step} color="#EF4444" />

@@ -63,16 +63,22 @@ const { activeTrack } = Astro.props;
       </div>
 
       <a
-        href="/livros"
+        href="/dsa"
         class="rounded-lg px-3 py-1.5 text-sm text-[var(--color-text-muted)] transition-colors hover:text-[var(--color-text)]"
       >
-        Livros
+        DSA
       </a>
       <a
         href="/diagramas"
         class="rounded-lg px-3 py-1.5 text-sm text-[var(--color-text-muted)] transition-colors hover:text-[var(--color-text)]"
       >
         Diagramas
+      </a>
+      <a
+        href="/livros"
+        class="rounded-lg px-3 py-1.5 text-sm text-[var(--color-text-muted)] transition-colors hover:text-[var(--color-text)]"
+      >
+        Livros
       </a>
     </div>
 
@@ -140,14 +146,20 @@ const { activeTrack } = Astro.props;
         ))
       }
       <hr class="my-2 border-[var(--color-border)]" />
-      <a href="/livros" class="block rounded-lg px-3 py-2 text-sm transition-colors hover:bg-[var(--color-border)]/30">
-        Livros
+      <a
+        href="/dsa"
+        class="block rounded-lg px-3 py-2 text-sm transition-colors hover:bg-[var(--color-border)]/30"
+      >
+        DSA
       </a>
       <a
         href="/diagramas"
         class="block rounded-lg px-3 py-2 text-sm transition-colors hover:bg-[var(--color-border)]/30"
       >
         Diagramas
+      </a>
+      <a href="/livros" class="block rounded-lg px-3 py-2 text-sm transition-colors hover:bg-[var(--color-border)]/30">
+        Livros
       </a>
     </div>
   </div>

@@ -42,20 +42,20 @@ import MainLayout from '../layouts/MainLayout.astro';
               'Modelo defense-in-depth com múltiplas camadas de proteção: firewall e WAF na borda, TLS/mTLS no transporte, autenticação e autorização na aplicação, e criptografia at-rest nos dados.',
           },
           {
-            href: '/diagramas/evolucao-arquitetura',
-            title: 'Evolução de Arquitetura',
-            desc: 'De monolito a microsserviços. Tradeoffs em cada transição.',
+            href: '/diagramas/escalabilidade',
+            title: 'Escalabilidade',
+            desc: 'Vertical vs horizontal. Load balancing, sharding, replicação e quando usar cada estratégia.',
             color: '#10B981',
             tooltip:
-              'Compare os tradeoffs reais de cada estágio: monolito, monolito modular, SOA e microsserviços. Entenda quando e por que migrar, e quais problemas cada arquitetura resolve e introduz.',
+              'Scale-up vs scale-out: limites de um servidor único, load balancers, stateless services, particionamento de dados (sharding), replicação e os trade-offs de cada abordagem.',
           },
           {
-            href: '/diagramas/youtube-architecture',
-            title: 'Arquitetura do YouTube',
-            desc: 'CDN, ingestão de vídeo, transcodificação, recommendation engine e serving.',
+            href: '/diagramas/arquitetura-frontend',
+            title: 'Arquitetura Frontend',
+            desc: 'Design system, componentização, gerenciamento de estado e pipeline de build.',
             color: '#a855f7',
             tooltip:
-              'Estudo de caso: ingestão de vídeo em escala global, pipeline de transcodificação, distribuição via CDN, sistema de recomendação e serving de bilhões de requests por dia.',
+              'Camadas de um design system (tokens, primitivos, compostos, páginas), padrões de estado (local, lifted, global, server state) e pipeline de entrega (bundle, split, CDN).',
           },
           {
             href: '/diagramas/queue-systems',
@@ -100,99 +100,21 @@ import MainLayout from '../layouts/MainLayout.astro';
       }
     </div>
 
-    <div class="mt-16">
-      <div class="mb-8">
-        <h2 class="mb-2 text-2xl font-bold tracking-tight">Algoritmos</h2>
-        <p class="max-w-lg text-sm text-[var(--color-text-muted)]">
-          Visualizadores animados passo a passo de algoritmos clássicos de ordenação, busca e grafos.
-        </p>
-      </div>
-
-      <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-        {
-          [
-            {
-              href: '/diagramas/algoritmos/bubble-sort',
-              title: 'Bubble Sort',
-              desc: 'Comparação adjacente com complexidade O(n²).',
-              color: '#8B5CF6',
-              tooltip:
-                'Algoritmo de ordenação mais simples: compara elementos adjacentes e troca se estiverem fora de ordem. Ideal para entender conceitos básicos de sorting.',
-            },
-            {
-              href: '/diagramas/algoritmos/quick-sort',
-              title: 'Quick Sort',
-              desc: 'Partição com pivô, O(n log n) no caso médio.',
-              color: '#2563EB',
-              tooltip:
-                'Algoritmo divide-and-conquer que escolhe um pivô e particiona o array. Um dos algoritmos de ordenação mais eficientes na prática.',
-            },
-            {
-              href: '/diagramas/algoritmos/merge-sort',
-              title: 'Merge Sort',
-              desc: 'Divisão recursiva + merge, O(n log n) garantido.',
-              color: '#EC4899',
-              tooltip:
-                'Divide o array pela metade recursivamente e depois combina as metades ordenadas. Garante O(n log n) em todos os casos, mas usa memória extra.',
-            },
-            {
-              href: '/diagramas/algoritmos/binary-search',
-              title: 'Binary Search',
-              desc: 'Busca em array ordenado com O(log n).',
-              color: '#10B981',
-              tooltip:
-                'Busca eficiente em arrays ordenados: compara o elemento do meio e descarta metade do array a cada passo. Logarítmico no número de elementos.',
-            },
-            {
-              href: '/diagramas/algoritmos/bfs',
-              title: 'BFS — Busca em Largura',
-              desc: 'Exploração nível a nível com fila FIFO.',
-              color: '#F59E0B',
-              tooltip:
-                'Breadth-First Search: explora todos os vizinhos de um nó antes de avançar para o próximo nível. Usa fila FIFO. Encontra o caminho mais curto em grafos não-ponderados.',
-            },
-            {
-              href: '/diagramas/algoritmos/dfs',
-              title: 'DFS — Busca em Profundidade',
-              desc: 'Exploração em profundidade com pilha LIFO.',
-              color: '#EF4444',
-              tooltip:
-                'Depth-First Search: segue um caminho até o fim antes de voltar e explorar alternativas. Usa pilha LIFO. Útil para detecção de ciclos e ordenação topológica.',
-            },
-          ].map((item) => (
-            <a
-              href={item.href}
-              class="group relative block overflow-hidden rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-alt)] transition-colors hover:border-[var(--color-text-muted)]"
-            >
-              <div class="h-0.5" style={`background-color: ${item.color}`} />
-              <div class="p-5">
-                <h2 class="mb-1.5 text-sm font-bold">{item.title}</h2>
-                <p class="text-xs leading-relaxed text-[var(--color-text-muted)]">{item.desc}</p>
-                <span class="mt-3 inline-flex items-center gap-1 text-xs text-[var(--color-text-muted)] transition-colors group-hover:text-[var(--color-text)]">
-                  Visualizar
-                  <svg
-                    class="h-3 w-3"
-                    viewBox="0 0 24 24"
-                    fill="none"
-                    stroke="currentColor"
-                    stroke-width="2"
-                    stroke-linecap="round"
-                    stroke-linejoin="round"
-                  >
-                    <>
-                      <path d="M5 12h14" />
-                      <path d="m12 5 7 7-7 7" />
-                    </>
-                  </svg>
-                </span>
-              </div>
-              <span class="pointer-events-none absolute right-4 bottom-full left-4 z-10 mb-2 rounded-lg border border-[var(--color-border)] bg-[var(--color-bg-alt)] p-3 text-xs leading-relaxed text-[var(--color-text-muted)] opacity-0 shadow-lg transition-opacity duration-200 group-hover:opacity-100">
-                {item.tooltip}
-              </span>
-            </a>
-          ))
-        }
-      </div>
+    <div class="mt-12 rounded-xl border border-[var(--color-border)] bg-[var(--color-bg-alt)] p-6 text-center">
+      <h2 class="mb-2 text-lg font-bold">Visualizadores de Algoritmos</h2>
+      <p class="mx-auto mb-4 max-w-md text-sm text-[var(--color-text-muted)]">
+        Os visualizadores interativos de algoritmos agora fazem parte da página de DSA, com 19 algoritmos animados passo a passo.
+      </p>
+      <a
+        href="/dsa"
+        class="inline-flex items-center gap-2 rounded-lg border border-[var(--color-border)] px-4 py-2 text-sm font-medium transition-colors hover:border-[var(--color-text-muted)]"
+      >
+        Ver Algoritmos & DSA
+        <svg class="h-4 w-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M5 12h14" />
+          <path d="m12 5 7 7-7 7" />
+        </svg>
+      </a>
     </div>
   </div>
 </MainLayout>

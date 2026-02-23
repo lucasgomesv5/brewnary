@@ -1,15 +1,18 @@
 ---
 import MainLayout from '../../layouts/MainLayout.astro';
-import ArchitectureEvolutionDiagram from '../../components/react/diagrams/ArchitectureEvolutionDiagram';
+import FrontendArchitectureDiagram from '../../components/react/diagrams/FrontendArchitectureDiagram';
 ---
 
-<MainLayout title="Evolução de Arquitetura" description="Diagrama interativo da evolução de monolito a microserviços.">
+<MainLayout
+  title="Arquitetura Frontend"
+  description="Diagrama interativo de design system, componentização, gerenciamento de estado e pipeline de build."
+>
   <div class="mx-auto max-w-7xl px-4 py-8 sm:px-6">
     <div class="mb-6">
       <a href="/diagramas" class="text-sm text-(--color-text-muted) transition-colors hover:text-(--color-text)"
         >← Voltar aos diagramas</a
       >
     </div>
-    <ArchitectureEvolutionDiagram client:visible />
+    <FrontendArchitectureDiagram client:visible />
   </div>
 </MainLayout>

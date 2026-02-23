@@ -5,12 +5,25 @@ interface Props {
   edges: GraphEdge[];
   step: GraphStep;
   color?: string;
+  directed?: boolean;
+  nodeLabels?: Record<string, string>;
 }
 
-export default function GraphVisualizer({ nodes, edges, step, color = '#8B5CF6' }: Props) {
+export default function GraphVisualizer({ nodes, edges, step, color = '#8B5CF6', directed = false, nodeLabels }: Props) {
   return (
     <div className="py-2">
       <svg viewBox="0 0 400 280" className="mx-auto w-full max-w-md">
+        {directed && (
+          <defs>
+            <marker id="arrowhead-default" markerWidth="8" markerHeight="6" refX="28" refY="3" orient="auto">
+              <polygon points="0 0, 8 3, 0 6" fill="var(--color-border)" />
+            </marker>
+            <marker id="arrowhead-active" markerWidth="8" markerHeight="6" refX="28" refY="3" orient="auto">
+              <polygon points="0 0, 8 3, 0 6" fill={color} />
+            </marker>
+          </defs>
+        )}
+
         {edges.map((edge) => {
           const from = nodes.find((n) => n.id === edge.from)!;
           const to = nodes.find((n) => n.id === edge.to)!;
@@ -26,6 +39,7 @@ export default function GraphVisualizer({ nodes, edges, step, color = '#8B5CF6' 
               y2={to.y}
               stroke={isActive ? color : 'var(--color-border)'}
               strokeWidth={isActive ? 2.5 : 1.5}
+              markerEnd={directed ? (isActive ? 'url(#arrowhead-active)' : 'url(#arrowhead-default)') : undefined}
               className="transition-all duration-200"
             />
           );
@@ -71,6 +85,17 @@ export default function GraphVisualizer({ nodes, edges, step, color = '#8B5CF6' 
               >
                 {node.label}
               </text>
+              {nodeLabels?.[node.id] && (
+                <text
+                  x={node.x}
+                  y={node.y + 30}
+                  textAnchor="middle"
+                  className="text-[9px]"
+                  fill="var(--color-text-muted)"
+                >
+                  {nodeLabels[node.id]}
+                </text>
+              )}
             </g>
           );
         })}
