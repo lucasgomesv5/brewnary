@@ -1,0 +1,777 @@
+---
+title: "JavaScript Core: Closures, Prototypes & this"
+description: "Closures e execution context, prototype chain, herança prototipal, o operador this, class internals, WeakRef e FinalizationRegistry — os fundamentos internos do JavaScript"
+track: "frontend"
+order: 4
+section: "JavaScript"
+priority: "high"
+tags: ["javascript", "closures", "prototypes", "this", "execution-context", "herança", "encapsulamento", "oop", "v8"]
+prerequisites: ["como-browser-funciona"]
+keyTakeaways:
+  - "Closures capturam o escopo léxico — a função 'lembra' onde foi criada, não onde é chamada"
+  - "Prototype chain é o mecanismo de herança do JS — class é syntax sugar sobre protótipos"
+  - "O valor de this depende de COMO a função é chamada, não de onde é definida"
+  - "Arrow functions herdam this do escopo léxico pai — não têm prototype nem arguments"
+---
+
+## Closures — Definição Formal
+
+Uma closure é a combinação de uma função com uma referência ao seu **lexical environment** (o ambiente lexico onde a função foi definida). A função "captura" o scope chain do momento da sua criação — não do momento da sua execução.
+
+```javascript
+function outer() {
+  const secret = 42;
+
+  function inner() {
+    return secret; // Resolvido via scope chain, NÃO por cópia
+  }
+
+  return inner;
+}
+
+const fn = outer();
+// outer() já terminou. Seu execution context saiu da call stack.
+// Mas o Environment Record de outer NÃO foi coletado pelo GC
+// porque 'fn' (inner) mantém uma referência a ele via [[Environment]].
+fn(); // 42
+```
+
+Closures capturam **referências**, não valores:
+
+```javascript
+function createMutable() {
+  let value = 'inicial';
+
+  return {
+    get: () => value,
+    set: (v) => { value = v },
+  };
+}
+
+const obj = createMutable();
+obj.get();        // 'inicial'
+obj.set('mutado');
+obj.get();        // 'mutado' — a closure referencia a MESMA variável
+```
+
+---
+
+## Execution Context e Scope Chain
+
+Quando o engine executa código, cria um **execution context** para cada invocação contendo:
+
+1. **Variable Environment** — onde `var` e `function` declarations são armazenadas
+2. **Lexical Environment** — onde `let`, `const` e `class` declarations são armazenadas
+3. **Outer Reference** — ponteiro para o Environment Record do escopo pai
+
+A scope chain é determinada **lexicamente** (pelo código-fonte), não dinamicamente (pela call stack):
+
+```javascript
+const value = 'global';
+
+function printValue() {
+  console.log(value); // Resolvido no escopo onde foi DEFINIDA
+}
+
+function wrapper() {
+  const value = 'local';
+  printValue(); // 'global' — NÃO 'local'
+}
+```
+
+### [[Environment]] — Como o V8 Armazena Closures
+
+O V8 cria um **Context** object que armazena apenas as variáveis efetivamente capturadas — uma otimização chamada **scope analysis**:
+
+```javascript
+function outer() {
+  const captured = 'eu sou capturada';
+  const notCaptured = 'eu sou ignorada pelo V8';
+
+  return function inner() {
+    return captured;
+    // Somente 'captured' aparece no Context da closure
+    // 'notCaptured' é elegível para GC
+  };
+}
+
+// CUIDADO: com eval() presente, essa otimização é desabilitada
+// e TODO o escopo é retido
+```
+
+---
+
+## Closures na Prática
+
+### Counter e Encapsulamento
+
+```javascript
+function createCounter(initial = 0) {
+  let count = initial;
+
+  return {
+    increment: () => ++count,
+    decrement: () => --count,
+    getCount: () => count,
+    reset: () => { count = initial },
+  };
+}
+
+const counter = createCounter(10);
+counter.increment(); // 11
+// 'count' é privada — impossível acessar de fora
+```
+
+### Partial Application e Currying
+
+```javascript
+function partial(fn, ...presetArgs) {
+  return function (...laterArgs) {
+    return fn(...presetArgs, ...laterArgs);
+  };
+}
+
+const double = partial((a, b) => a * b, 2);
+double(5); // 10
+
+// Currying genérico
+function curry(fn) {
+  const arity = fn.length;
+  return function curried(...args) {
+    if (args.length >= arity) return fn(...args);
+    return (...moreArgs) => curried(...args, ...moreArgs);
+  };
+}
+
+const add = curry((a, b, c) => a + b + c);
+add(1)(2)(3);    // 6
+add(1, 2)(3);    // 6
+```
+
+### Compose e Pipe
+
+```javascript
+const compose = (...fns) =>
+  (value) => fns.reduceRight((acc, fn) => fn(acc), value);
+
+const pipe = (...fns) =>
+  (value) => fns.reduce((acc, fn) => fn(acc), value);
+
+const processUser = pipe(
+  (user) => ({ ...user, name: user.name.trim() }),
+  (user) => ({ ...user, email: user.email.toLowerCase() }),
+  (user) => ({ ...user, createdAt: new Date().toISOString() }),
+);
+```
+
+---
+
+## Encapsulamento com Closures — Variáveis Privadas
+
+```javascript
+// Variáveis privadas completas (antes de #private fields)
+function createBankAccount(initialBalance) {
+  let balance = initialBalance;
+  const transactions = [];
+
+  function recordTransaction(type, amount) {
+    transactions.push({
+      type, amount,
+      date: new Date().toISOString(),
+      balanceAfter: balance,
+    });
+  }
+
+  return {
+    deposit(amount) {
+      if (amount <= 0) throw new RangeError('Depósito deve ser positivo');
+      balance += amount;
+      recordTransaction('deposit', amount);
+      return balance;
+    },
+    withdraw(amount) {
+      if (amount > balance) throw new RangeError('Saldo insuficiente');
+      balance -= amount;
+      recordTransaction('withdrawal', amount);
+      return balance;
+    },
+    getBalance: () => balance,
+    getStatement: () => [...transactions], // cópia defensiva
+  };
+}
+
+const account = createBankAccount(1000);
+account.deposit(500);   // 1500
+account.withdraw(200);  // 1300
+// account.balance → undefined (privada!)
+// account.transactions → undefined (privada!)
+```
+
+### Factory Functions com Closures
+
+```javascript
+function createLogger(prefix, level = 'info') {
+  const timestamp = () => new Date().toISOString();
+
+  return {
+    info: (msg, ...args) =>
+      console.log(`[${timestamp()}] [${prefix}] INFO: ${msg}`, ...args),
+    warn: (msg, ...args) =>
+      console.warn(`[${timestamp()}] [${prefix}] WARN: ${msg}`, ...args),
+    error: (msg, ...args) =>
+      console.error(`[${timestamp()}] [${prefix}] ERROR: ${msg}`, ...args),
+  };
+}
+
+const dbLogger = createLogger('DATABASE');
+const apiLogger = createLogger('API');
+dbLogger.info('Conexão estabelecida');
+apiLogger.error('Timeout na request');
+```
+
+---
+
+## O Problema do Loop com var
+
+```javascript
+// Todas as callbacks imprimem 3 — UMA ÚNICA variável 'i' (function-scoped)
+for (var i = 0; i < 3; i++) {
+  setTimeout(() => console.log(i), 100);
+}
+// Output: 3, 3, 3
+
+// Solução 1: let cria uma nova binding a cada iteração
+for (let i = 0; i < 3; i++) {
+  setTimeout(() => console.log(i), 100);
+}
+// Output: 0, 1, 2
+
+// Solução 2: IIFE cria um novo escopo com uma cópia do valor
+for (var i = 0; i < 3; i++) {
+  (function (j) {
+    setTimeout(() => console.log(j), 100);
+  })(i);
+}
+
+// Solução 3: bind cria nova função com argumento pré-fixado
+for (var i = 0; i < 3; i++) {
+  setTimeout(console.log.bind(console, i), 100);
+}
+```
+
+---
+
+## Memoization com Closures
+
+```javascript
+function memoize(fn) {
+  const cache = new Map();
+  return function (...args) {
+    const key = JSON.stringify(args);
+    if (cache.has(key)) return cache.get(key);
+    const result = fn.apply(this, args);
+    cache.set(key, result);
+    return result;
+  };
+}
+
+// Memoização com LRU (Least Recently Used)
+function memoizeLRU(fn, maxSize = 100) {
+  const cache = new Map();
+  return function (...args) {
+    const key = JSON.stringify(args);
+    if (cache.has(key)) {
+      const value = cache.get(key);
+      cache.delete(key);
+      cache.set(key, value); // Move para o fim (mais recente)
+      return value;
+    }
+    const result = fn.apply(this, args);
+    if (cache.size >= maxSize) {
+      cache.delete(cache.keys().next().value); // Remove mais antigo
+    }
+    cache.set(key, result);
+    return result;
+  };
+}
+```
+
+---
+
+### Memoização com WeakMap
+
+```javascript
+// WeakMap permite que as chaves sejam coletadas pelo GC
+// Porém, WeakMap só aceita objetos como chaves
+function memoizeWeak(fn) {
+  const cache = new WeakMap();
+  return function (objArg) {
+    if (cache.has(objArg)) return cache.get(objArg);
+    const result = fn.call(this, objArg);
+    cache.set(objArg, result);
+    return result;
+  };
+}
+
+let bigObj = { a: 1, b: 2, c: 3 };
+const processData = memoizeWeak((data) => {
+  return Object.keys(data).reduce((acc, key) => {
+    acc[key] = data[key] * 2;
+    return acc;
+  }, {});
+});
+
+processData(bigObj); // Calcula
+processData(bigObj); // Retorna do cache
+bigObj = null; // GC pode coletar tanto bigObj quanto o resultado cacheado
+```
+
+---
+
+## Module Pattern: Closures como Encapsulamento
+
+Antes de ES Modules (`import`/`export`), o **module pattern** era o mecanismo padrão para encapsulamento em JavaScript:
+
+```javascript
+const UserModule = (function () {
+  const users = new Map();
+  let nextId = 1;
+
+  function validateEmail(email) {
+    return /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email);
+  }
+
+  return {
+    create(name, email) {
+      if (!validateEmail(email)) throw new Error(`Email inválido: ${email}`);
+      const id = nextId++;
+      const user = { id, name, email, createdAt: Date.now() };
+      users.set(id, user);
+      return { ...user };
+    },
+    findById(id) {
+      const user = users.get(id);
+      return user ? { ...user } : null;
+    },
+    count() { return users.size; },
+  };
+})();
+
+UserModule.create('Lucas', 'lucas@mail.com');
+UserModule.count(); // 1
+// UserModule.users → undefined (privado!)
+```
+
+---
+
+## Implicações de Memória
+
+```javascript
+// Event listeners não removidos retêm closures
+function setupHandler() {
+  const heavyData = new Array(1_000_000).fill('dados pesados');
+
+  function handler() {
+    console.log(heavyData.length);
+  }
+
+  const btn = document.getElementById('btn');
+  btn.addEventListener('click', handler);
+
+  // Retorna cleanup
+  return () => btn.removeEventListener('click', handler);
+}
+
+// Anular referências explicitamente para evitar retenção
+function optimized() {
+  let unused = new ArrayBuffer(1024 * 1024 * 100);
+  const used = 'pequeno';
+  const result = () => used;
+  unused = null; // Permite GC
+  return result;
+}
+```
+
+---
+
+## Closures em React: Stale Closures
+
+```javascript
+// Stale closure: callback captura count = 0 e nunca vê atualizações
+function Timer() {
+  const [count, setCount] = useState(0);
+
+  useEffect(() => {
+    const interval = setInterval(() => {
+      setCount(count + 1); // Sempre seta para 1!
+    }, 1000);
+    return () => clearInterval(interval);
+  }, []);
+}
+
+// Solução: forma funcional do setState
+useEffect(() => {
+  const interval = setInterval(() => {
+    setCount((prev) => prev + 1); // prev é sempre atual
+  }, 1000);
+  return () => clearInterval(interval);
+}, []);
+```
+
+---
+
+## Prototype Chain: O Mecanismo Fundamental
+
+Todo objeto possui um slot interno `[[Prototype]]` que referencia outro objeto (ou `null`).
+
+```javascript
+const animal = {
+  isAlive: true,
+  breathe() { return 'respirando...'; },
+};
+
+const dog = Object.create(animal);
+dog.breed = 'Labrador';
+
+dog.breed;    // Own property → 'Labrador'
+dog.isAlive;  // Herda de animal → true
+dog.toString; // Herda de Object.prototype → function
+
+Object.getPrototypeOf(dog) === animal;              // true
+Object.getPrototypeOf(animal) === Object.prototype; // true
+Object.getPrototypeOf(Object.prototype) === null;   // true — fim da chain
+```
+
+```
+dog → animal → Object.prototype → null
+ │       │            │
+ │       │            ├─ toString()
+ │       │            ├─ hasOwnProperty()
+ │       │
+ │       ├─ isAlive: true
+ │       └─ breathe()
+ │
+ └─ breed: 'Labrador'
+```
+
+### Own vs Inherited Properties
+
+```javascript
+const child = Object.create(parent);
+child.own = true;
+
+Object.hasOwn(child, 'own');       // true (ES2022, seguro com Object.create(null))
+Object.hasOwn(child, 'inherited'); // false
+
+Object.keys(child);   // ['own'] — apenas own enumeráveis
+for (const key in child) {} // own + inherited enumeráveis
+
+// Property shadowing
+child.inherited = 'sobrescrito'; // Cria own property
+delete child.inherited;          // Volta a herdar do parent
+```
+
+---
+
+## Constructor Functions: O Que `new` Faz
+
+```javascript
+function Dog(name, breed) {
+  this.name = name;
+  this.breed = breed;
+}
+
+Dog.prototype.bark = function () {
+  return `${this.name} diz: Woof!`;
+};
+
+const rex = new Dog('Rex', 'Pastor Alemão');
+
+// Simulação completa do que `new` faz internamente:
+function simulateNew(Constructor, ...args) {
+  // 1. Cria objeto vazio
+  const obj = {};
+  // 2. Vincula [[Prototype]] ao prototype do constructor
+  Object.setPrototypeOf(obj, Constructor.prototype);
+  // 3. Executa constructor com this vinculado ao novo objeto
+  const result = Constructor.apply(obj, args);
+  // 4. Se retornou objeto, usa ele; senão retorna o criado
+  return (result !== null && typeof result === 'object') ? result : obj;
+}
+
+rex instanceof Dog;                            // true
+Object.getPrototypeOf(rex) === Dog.prototype;  // true
+Dog.prototype.constructor === Dog;             // true (referência circular)
+```
+
+### Object.create — Herança sem Constructor
+
+```javascript
+// Object.create(proto) — cria objeto com prototype específico
+const eventEmitter = {
+  _listeners: null,
+  on(event, fn) {
+    if (!this._listeners) this._listeners = {};
+    (this._listeners[event] ??= []).push(fn);
+    return this;
+  },
+  emit(event, ...args) {
+    const fns = this._listeners?.[event] ?? [];
+    fns.forEach(fn => fn.apply(this, args));
+    return this;
+  },
+  off(event, fn) {
+    if (!this._listeners?.[event]) return this;
+    this._listeners[event] = this._listeners[event].filter(f => f !== fn);
+    return this;
+  },
+};
+
+const logger = Object.create(eventEmitter);
+logger.log = function (message) {
+  console.log(`[LOG] ${message}`);
+  this.emit('log', message);
+};
+
+// Object.create(null) — dicionário puro sem prototype
+const cache = Object.create(null);
+cache.toString = 'valor qualquer'; // Sem conflito com Object.prototype
+```
+
+---
+
+## ES6 Classes: Syntactic Sugar
+
+Classes em JavaScript NÃO são classes no sentido de Java/C++. São **funções construtoras com sintaxe declarativa**.
+
+```javascript
+class Animal {
+  #heartRate = 60; // Private field (ES2022)
+  static kingdom = 'Animalia';
+
+  constructor(name) {
+    this.name = name;
+  }
+
+  breathe() {
+    return `${this.name} está respirando. BPM: ${this.#heartRate}`;
+  }
+
+  get info() { return `${this.name} (${Animal.kingdom})`; }
+
+  static create(name) { return new this(name); }
+}
+
+class Dog extends Animal {
+  #tricks = [];
+
+  constructor(name, breed) {
+    super(name); // OBRIGATÓRIO antes de acessar this
+    this.breed = breed;
+  }
+
+  bark() { return `${this.name} diz: Woof!`; }
+
+  breathe() {
+    return `${super.breathe()} (raça: ${this.breed})`;
+  }
+}
+
+// Provando que class é sugar:
+typeof Dog;                  // 'function'
+Dog.prototype.bark;          // [Function: bark]
+rex.hasOwnProperty('name');  // true  (own)
+rex.hasOwnProperty('bark');  // false (no prototype)
+```
+
+---
+
+## instanceof e Symbol.hasInstance
+
+```javascript
+rex instanceof Dog;    // true  — Dog.prototype está na chain
+rex instanceof Animal; // true
+rex instanceof Object; // true
+
+// Symbol.hasInstance customiza instanceof
+class EvenNumber {
+  static [Symbol.hasInstance](value) {
+    return typeof value === 'number' && value % 2 === 0;
+  }
+}
+
+4 instanceof EvenNumber;  // true
+3 instanceof EvenNumber;  // false
+
+// CUIDADO: instanceof falha entre realms (iframes, workers)
+// Use Array.isArray() para arrays
+```
+
+---
+
+## Performance: Hidden Classes e Inline Caches no V8
+
+```javascript
+// V8 cria "hidden classes" para objetos com a mesma estrutura
+
+// BOM — mesma shape → acesso monomorphic (rápido)
+function createPoint(x, y) {
+  return { x, y }; // Sempre mesma ordem de propriedades
+}
+
+// RUIM — shapes diferentes → acesso megamorphic (lento)
+function createPointBad(x, y, hasZ) {
+  const p = {};
+  if (hasZ) p.z = 0; // Ordem diferente!
+  p.x = x;
+  p.y = y;
+  return p;
+}
+
+// REGRAS PARA CÓDIGO MONOMORPHIC:
+// 1. Sempre inicialize propriedades na mesma ordem
+// 2. Não adicione propriedades condicionalmente
+// 3. Não delete propriedades (use = undefined)
+// 4. Mantenha tipos consistentes
+
+// NUNCA modifique o prototype de um objeto existente
+Object.setPrototypeOf(obj, other); // Invalida TODAS as inline caches
+```
+
+---
+
+## Composição Sobre Herança
+
+```javascript
+function withHealth(state) {
+  return {
+    takeDamage(amount) { state.hp = Math.max(0, state.hp - amount); },
+    heal(amount) { state.hp = Math.min(state.maxHp, state.hp + amount); },
+    isAlive() { return state.hp > 0; },
+  };
+}
+
+function withMovement(state) {
+  return {
+    move(x, y) { state.x += x; state.y += y; },
+    getPosition() { return { x: state.x, y: state.y }; },
+  };
+}
+
+function withMagic(state) {
+  return {
+    castSpell(spell) {
+      if (state.mana < spell.cost) return false;
+      state.mana -= spell.cost;
+      return spell.effect();
+    },
+  };
+}
+
+// Composição livre — qualquer combinação
+function createPlayer(name) {
+  const state = { name, hp: 100, maxHp: 100, mana: 50, x: 0, y: 0 };
+  return Object.assign({ name }, withHealth(state), withMovement(state), withMagic(state));
+}
+
+function createFlyingEnemy(name) {
+  const state = { name, hp: 50, maxHp: 50, x: 0, y: 0, altitude: 0 };
+  return Object.assign({ name }, withHealth(state), withMagic(state));
+}
+```
+
+---
+
+## Mixins com Object.assign
+
+```javascript
+const Serializable = {
+  serialize() { return JSON.stringify(this); },
+  toJSON() {
+    const result = {};
+    for (const key of Object.keys(this)) {
+      if (!key.startsWith('_')) result[key] = this[key];
+    }
+    return result;
+  },
+};
+
+const Observable = {
+  observe(prop, callback) {
+    this._observers ??= {};
+    (this._observers[prop] ??= []).push(callback);
+  },
+  set(prop, value) {
+    const old = this[prop];
+    this[prop] = value;
+    (this._observers?.[prop] || []).forEach(cb => cb(value, old));
+  },
+};
+
+class UserModel {
+  constructor(name, email) {
+    this.name = name;
+    this.email = email;
+  }
+}
+
+Object.assign(UserModel.prototype, Serializable, Observable);
+```
+
+---
+
+## TypeScript: interface vs type vs abstract class
+
+```typescript
+// INTERFACE — contrato estrutural, declaration merging
+interface Serializable { serialize(): string; }
+
+// TYPE — unions, intersections, mapped types
+type Result<T> = { ok: true; data: T } | { ok: false; error: Error };
+
+// ABSTRACT CLASS — implementação parcial + contrato
+abstract class Repository<T> {
+  protected items: Map<string, T> = new Map();
+  findById(id: string): T | undefined { return this.items.get(id); }
+  abstract validate(item: T): boolean;
+  abstract save(item: T): Promise<void>;
+}
+
+// TypeScript usa STRUCTURAL TYPING — compatibilidade pela forma
+interface Dog { name: string; breed: string; }
+interface Cat { name: string; breed: string; }
+const dog: Dog = { name: 'Rex', breed: 'Labrador' };
+const cat: Cat = dog; // OK! Mesma estrutura
+
+// Branded types para tipos nominais:
+type UserId = string & { readonly __brand: unique symbol };
+type OrderId = string & { readonly __brand: unique symbol };
+```
+
+---
+
+## Resumo
+
+| Conceito | Mecanismo | Risco |
+|---|---|---|
+| Closure | Função + referência ao lexical environment | Retenção de memória |
+| Scope chain | Environment Record → outer reference → global | Resolução incorreta com var |
+| [[Environment]] slot | Internal slot apontando para o Environment Record | V8 desabilita otimizações com eval |
+| Module pattern | IIFE + closure para encapsulamento | Obsoleto com ES Modules |
+| Memoization | Cache na closure | Memory leaks sem limite |
+| Stale closures (React) | Closure captura valor antigo | Bugs sutis em useEffect |
+| Prototype chain | [[Prototype]] → ... → null | Megamorphic access |
+| Hidden classes (V8) | Objetos com mesma shape compartilham Maps | delete deoptimiza |
+| Composição | Object.assign com factory functions | Namespace collisions |
+
+---
+
+## Referencias e Fontes
+
+- **MDN JavaScript Reference** — referencia completa de closures, prototypes, classes e built-in objects
+- **ECMA-262 Specification** — especificacao oficial do JavaScript (ECMAScript)
+- **"You Don't Know JS"** (Kyle Simpson) — serie que cobre scoping, closures, this e prototypes em profundidade
+- **V8 Blog** — artigos sobre hidden classes, inline caches e otimizacoes do engine
+- **"JavaScript: The Definitive Guide"** (David Flanagan) — referencia abrangente de JS
+- **React official documentation** — guia sobre hooks, closures em React e stale closures
+- **web.dev** — artigos do Google sobre JavaScript moderno e performance

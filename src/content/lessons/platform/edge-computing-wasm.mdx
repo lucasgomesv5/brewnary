@@ -1,0 +1,736 @@
+---
+title: "Edge Computing e WebAssembly"
+description: "Edge computing (Cloudflare Workers, Vercel Edge, Deno Deploy), WebAssembly fundamentals (WAT, linear memory, WASI), Wasm no browser e no server, Component Model e use cases reais"
+track: "platform"
+order: 11
+section: "Edge & Runtime"
+priority: "medium"
+tags: ["edge-computing", "WebAssembly", "Wasm", "WASI", "Cloudflare-Workers", "Deno", "V8-isolates", "Durable-Objects"]
+prerequisites: ["docker", "aws"]
+keyTakeaways:
+  - "Edge functions executam código em 200+ PoPs globais com latência abaixo de 50ms — V8 isolates (Cloudflare) iniciam em ~5ms vs ~500ms de containers, sacrificando compatibilidade por velocidade"
+  - "WebAssembly é um formato binário portátil que roda a near-native speed em qualquer ambiente com VM Wasm — browser, server, edge, IoT — com sandbox de segurança por design"
+  - "WASI (WebAssembly System Interface) padroniza acesso a filesystem, network e clock para Wasm fora do browser — é o POSIX do WebAssembly"
+  - "Durable Objects (Cloudflare) resolvem o problema de estado em edge: cada objeto tem storage persistente e single-threaded access, permitindo coordination sem banco de dados central"
+---
+
+## Edge Computing: Conceitos
+
+Edge computing move a execucao de codigo para pontos **fisicamente proximos** ao usuario final. Em vez de um request viajar do Brasil ate us-east-1 (Virginia, ~160ms de latencia de rede), ele e processado num PoP (Point of Presence) em Sao Paulo (~5-20ms).
+
+### CDN vs Edge Functions
+
+CDN cacheia e serve **conteudo estatico** — HTML, CSS, JS, imagens. Edge functions executam **logica arbitraria** na borda. CDN serve bytes, edge functions **tomam decisoes**.
+
+```
+CDN Tradicional:
+  User (SP) ──► PoP (SP) ──► Cache HIT? ──► Retorna conteudo (5ms)
+                                  │
+                                  └─ MISS ──► Origin (Virginia) ──► 160ms+
+
+Edge Functions:
+  User (SP) ──► PoP (SP) ──► EXECUTA CODIGO ──► Resultado (5-50ms)
+                                  │
+                                  └─ Se necessario ──► Origin / DB (100-300ms)
+```
+
+### Use Cases
+
+- **Personalizacao**: A/B testing, conteudo por regiao/device, sem round-trip ao origin
+- **Auth/JWT verification**: validar tokens no edge — 401 imediato sem consumir backend
+- **Geolocation routing**: versao regional, pricing por pais, compliance
+- **Image optimization**: redimensionar, converter formato (WebP/AVIF) on-the-fly
+- **Bot detection e rate limiting**: bloquear antes de atingir o origin
+
+### Trade-offs
+
+- **Runtime limitado**: sem `fs`, sem `child_process`, subconjunto de APIs
+- **CPU time**: Cloudflare Workers 10-50ms (free) a 30s (paid), Vercel 25s
+- **Sem processos longos**: nao e para batch processing ou ETL
+- **Storage**: KV stores eventually consistent, nao substituem bancos relacionais
+- **Debugging**: logs distribuidos em 200+ PoPs
+
+```
+┌────────────────────────────────────────────────────────┐
+│   User (SP)                                             │
+│     │                                                   │
+│     ▼                                                   │
+│   ┌──────────────────────────────────────┐             │
+│   │  Edge PoP (Sao Paulo)                │             │
+│   │  ┌─────────────┐ ┌────────────────┐  │             │
+│   │  │  CDN Cache   │ │ Edge Function  │  │             │
+│   │  │  (estatico)  │ │ (logica)       │  │             │
+│   │  └─────────────┘ └───────┬────────┘  │             │
+│   └───────────────────────────┼──────────┘             │
+│                    Precisa origin?                       │
+│                    SIM │         │ NAO                   │
+│                        ▼         ▼                      │
+│                  Origin (us-east)  Responde (~5-50ms)   │
+│                  (~100-300ms)                            │
+└────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Cloudflare Workers
+
+Cloudflare Workers roda em 300+ PoPs usando **V8 isolates** — nao containers, nao VMs.
+
+### V8 Isolates
+
+Um V8 isolate e uma instancia isolada do V8 engine. Diferenca crucial em relacao a containers:
+
+```
+Container:                          V8 Isolates:
+┌─────────┐ ┌─────────┐            ┌──────┐ ┌──────┐ ┌──────┐
+│ App     │ │ App     │            │ Code │ │ Code │ │ Code │
+│ Runtime │ │ Runtime │            │ Heap │ │ Heap │ │ Heap │
+│ OS libs │ │ OS libs │            └──────┘ └──────┘ └──────┘
+└─────────┘ └─────────┘            V8 Engine (compartilhado)
+Container Runtime + Host OS        Host OS
+Startup: ~500ms | Mem: ~50-100MB   Startup: ~5ms | Mem: ~1-5MB
+```
+
+**Por que mais rapidos**: sem boot de OS, V8 compartilhado e JIT pre-aquecido, sem overhead de rede. Isolamento via sandbox do V8 — cada isolate tem heap proprio, sem acesso a memoria de outros.
+
+### Workers Runtime e API
+
+```typescript
+// worker.ts — Cloudflare Worker
+export default {
+  async fetch(request: Request, env: Env): Promise<Response> {
+    const url = new URL(request.url);
+
+    // Web-standard APIs: fetch, Request/Response, URL, crypto.subtle,
+    // TextEncoder, ReadableStream, AbortController, setTimeout
+
+    if (url.pathname === "/api/geo") {
+      const cf = request.cf;
+      return Response.json({
+        country: cf?.country, city: cf?.city,
+        timezone: cf?.timezone, asn: cf?.asn,
+      });
+    }
+    return new Response("Hello from the edge!");
+  },
+};
+```
+
+### Workers KV
+
+KV distribuido globalmente. Otimizado para leituras frequentes — eventually consistent com propagacao em ate 60s.
+
+```typescript
+export default {
+  async fetch(request: Request, env: Env): Promise<Response> {
+    const key = new URL(request.url).pathname.slice(1);
+
+    if (request.method === "GET") {
+      const value = await env.MY_KV.get(key);
+      if (!value) return new Response("Not found", { status: 404 });
+      return new Response(value);
+    }
+    if (request.method === "PUT") {
+      await env.MY_KV.put(key, await request.text(), { expirationTtl: 3600 });
+      return new Response("OK", { status: 201 });
+    }
+    return new Response("Method not allowed", { status: 405 });
+  },
+};
+```
+
+### Durable Objects: Estado na Borda
+
+Cada Durable Object e um **singleton global** — uma unica instancia com single-threaded access e strong consistency. Resolve o problema de estado em edge.
+
+```typescript
+// Rate Limiter com Durable Objects
+export class RateLimiter implements DurableObject {
+  private state: DurableObjectState;
+
+  constructor(state: DurableObjectState, env: Env) {
+    this.state = state;
+  }
+
+  async fetch(request: Request): Promise<Response> {
+    const ip = request.headers.get("CF-Connecting-IP") || "unknown";
+    const now = Date.now();
+    const windowMs = 60_000;
+    const maxRequests = 100;
+
+    // Single-threaded — sem locks necessarios
+    let timestamps = (await this.state.storage.get<number[]>(`ip:${ip}`)) || [];
+    timestamps = timestamps.filter((t) => now - t < windowMs);
+
+    if (timestamps.length >= maxRequests) {
+      return new Response("Rate limit exceeded", { status: 429 });
+    }
+
+    timestamps.push(now);
+    await this.state.storage.put(`ip:${ip}`, timestamps);
+
+    return new Response("OK", {
+      headers: { "X-RateLimit-Remaining": String(maxRequests - timestamps.length) },
+    });
+  }
+}
+```
+
+Use cases: rate limiting, collaborative editing (cada doc = 1 DO), game state, distributed locks, chat rooms com WebSocket.
+
+### D1, R2 e Queues
+
+**D1**: SQLite no edge. Leitura abaixo de 5ms, replicas nos PoPs. **R2**: object storage S3-compatible com zero egress fees. **Queues**: message queue integrado com retry e dead-letter queue.
+
+### Exemplo: URL Shortener com Workers + KV
+
+```typescript
+import { nanoid } from "nanoid";
+
+export default {
+  async fetch(request: Request, env: Env): Promise<Response> {
+    const url = new URL(request.url);
+
+    if (request.method === "POST" && url.pathname === "/shorten") {
+      const { url: longUrl } = await request.json<{ url: string }>();
+      if (!longUrl || !URL.canParse(longUrl))
+        return Response.json({ error: "Invalid URL" }, { status: 400 });
+
+      const id = nanoid(8);
+      await env.URLS.put(id, longUrl, { expirationTtl: 86400 * 30 });
+      return Response.json({ shortUrl: `${url.origin}/${id}` }, { status: 201 });
+    }
+
+    const id = url.pathname.slice(1);
+    if (id && request.method === "GET") {
+      const longUrl = await env.URLS.get(id);
+      if (!longUrl) return new Response("Not found", { status: 404 });
+      return Response.redirect(longUrl, 302);
+    }
+
+    return new Response("URL Shortener — POST /shorten {url}");
+  },
+};
+```
+
+---
+
+## Vercel Edge Functions
+
+Vercel Edge Functions rodam na Vercel Edge Network (sobre Cloudflare). V8 isolates com integracao profunda com Next.js.
+
+### Edge Runtime vs Node.js Runtime
+
+```
+┌──────────────────────────────────┬───────────────────────┐
+│ Edge Runtime                     │ Node.js Runtime       │
+├──────────────────────────────────┼───────────────────────┤
+│ V8 isolates, startup ~5ms       │ Container, ~250ms     │
+│ Max execution: 25s              │ Max execution: 5min   │
+│ Max size: 1MB gzipped           │ Max size: 50MB        │
+│ Web APIs (fetch, crypto)        │ Full Node.js APIs     │
+│ 200+ PoPs globais               │ Regiao unica          │
+└──────────────────────────────────┴───────────────────────┘
+```
+
+### Middleware: Auth + Geolocation
+
+```typescript
+// middleware.ts — Next.js (roda no edge automaticamente)
+import { NextRequest, NextResponse } from "next/server";
+import { jwtVerify } from "jose";
+
+const PUBLIC_PATHS = ["/", "/login", "/signup"];
+
+export async function middleware(request: NextRequest) {
+  const { pathname } = request.nextUrl;
+
+  // Auth check — JWT no edge
+  if (!PUBLIC_PATHS.includes(pathname)) {
+    const token = request.cookies.get("session")?.value;
+    if (!token) return NextResponse.redirect(new URL("/login", request.url));
+    try {
+      await jwtVerify(token, new TextEncoder().encode(process.env.JWT_SECRET));
+    } catch {
+      const res = NextResponse.redirect(new URL("/login", request.url));
+      res.cookies.delete("session");
+      return res;
+    }
+  }
+
+  // Geolocation routing
+  if (pathname === "/" && request.geo?.country === "BR") {
+    return NextResponse.rewrite(new URL("/pt-br", request.url));
+  }
+
+  // A/B testing
+  if (!request.cookies.get("ab-bucket") && pathname.startsWith("/pricing")) {
+    const bucket = Math.random() < 0.5 ? "control" : "variant";
+    const res = NextResponse.rewrite(new URL(`/pricing/${bucket}`, request.url));
+    res.cookies.set("ab-bucket", bucket, { maxAge: 86400 * 30 });
+    return res;
+  }
+
+  return NextResponse.next();
+}
+
+export const config = {
+  matcher: ["/((?!_next/static|_next/image|favicon.ico).*)"],
+};
+```
+
+### Edge Config
+
+Key-value otimizado para leituras ultra-rapidas (abaixo de 1ms). Ideal para feature flags.
+
+```typescript
+import { get } from "@vercel/edge-config";
+export const config = { runtime: "edge" };
+
+export default async function handler(request: Request) {
+  const maintenance = await get<boolean>("maintenance_mode");
+  if (maintenance) return new Response("Em manutencao", { status: 503 });
+  return Response.json({ flags: await get("feature_flags") });
+}
+```
+
+---
+
+## Deno Deploy
+
+Deno Deploy roda V8 isolates em 35+ regioes com Web APIs nativas e deploy direto do GitHub.
+
+```typescript
+// server.ts — Deno Deploy + Deno KV
+const kv = await Deno.openKv(); // Globally distributed, strong consistency
+
+Deno.serve(async (request: Request) => {
+  const url = new URL(request.url);
+
+  if (url.pathname === "/api/pageviews" && request.method === "POST") {
+    const { page } = await request.json();
+    const key = ["pageviews", page];
+    const current = await kv.get<number>(key);
+    const count = (current.value || 0) + 1;
+
+    // Transacao atomica com optimistic locking
+    const result = await kv.atomic()
+      .check(current)
+      .set(key, count)
+      .commit();
+
+    if (!result.ok) return new Response("Conflict", { status: 409 });
+    return Response.json({ page, count });
+  }
+
+  if (url.pathname === "/api/pageviews" && request.method === "GET") {
+    const page = url.searchParams.get("page") || "/";
+    const result = await kv.get<number>(["pageviews", page]);
+    return Response.json({ page, count: result.value || 0 });
+  }
+
+  return new Response("Deno Deploy API");
+});
+```
+
+**Deno KV vs Workers KV**: Deno KV tem strong consistency e transacoes atomicas. Workers KV e eventually consistent (~60s propagacao). Deno KV suporta range queries; Workers KV apenas get/list por prefix.
+
+---
+
+## WebAssembly Fundamentals
+
+WebAssembly (Wasm) e um **formato binario portatil** para uma stack-based virtual machine. Nao e assembly — e bytecode projetado para ser compilado de C, C++, Rust, Go e executado com near-native performance.
+
+### WAT: WebAssembly Text Format
+
+```wat
+;; soma.wat — soma de dois inteiros de 32 bits
+(module
+  (func $add (param $a i32) (param $b i32) (result i32)
+    local.get $a     ;; Push $a na stack
+    local.get $b     ;; Push $b na stack
+    i32.add          ;; Pop dois, soma, push resultado
+  )
+  (export "add" (func $add))
+)
+```
+
+```wat
+;; fibonacci.wat — iterativo
+(module
+  (func $fib (param $n i32) (result i32)
+    (local $a i32) (local $b i32) (local $tmp i32) (local $i i32)
+    (if (i32.le_s (local.get $n) (i32.const 1))
+      (then (return (local.get $n))))
+    (local.set $b (i32.const 1))
+    (local.set $i (i32.const 2))
+    (block $break (loop $loop
+      (local.set $tmp (i32.add (local.get $a) (local.get $b)))
+      (local.set $a (local.get $b))
+      (local.set $b (local.get $tmp))
+      (local.set $i (i32.add (local.get $i) (i32.const 1)))
+      (br_if $loop (i32.le_s (local.get $i) (local.get $n)))))
+    (local.get $b))
+  (export "fib" (func $fib))
+)
+```
+
+### Tipos e Linear Memory
+
+Wasm 1.0: `i32`, `i64`, `f32`, `f64`. Wasm 2.0 adiciona reference types (`funcref`, `externref`) e SIMD.
+
+**Linear memory**: array contiguo de bytes, growable em paginas de 64KB. Host e Wasm compartilham dados complexos (strings, structs) via linear memory.
+
+```
+Linear Memory:
+┌──────────────┬────────────────┬──────────────────┐
+│  Stack data  │  Heap data     │  Growable        │
+│  (locals)    │  (strings,     │  (memory.grow)   │
+│              │   allocations) │                  │
+└──────────────┴────────────────┴──────────────────┘
+ Acesso: i32.load / i32.store   Host: ArrayBuffer
+```
+
+### Security Model
+
+- Sem acesso direto a memoria do host — so sua linear memory
+- Sem system calls (sem WASI) — zero acesso a filesystem, network, clock
+- Imports explicitos — so chama funcoes providas pelo host
+- Control flow integrity — apenas branches estruturados, sem jumps arbitrarios
+
+---
+
+## Wasm no Browser
+
+### Compilando para Wasm
+
+| Linguagem | Toolchain | Maturidade |
+|-----------|-----------|------------|
+| Rust | wasm-pack, wasm-bindgen | Excelente — melhor suporte |
+| C/C++ | Emscripten | Muito bom — legado massivo |
+| Go | Built-in (GOARCH=wasm) | Funcional — bundle grande ~2MB+ |
+| AssemblyScript | asc compiler | Bom — familiar para JS devs |
+
+### Loading e Interop
+
+```typescript
+// Streaming compilation (recomendado)
+const { instance } = await WebAssembly.instantiateStreaming(
+  fetch("/module.wasm"),
+  { env: { log: (ptr: number) => console.log(ptr) } }
+);
+const result = instance.exports.add(40, 2); // 42
+```
+
+### Exemplo: Image Processing com Rust + Wasm
+
+```rust
+// lib.rs — Rust → Wasm
+use wasm_bindgen::prelude::*;
+
+#[wasm_bindgen]
+pub fn grayscale(data: &[u8]) -> Vec<u8> {
+    let mut output = Vec::with_capacity(data.len());
+    for pixel in data.chunks(4) {
+        let gray = (0.299 * pixel[0] as f32
+                  + 0.587 * pixel[1] as f32
+                  + 0.114 * pixel[2] as f32) as u8;
+        output.extend_from_slice(&[gray, gray, gray, pixel[3]]);
+    }
+    output
+}
+```
+
+```typescript
+// Uso no browser
+import init, { grayscale } from "./pkg/image_processor";
+await init();
+
+const ctx = canvas.getContext("2d")!;
+const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+const result = grayscale(imageData.data); // Processado em Wasm
+```
+
+### Quando Wasm Vale a Pena
+
+```
+WASM VALE A PENA              │ JS E SUFICIENTE
+───────────────────────────────┼────────────────────────
+Image/video processing         │ DOM manipulation
+Criptografia, compressao       │ String processing, JSON
+Physics simulation, games      │ I/O-bound operations
+CAD/3D rendering               │ UI logic, eventos
+Codecs (ffmpeg, opus)          │ Regex, template rendering
+Scientific computing           │ Networking/fetch
+
+Regra: bottleneck e CPU (tight loops)? Wasm 2-10x mais rapido.
+       Bottleneck e I/O ou DOM? Wasm nao ajuda.
+```
+
+---
+
+## WASI (WebAssembly System Interface)
+
+WASI padroniza como modulos Wasm acessam recursos do sistema **fora do browser**. E o "POSIX do WebAssembly" — com capability-based security.
+
+### Capability-Based Security
+
+```
+POSIX: processo pode ler QUALQUER arquivo com permissao do user
+WASI:  host concede acesso EXPLICITO a cada recurso
+
+  wasmtime run --dir=/data module.wasm
+  # Modulo so acessa /data — nada mais
+```
+
+Preview 1 define: `fd_read`, `fd_write`, `path_open`, `clock_time_get`, `random_get`, `environ_get`, `proc_exit`.
+
+### Exemplo: CLI Tool em Rust para WASI
+
+```rust
+// main.rs — wordcount compilado para WASI
+use std::{env, fs};
+
+fn main() {
+    let args: Vec<String> = env::args().collect();
+    if args.len() < 2 { eprintln!("Usage: wordcount <file>"); std::process::exit(1); }
+
+    let content = fs::read_to_string(&args[1]).unwrap_or_else(|e| {
+        eprintln!("Error: {}", e); std::process::exit(1);
+    });
+
+    println!("  {}  {}  {}  {}",
+        content.lines().count(),
+        content.split_whitespace().count(),
+        content.chars().count(),
+        &args[1]);
+}
+```
+
+```bash
+cargo build --target wasm32-wasip1 --release
+wasmtime run --dir=. target/wasm32-wasip1/release/wordcount.wasm -- input.txt
+# Sem --dir=. → Error: failed to find a pre-opened directory
+```
+
+---
+
+## Wasm no Server
+
+### Wasm vs Containers
+
+```
+┌──────────────────┬────────────────────┬──────────────────────┐
+│                  │ Wasm               │ Container            │
+├──────────────────┼────────────────────┼──────────────────────┤
+│ Startup          │ ~1ms               │ ~500ms-5s            │
+│ Memory           │ ~1-5MB             │ ~50-100MB            │
+│ Sandbox          │ Wasm sandbox       │ namespaces+cgroups   │
+│ Portabilidade    │ Qualquer arch      │ Linux (+ emulacao)   │
+│ Ecossistema      │ Emergente          │ Maduro               │
+│ Linguagens       │ Rust, C, Go, Zig   │ Qualquer uma         │
+└──────────────────┴────────────────────┴──────────────────────┘
+```
+
+### Spin (Fermyon)
+
+Framework open-source para microservicos Wasm. Cada rota e um component compilado para Wasm.
+
+```toml
+# spin.toml
+spin_manifest_version = 2
+
+[application]
+name = "my-api"
+
+[[trigger.http]]
+route = "/api/hello"
+component = "hello"
+
+[component.hello]
+source = "target/wasm32-wasip1/release/hello.wasm"
+allowed_outbound_hosts = []
+```
+
+```rust
+use spin_sdk::http::{IntoResponse, Request, Response};
+use spin_sdk::http_component;
+
+#[http_component]
+fn handle_hello(_req: Request) -> anyhow::Result<impl IntoResponse> {
+    Ok(Response::builder()
+        .status(200)
+        .header("content-type", "application/json")
+        .body(r#"{"message": "Hello from Wasm!"}"#)
+        .build())
+}
+```
+
+**WasmEdge**: runtime de alta performance, usado pelo Docker Desktop. **wasmCloud**: plataforma distribuida com modelo de actors + capabilities plugaveis.
+
+---
+
+## Wasm + Containers
+
+Docker Desktop 4.15+ suporta Wasm como runtime alternativo:
+
+```bash
+docker run --runtime=io.containerd.wasmtime.v1 --platform=wasi/wasm my-app
+```
+
+**SpinKube** permite rodar workloads Wasm no Kubernetes via containerd shim:
+
+```yaml
+apiVersion: core.spinoperator.dev/v1alpha1
+kind: SpinApp
+metadata:
+  name: my-api
+spec:
+  image: "ghcr.io/my-org/my-api:v1"
+  replicas: 3
+  executor: containerd-shim-spin
+```
+
+**Solomon Hykes** (criador do Docker): *"If WASM+WASI existed in 2008, we wouldn't have needed to create Docker. That's how important it is."* Nao significa que Wasm substitui containers — significa que para workloads curtos, stateless e multi-tenant, Wasm e uma abstracao melhor.
+
+---
+
+## Use Cases Reais
+
+- **Figma**: rendering engine em C++ compilado para Wasm — performance comparavel a nativo no browser
+- **Google Earth**: renderizacao 3D via Wasm (codebase C++ legado via Emscripten)
+- **Shopify Functions**: logica de negocio customizada (descontos, validacoes) sandboxed em Wasm
+- **Fastly Compute**: CDN programavel com Wasm compilado de Rust/Go/JS
+- **SQLite via Wasm**: wa-sqlite, sql.js — banco SQL completo no browser com OPFS para persistencia
+- **Plugins seguros**: Envoy proxy filters, VS Code web extensions, database extensions — Wasm sandbox garante isolamento
+
+---
+
+## Performance: Wasm vs JavaScript
+
+### Benchmarks
+
+```
+┌──────────────────────┬──────────────┬────────────────────────┐
+│ Operacao             │ JS (ms)      │ Wasm/Rust (ms)         │
+├──────────────────────┼──────────────┼────────────────────────┤
+│ fibonacci(40)        │ 850          │ 320   (2.7x faster)    │
+│ SHA-256 (1MB)        │ 12           │ 3.5   (3.4x faster)   │
+│ Matrix mult 1000x    │ 2100         │ 480   (4.4x faster)   │
+│ JSON parse (100KB)   │ 0.8          │ 1.2   (JS wins)       │
+│ Regex (10K matches)  │ 15           │ 18    (JS wins)       │
+│ Image grayscale 4K   │ 85           │ 12    (7x faster)     │
+│ zlib decompress 1MB  │ 95           │ 25    (3.8x faster)   │
+└──────────────────────┴──────────────┴────────────────────────┘
+```
+
+### Wasm-JS Boundary Crossing
+
+Cada chamada JS→Wasm tem overhead de ~20-100ns. Minimize crossings:
+
+```typescript
+// ❌ 1M boundary crossings
+for (let i = 0; i < 1_000_000; i++) sum += wasmAdd(i, 1);
+
+// ✅ 1 crossing — loop dentro do Wasm
+const sum = wasmSumRange(1_000_000);
+```
+
+---
+
+## Component Model: O Futuro do Wasm
+
+Component Model adiciona **interface types** — strings, lists, records — permitindo componentes de diferentes linguagens se comunicarem diretamente.
+
+### WIT (Wasm Interface Type)
+
+```wit
+// greeter.wit
+package example:greeter;
+
+interface greet {
+    record person {
+        name: string,
+        age: u32,
+    }
+    greeting: func(who: person) -> string;
+}
+
+world greeter {
+    export greet;
+}
+```
+
+```rust
+// Implementacao em Rust
+wit_bindgen::generate!({ world: "greeter" });
+
+struct MyGreeter;
+
+impl Guest for MyGreeter {
+    fn greeting(who: Person) -> String {
+        format!("Ola, {}! Voce tem {} anos.", who.name, who.age)
+    }
+}
+export!(MyGreeter);
+```
+
+### Componentes como Legos
+
+```
+┌──────────────┐     ┌──────────────┐
+│ Auth (Rust)  │────►│ API (Python) │
+│ exports:     │     │ imports:     │
+│   verify()   │     │   verify()   │
+└──────────────┘     │ exports:     │
+                     │   handle()   │
+┌──────────────┐     └──────┬───────┘
+│ Logger (Go)  │◄───────────┘
+│ imports:     │
+│   log()      │   Cada component compilado separadamente.
+└──────────────┘   Composicao via WIT, sem recompilacao.
+
+wasm-tools compose auth.wasm api.wasm logger.wasm → composed.wasm
+```
+
+WASI Preview 2 e construido sobre Component Model — cada capability (HTTP, filesystem, sockets) e uma WIT interface. Qualquer runtime que implemente a interface roda o modulo.
+
+---
+
+## Exercicios
+
+### Exercicio 1 — Edge: Geolocation API
+
+Crie um Cloudflare Worker que retorna geolocalizacao (pais, cidade, timezone), implementa rate limiting de 60 req/min por IP com Workers KV, e adiciona headers `X-RateLimit-*`. Deploy no free tier.
+
+### Exercicio 2 — Wasm Browser: Image Processor
+
+Implemente grayscale, blur, sepia e invert em Rust compilado para Wasm com `wasm-pack`. Crie pagina HTML com canvas aplicando filtros em tempo real. Compare performance com JS puro para imagens 1920x1080.
+
+### Exercicio 3 — CLI com WASI
+
+Crie CLI em Rust para `wasm32-wasip1` que le CSV, calcula media/mediana/desvio padrao de coluna numerica, e exporta JSON. Rode com `wasmtime --dir=.` e verifique que sem `--dir` o acesso ao arquivo falha.
+
+### Exercicio 4 — Durable Objects: Chat Room
+
+Implemente chat com Workers + Durable Objects: cada sala e um DO com WebSocket, historico de 100 mensagens no transactional storage, limite de 50 usuarios por sala. Deploy com pelo menos 2 salas.
+
+### Exercicio 5 — Spin + Component Model
+
+Crie API Spin com dois components (`auth` + `api`), interface WIT compartilhada, storage via Spin KV. Compose com `wasm-tools compose` e rode com `spin up`.
+
+---
+
+## Referencias
+
+- [WebAssembly Specification](https://webassembly.org/specs/) — especificacao oficial W3C
+- [Cloudflare Workers Docs](https://developers.cloudflare.com/workers/) — Workers, KV, Durable Objects, D1, R2
+- [Vercel Edge Functions](https://vercel.com/docs/functions/edge-functions) — Edge Runtime e Middleware
+- [Deno Deploy Docs](https://docs.deno.com/deploy/manual/) — Deno Deploy e Deno KV
+- **"WebAssembly in Action"** (Gerard Gallant, Manning) — livro pratico sobre Wasm
+- [WASI Specification](https://wasi.dev/) — specs e proposals de WASI
+- [Component Model](https://component-model.bytecodealliance.org/) — Component Model e WIT
+- [Spin Documentation](https://developer.fermyon.com/spin/v2) — microservicos Wasm
+- [Bytecode Alliance](https://bytecodealliance.org/) — Wasmtime, WASI, Component Model
+- [Figma Engineering](https://www.figma.com/blog/webassembly-cut-figmas-load-time-by-3x/) — "WebAssembly cut Figma's load time by 3x"
+- [Lin Clark — Standardizing WASI](https://hacks.mozilla.org/2019/03/standardizing-wasi-a-webassembly-system-interface/) — artigo seminal

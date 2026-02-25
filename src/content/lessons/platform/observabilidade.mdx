@@ -1,0 +1,691 @@
+---
+title: "Observabilidade"
+description: "Os três pilares (logs, métricas, traces), Prometheus, Grafana, OpenTelemetry, alerting, SLIs/SLOs e golden signals"
+track: "platform"
+order: 7
+section: "Observabilidade e Segurança"
+priority: "high"
+tags: ["observabilidade", "prometheus", "grafana", "opentelemetry", "logs", "metricas", "traces"]
+prerequisites: []
+keyTakeaways:
+  - "Observabilidade tem três pilares: logs (eventos discretos), métricas (valores numéricos agregados) e traces (caminho de requests)"
+  - "USE method (Utilization, Saturation, Errors) para recursos e RED method (Rate, Errors, Duration) para serviços"
+  - "OpenTelemetry é o padrão aberto para instrumentação — vendor-neutral e suportado por todos os backends"
+---
+
+## Observabilidade vs Monitoramento
+
+Monitoramento responde perguntas conhecidas: "O CPU passou de 80%?". Observabilidade permite investigar perguntas que voce **nao previu**: "Por que o checkout esta 3x mais lento apenas para usuarios do plano Enterprise no data center de Sao Paulo?".
+
+```
+Monitoramento:                    Observabilidade:
+─────────────                     ──────────────────
+Dashboards pre-definidos          Exploracao ad-hoc
+Alertas por threshold             Correlacao entre sinais
+"Meu servidor esta UP?"           "POR QUE esta lento?"
+Known-unknowns                    Unknown-unknowns
+Check → Alert → Investigate       Explore → Correlate → Understand
+```
+
+A diferenca pratica e que monitoramento funciona quando voce sabe **o que perguntar** de antemao. Observabilidade fornece a capacidade de explorar dados de forma livre, cruzar sinais e diagnosticar problemas novos sem depender de dashboards pre-configurados. Em sistemas distribuidos, onde falhas emergem de interacoes imprevisiveis entre servicos, observabilidade nao e luxo — e requisito.
+
+## Os Tres Pilares
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    Observabilidade                               │
+│                                                                  │
+│  ┌── Metricas ───────┐  ┌── Logs ──────────┐  ┌── Traces ─────┐│
+│  │ Numericos         │  │ Eventos discretos│  │ Jornada de    ││
+│  │ Agregaveis        │  │ Texto estruturado│  │ uma request   ││
+│  │ Series temporais  │  │ Alto volume      │  │ entre servicos││
+│  │                   │  │                  │  │               ││
+│  │ "Error rate       │  │ "NullPointer em  │  │ "Request X    ││
+│  │  subiu para 5%"   │  │  OrderService    │  │  gastou 2.5s  ││
+│  │                   │  │  linha 42"       │  │  no DB query" ││
+│  │ Prometheus        │  │ Loki / ELK       │  │ Tempo / Jaeger││
+│  └───────────────────┘  └──────────────────┘  └───────────────┘│
+│                                                                  │
+│  Correlacao: trace_id conecta metricas + logs + traces           │
+│  "Essa metrica degradou → encontre os traces lentos → veja logs" │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+Cada pilar responde um tipo de pergunta diferente. **Metricas** dizem "quanto" (agregacao numerica ao longo do tempo). **Logs** dizem "o que aconteceu" (eventos discretos com detalhes contextuais). **Traces** dizem "onde" (o caminho de uma request entre servicos com timing de cada etapa). O poder real vem da **correlacao** entre os tres: um alerta de metrica leva a traces lentos, que levam a logs especificos do erro.
+
+## Metricas: Prometheus e Tipos de Instrumentacao
+
+### Tipos de Metricas no Prometheus
+
+```
+1. COUNTER — valor que so cresce (ou reseta para zero)
+   Uso: total de requests, total de erros, bytes processados
+   Exemplo: http_requests_total{method="GET", status="200"} = 150432
+   Para calcular rate: rate(http_requests_total[5m])
+
+2. GAUGE — valor que sobe e desce
+   Uso: temperatura, uso de memoria, goroutines, queue size
+   Exemplo: node_memory_MemAvailable_bytes = 4294967296
+   Pode usar min(), max(), avg()
+
+3. HISTOGRAM — distribui valores em buckets predefinidos
+   Uso: latencia de requests, tamanho de payloads
+   Cria automaticamente: _bucket, _count, _sum
+   Exemplo:
+     http_request_duration_seconds_bucket{le="0.1"} = 8000
+     http_request_duration_seconds_bucket{le="0.25"} = 9500
+     http_request_duration_seconds_bucket{le="0.5"} = 9900
+     http_request_duration_seconds_bucket{le="1.0"} = 9990
+     http_request_duration_seconds_bucket{le="+Inf"} = 10000
+   Calcular percentis: histogram_quantile(0.99, rate(...[5m]))
+
+4. SUMMARY — calcula percentis no cliente (menos flexivel)
+   Nao e agregavel entre instancias — preferir HISTOGRAM
+```
+
+### Instrumentacao com prom-client (Node.js)
+
+```javascript
+const client = require('prom-client');
+
+const httpRequestsTotal = new client.Counter({
+  name: 'http_requests_total',
+  help: 'Total de requisicoes HTTP recebidas',
+  labelNames: ['method', 'route', 'status_code'],
+});
+
+const httpRequestDuration = new client.Histogram({
+  name: 'http_request_duration_seconds',
+  help: 'Duracao das requisicoes HTTP em segundos',
+  labelNames: ['method', 'route', 'status_code'],
+  buckets: [0.01, 0.05, 0.1, 0.25, 0.5, 1, 2.5, 5, 10],
+});
+
+// Middleware Express para coletar metricas:
+app.use((req, res, next) => {
+  const end = httpRequestDuration.startTimer();
+  res.on('finish', () => {
+    const labels = { method: req.method, route: req.route?.path || req.path, status_code: res.statusCode };
+    httpRequestsTotal.inc(labels);
+    end(labels);
+  });
+  next();
+});
+
+app.get('/metrics', async (req, res) => {
+  res.set('Content-Type', client.register.contentType);
+  res.end(await client.register.metrics());
+});
+```
+
+## Prometheus: Configuracao e PromQL
+
+```yaml
+# prometheus.yml — configuracao minima
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+scrape_configs:
+  - job_name: 'api'
+    metrics_path: '/metrics'
+    static_configs:
+      - targets: ['api:3000']
+  # Em Kubernetes: kubernetes_sd_configs com role: pod
+  # e relabel_configs para filtrar pods com annotation prometheus.io/scrape: "true"
+```
+
+### PromQL — Consultas Essenciais
+
+```promql
+# Taxa de requests por segundo (ultimos 5 minutos):
+rate(http_requests_total[5m])
+
+# Taxa de erros (5xx) como percentual:
+sum(rate(http_requests_total{status_code=~"5.."}[5m]))
+/ sum(rate(http_requests_total[5m])) * 100
+
+# Latencia p99:
+histogram_quantile(0.99,
+  sum(rate(http_request_duration_seconds_bucket[5m])) by (le)
+)
+
+# Latencia p99 por rota:
+histogram_quantile(0.99,
+  sum(rate(http_request_duration_seconds_bucket[5m])) by (le, route)
+)
+
+# Predicao: quando o disco vai encher (extrapolacao linear):
+predict_linear(node_filesystem_avail_bytes[6h], 24*3600) < 0
+
+# Aumento de erros comparado com a ultima semana:
+rate(http_requests_total{status_code=~"5.."}[1h])
+/ rate(http_requests_total{status_code=~"5.."}[1h] offset 1w)
+```
+
+### Recording Rules e Alerting Rules
+
+```yaml
+# prometheus-rules.yml
+groups:
+  - name: api_rules
+    interval: 30s
+    rules:
+      - record: api:http_request_rate5m
+        expr: sum(rate(http_requests_total[5m])) by (route)
+
+      - record: api:http_error_rate5m
+        expr: |
+          sum(rate(http_requests_total{status_code=~"5.."}[5m]))
+          / sum(rate(http_requests_total[5m]))
+
+      - record: api:http_latency_p99_5m
+        expr: |
+          histogram_quantile(0.99,
+            sum(rate(http_request_duration_seconds_bucket[5m])) by (le)
+          )
+
+  - name: api_alerts
+    rules:
+      - alert: HighErrorRate
+        expr: api:http_error_rate5m > 0.01
+        for: 5m
+        labels:
+          severity: critical
+          team: backend
+        annotations:
+          summary: "Taxa de erro acima de 1%"
+          description: "Taxa de erro atual: {{ $value | humanizePercentage }}"
+          runbook_url: "https://wiki.example.com/runbooks/high-error-rate"
+
+      - alert: HighLatency
+        expr: api:http_latency_p99_5m > 1.0
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: "Latencia p99 acima de 1 segundo"
+```
+
+## Grafana: Dashboards e Visualizacao
+
+```
+BOAS PRATICAS DE DASHBOARDS:
+
+1. HIERARQUIA DE DASHBOARDS:
+   L0 — Overview (SLOs, golden signals, status geral)
+   L1 — Por servico (metricas detalhadas de cada servico)
+   L2 — Debug (queries especificas, flamegraphs, traces)
+
+2. VARIAVEIS DE TEMPLATE:
+   $environment = staging | production
+   $service = api | worker | scheduler
+   $instance = filtrar por instancia especifica
+   Permitem que um dashboard sirva para multiplos ambientes/servicos
+
+3. ANNOTATIONS:
+   Marcar deploys no dashboard → correlacionar mudancas com metricas
+   API do Grafana: POST /api/annotations
+   {"time": 1704067200, "text": "Deploy v1.2.3", "tags": ["deploy"]}
+
+4. ALERTING NO GRAFANA:
+   Grafana Unified Alerting (Grafana 9+):
+   - Multi-datasource (Prometheus, Loki, CloudWatch)
+   - Notification policies (roteamento por labels)
+   - Silences e mute timings
+   - Contact points: Slack, PagerDuty, OpsGenie, email
+```
+
+## Logging: Estruturado e Centralizado
+
+Logs desestruturados (`console.log('Erro ao processar pedido 456')`) sao impossiveis de filtrar, agregar ou correlacionar automaticamente. Em producao, **todo log deve ser JSON estruturado** com campos consistentes.
+
+```javascript
+// Logging estruturado com Pino (logger mais rapido do Node.js):
+const pino = require('pino');
+
+const logger = pino({
+  level: process.env.LOG_LEVEL || 'info',
+  formatters: {
+    level: (label) => ({ level: label }),
+  },
+  redact: ['req.headers.authorization', '*.password', '*.token'],
+});
+
+// Log com contexto estruturado:
+logger.info({
+  event: 'order_created',
+  orderId: '456',
+  userId: '123',
+  amount: 99.90,
+  duration_ms: 45,
+  correlationId: req.headers['x-correlation-id'],
+}, 'Pedido criado com sucesso');
+
+// Output JSON (uma linha por log):
+// {"level":"info","time":1704067200,"event":"order_created",
+//  "orderId":"456","userId":"123","amount":99.90,"duration_ms":45,
+//  "correlationId":"abc-123","msg":"Pedido criado com sucesso"}
+```
+
+### Correlacao com Trace Context
+
+```javascript
+// Incluir trace_id nos logs automaticamente (OTel + Pino):
+import pino from 'pino';
+import { trace } from '@opentelemetry/api';
+
+const logger = pino({
+  level: process.env.LOG_LEVEL || 'info',
+  mixin() {
+    const span = trace.getActiveSpan();
+    if (span) {
+      const ctx = span.spanContext();
+      return { trace_id: ctx.traceId, span_id: ctx.spanId };
+    }
+    return {};
+  },
+});
+
+// Agora todo log carrega trace_id:
+// {"level":"error","trace_id":"abc123","span_id":"def456",
+//  "userId":"user-42","msg":"Checkout falhou"}
+// No Grafana: clicar no trace_id leva direto para o trace no Tempo
+```
+
+### Niveis de Log
+
+```
+FATAL  — aplicacao vai crashar. Usado antes de process.exit(1).
+ERROR  — erro que afeta o usuario. Precisa de atencao (alerta).
+WARN   — situacao anormal mas recuperavel. Pode virar error.
+INFO   — eventos significativos de negocio. O "jornal" da aplicacao.
+DEBUG  — detalhes tecnicos para desenvolvimento. NUNCA em producao.
+TRACE  — extremamente detalhado. Apenas para debugging ativo.
+
+REGRA: Em producao, nivel INFO. Se investigando um problema
+especifico, mudar temporariamente para DEBUG com filtro por request.
+```
+
+### Loki vs ELK
+
+```
+┌─────────────────┬────────────────────┬────────────────────┐
+│                  │ Loki               │ ELK (Elasticsearch)│
+├─────────────────┼────────────────────┼────────────────────┤
+│ Indexacao        │ Labels apenas      │ Full-text em todos │
+│                  │ (como Prometheus)  │ os campos          │
+│ Storage          │ Object store (S3)  │ Cluster dedicado   │
+│ Custo            │ Muito baixo        │ Alto (memoria+disco)│
+│ Busca            │ LogQL (label +     │ KQL/Lucene         │
+│                  │ line filter)       │ (full-text search) │
+│ Ideal para       │ Correlacao com     │ Analise de logs    │
+│                  │ metricas/traces    │ complexa, compliance│
+└─────────────────┴────────────────────┴────────────────────┘
+
+# LogQL exemplos:
+{job="api"} |= "error"                    # Filtro por texto
+{job="api"} | json | level="error"         # Parse JSON, filtra
+{job="api"} | json | latency_ms > 2000     # Filtro por valor
+rate({job="api"} |= "error" [5m])          # Error rate via logs
+```
+
+Loki e a escolha padrao para times que ja usam Grafana e Prometheus: custo muito inferior ao ELK, integracao nativa com traces (Tempo) e metricas. ELK ainda faz sentido para cenarios que exigem full-text search avancado ou compliance com retencao longa e queries complexas.
+
+## Distributed Tracing e OpenTelemetry
+
+### Arquitetura do OpenTelemetry
+
+OpenTelemetry (OTel) e o padrao CNCF para instrumentacao. Fornece SDKs, APIs e um Collector para gerar metricas, logs e traces de forma unificada e vendor-neutral.
+
+```
+┌── Aplicacao ──────────────────────┐
+│                                    │
+│  OTel SDK                         │
+│  ├── Traces API + SDK             │
+│  ├── Metrics API + SDK            │
+│  ├── Logs API + SDK               │
+│  └── Auto-instrumentation         │
+│       (HTTP, DB, gRPC, etc.)      │
+│                                    │
+│  Exporta via OTLP (gRPC/HTTP)    │
+└────────────┬───────────────────────┘
+             │
+             v
+┌── OTel Collector ─────────────────┐
+│                                    │
+│  Receivers   → Recebe dados       │
+│  │ otlp, prometheus, jaeger       │
+│  │                                 │
+│  Processors  → Transforma         │
+│  │ batch, filter, attributes,     │
+│  │ tail_sampling, memory_limiter  │
+│  │                                 │
+│  Exporters   → Envia para backends│
+│  │ otlp, prometheus, loki,        │
+│  │ datadog, newrelic, jaeger      │
+│                                    │
+└────────────┬───────────────────────┘
+             │
+    ┌────────┼────────┐
+    v        v        v
+Prometheus  Tempo   Loki
+(metricas)  (traces) (logs)
+```
+
+### Configuracao do Collector
+
+```yaml
+# otel-collector-config.yaml
+receivers:
+  otlp:
+    protocols:
+      grpc: { endpoint: 0.0.0.0:4317 }
+      http: { endpoint: 0.0.0.0:4318 }
+processors:
+  batch: { timeout: 5s, send_batch_size: 8192 }
+  memory_limiter: { limit_mib: 512, check_interval: 5s }
+  filter:  # Remove ruido de health checks
+    traces:
+      span:
+        - 'attributes["http.route"] == "/health"'
+  tail_sampling:  # Decide apos ver o trace completo
+    decision_wait: 10s
+    policies:
+      - name: errors
+        type: status_code
+        status_code: { status_codes: [ERROR] }
+      - name: slow-traces
+        type: latency
+        latency: { threshold_ms: 2000 }
+      - name: probabilistic
+        type: probabilistic
+        probabilistic: { sampling_percentage: 10 }
+exporters:
+  otlphttp/tempo: { endpoint: http://tempo:4318 }
+  prometheusremotewrite: { endpoint: http://prometheus:9090/api/v1/write }
+  loki: { endpoint: http://loki:3100/loki/api/v1/push }
+service:
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, filter, tail_sampling, batch]
+      exporters: [otlphttp/tempo]
+    metrics:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [prometheusremotewrite]
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, batch]
+      exporters: [loki]
+```
+
+### Auto-Instrumentacao e Spans Customizados (Node.js)
+
+```javascript
+// tracing.ts — inicializado ANTES de qualquer import da aplicacao
+import { NodeSDK } from '@opentelemetry/sdk-node';
+import { OTLPTraceExporter } from '@opentelemetry/exporter-trace-otlp-grpc';
+import { getNodeAutoInstrumentations } from '@opentelemetry/auto-instrumentations-node';
+import { Resource } from '@opentelemetry/resources';
+import { ATTR_SERVICE_NAME } from '@opentelemetry/semantic-conventions';
+
+const sdk = new NodeSDK({
+  resource: new Resource({ [ATTR_SERVICE_NAME]: 'api' }),
+  traceExporter: new OTLPTraceExporter({
+    url: process.env.OTEL_EXPORTER_OTLP_ENDPOINT || 'http://otel-collector:4317',
+  }),
+  instrumentations: [
+    getNodeAutoInstrumentations({
+      '@opentelemetry/instrumentation-fs': { enabled: false },
+      '@opentelemetry/instrumentation-http': {
+        ignoreIncomingPaths: ['/health', '/ready', '/metrics'],
+      },
+    }),
+  ],
+});
+sdk.start();
+process.on('SIGTERM', () => sdk.shutdown());
+
+// --- Instrumentacao customizada com spans de negocio ---
+import { trace, SpanStatusCode } from '@opentelemetry/api';
+const tracer = trace.getTracer('checkout-service');
+
+async function processCheckout(order) {
+  return tracer.startActiveSpan('checkout.process', async (span) => {
+    try {
+      span.setAttributes({
+        'order.id': order.id, 'order.total': order.total,
+        'order.items_count': order.items.length, 'customer.plan': order.customer.plan,
+      });
+      await validateInventory(order);
+      await processPayment(order);
+      await sendConfirmation(order);
+      span.setStatus({ code: SpanStatusCode.OK });
+    } catch (error) {
+      span.setStatus({ code: SpanStatusCode.ERROR, message: error.message });
+      span.recordException(error);
+      throw error;
+    } finally {
+      span.end();
+    }
+  });
+}
+```
+
+### Anatomia de um Trace
+
+```
+Trace ID: abc123 (identifica toda a operacao end-to-end)
+│
+├── Span: API Gateway (50ms)
+│   └── Span: Order Service - createOrder (45ms)
+│       ├── Span: PostgreSQL query (5ms)
+│       ├── Span: Payment Service → Stripe API (30ms → 25ms)
+│       └── Span: Redis cache set (1ms)
+
+W3C Trace Context (propagacao automatica entre servicos):
+traceparent: 00-<trace-id 128bit>-<parent-id 64bit>-<flags>
+O SDK OTel injeta/extrai esse header automaticamente em chamadas HTTP/gRPC.
+```
+
+### Estrategias de Sampling
+
+```
+1. Head-based sampling (decisao no inicio):
+   - Probabilistico: 10% dos traces
+   - Rate limiting: maximo 100 traces/segundo
+   - Barato, mas pode perder traces interessantes
+
+2. Tail-based sampling (decisao no final — recomendado):
+   - Analisa o trace completo antes de decidir
+   - Sempre captura: erros, traces lentos, traces especificos
+   - Amostra normais: 10%
+   - Requer Collector com buffer (mais memoria)
+
+3. Sampling por regras de negocio:
+   - 100% para checkout e pagamentos
+   - 10% para health checks e assets
+   - 50% para endpoints de alta criticidade
+```
+
+## SLI, SLO, SLA e Error Budgets
+
+```
+SLI (Service Level Indicator) — metrica que mede a experiencia do usuario
+  Exemplos:
+  - Disponibilidade: % de requests com sucesso (status != 5xx)
+  - Latencia: % de requests completadas em < 300ms
+  - Corretude: % de responses com dados corretos
+  - Freshness: % de dados atualizados nos ultimos 5 minutos
+
+SLO (Service Level Objective) — meta interna para o SLI
+  Exemplos:
+  - 99.9% das requests com sucesso em janela de 30 dias
+  - 99% das requests com latencia < 300ms
+
+SLA (Service Level Agreement) — compromisso contratual com o cliente
+  Geralmente mais baixo que o SLO (margem de seguranca)
+  Exemplo: SLO interno = 99.95%, SLA contratual = 99.9%
+  Violacao de SLA → consequencias financeiras/contratuais
+
+Relacao: SLI mede → SLO define meta → SLA e o contrato
+         SLO SEMPRE mais agressivo que SLA (margem de seguranca)
+```
+
+### Error Budget
+
+```
+SLO de 99.9% em 30 dias:
+  Total de minutos: 30 x 24 x 60 = 43.200 min
+  Error budget: 0.1% x 43.200 = 43.2 minutos de "falha permitida"
+
+  Enquanto houver budget: priorizar features e velocidade
+  Budget consumido: parar features, priorizar confiabilidade
+
+  Isso resolve o conflito entre "mover rapido" e "nao quebrar":
+  - Dev quer lancar features → precisa de error budget
+  - Se deploys ruins consomem budget → time para de deploy
+  - Incentivo natural para investir em qualidade
+
+Decisoes baseadas em error budget:
+  Budget > 50% restante → acelerar features, experimentar
+  Budget 20-50% → cautela, mais testes
+  Budget < 20% → congelar features, focar em confiabilidade
+  Budget esgotado → apenas fixes de confiabilidade ate reset
+```
+
+### Burn Rate Alerts
+
+Burn rate mede a velocidade de consumo do error budget. Alertas baseados em burn rate produzem muito menos falsos positivos do que thresholds simples.
+
+```
+Burn rate 1x   = consome todo o budget em 30 dias (normal)
+Burn rate 6x   = consome todo o budget em 5 dias (aviso)
+Burn rate 14.4x = consome todo o budget em 2 dias (critico)
+```
+
+```yaml
+# Alertas baseados em SLO burn rate:
+groups:
+  - name: slo-burn-rate
+    rules:
+      # Fast burn — page imediato
+      - alert: SLOBurnRateCritical
+        expr: |
+          (
+            sum(rate(http_requests_total{status_code=~"5.."}[1h]))
+            /
+            sum(rate(http_requests_total[1h]))
+          ) > (14.4 * 0.001)
+        for: 2m
+        labels:
+          severity: critical
+        annotations:
+          summary: "Burn rate 14.4x — error budget sera consumido em ~2 dias"
+
+      # Slow burn — ticket de alta prioridade
+      - alert: SLOBurnRateWarning
+        expr: |
+          (
+            sum(rate(http_requests_total{status_code=~"5.."}[6h]))
+            /
+            sum(rate(http_requests_total[6h]))
+          ) > (6 * 0.001)
+        for: 5m
+        labels:
+          severity: warning
+```
+
+## Metodologias: USE, RED e Golden Signals
+
+```
+USE METHOD (Brendan Gregg) — para infraestrutura (servidores, discos, rede):
+  U — Utilization: % do recurso sendo utilizado
+  S — Saturation: trabalho extra em fila esperando
+  E — Errors: contagem de eventos de erro
+
+  CPU:     Utilization = cpu_usage%  | Saturation = load average | Errors = machine check
+  Memoria: Utilization = mem_used%   | Saturation = swap usage   | Errors = OOM kills
+  Disco:   Utilization = disk_busy%  | Saturation = queue depth  | Errors = I/O errors
+  Rede:    Utilization = bandwidth%  | Saturation = drops/retrans| Errors = CRC errors
+
+RED METHOD (Tom Wilkie) — para servicos (APIs, microsservicos):
+  R — Rate: requests por segundo
+  E — Errors: requests com falha por segundo
+  D — Duration: distribuicao de latencia (p50, p95, p99)
+
+  Dashboard tipico RED:
+  ┌──────────────┐ ┌──────────────┐ ┌──────────────┐
+  │ Request Rate │ │  Error Rate  │ │   Duration   │
+  │   150 rps    │ │   0.5%       │ │ p99: 230ms   │
+  └──────────────┘ └──────────────┘ └──────────────┘
+
+FOUR GOLDEN SIGNALS (Google SRE) — para qualquer servico:
+  1. Latencia: tempo de resposta (diferenciar sucesso vs erro)
+  2. Trafego: demanda no sistema (requests/s, sessoes, transacoes)
+  3. Erros: taxa de falha (explicitos 5xx, implicitos timeout, incorretos)
+  4. Saturacao: quao "cheio" o servico esta (CPU, memoria, fila, conexoes)
+
+  Golden Signals = RED + Saturacao
+
+ESCOLHA:
+- USE para recursos de infra (hardware, rede, disco)
+- RED ou Golden Signals para servicos de aplicacao
+- Na pratica: use ambos — USE para infra no L1, RED/Golden para servicos no L0
+```
+
+## Gestao de Cardinalidade
+
+Cardinalidade e o numero de combinacoes unicas de labels. Alta cardinalidade explode o uso de memoria do Prometheus e o custo em plataformas SaaS.
+
+```
+# Alta cardinalidade (EVITAR):
+http_requests_total{user_id="abc123", request_id="req-xyz", path="/api/users/42"}
+# user_id x request_id x path = milhoes de series
+
+# Baixa cardinalidade (CORRETO):
+http_requests_total{method="GET", status="200", endpoint="/api/users/:id"}
+# method x status x endpoint = centenas de series
+
+Regras:
+1. NUNCA use IDs de usuario, request ou sessao como labels
+2. Use labels com cardinalidade finita e previsivel
+3. Normalize paths: /api/users/42 → /api/users/:id
+4. Monitore: prometheus_tsdb_head_series (total de series ativas)
+5. Alerta se series > threshold (ex: 1M series)
+
+# Calcular cardinalidade:
+topk(10, count by (__name__) ({__name__=~".+"}))
+```
+
+## Otimizacao de Custos e Boas Praticas
+
+```
+Custo principal: volume de dados ingeridos. Estrategias:
+
+1. Sampling de traces (tail-based, 10-20% para trafego normal)
+2. Filtragem no Collector (remover health checks, assets)
+3. Recording rules para pre-computar queries pesadas
+4. Retencao diferenciada: metricas 15d (alta res) / 90d (downsampled),
+   logs debug 7d / erro 90d, traces 14d
+5. Loki com S3 e 10-50x mais barato que ELK
+6. Cardinalidade controlada (labels com valores finitos)
+
+OBSERVABILITY-DRIVEN DEVELOPMENT:
+Instrumente ANTES de precisar debugar. Ao desenvolver uma feature:
+- Adicione metricas de negocio e spans com atributos relevantes
+- Adicione logs estruturados nos pontos de decisao
+- Defina SLI/SLO para a feature
+- No code review: "Se falhar em producao, temos sinais para diagnosticar?"
+```
+
+Observabilidade nao e sobre ter mais dashboards — e sobre ter os sinais certos correlacionados para que qualquer engenheiro consiga diagnosticar qualquer problema em minutos. OpenTelemetry fornece a fundacao; SLOs fornecem a direcao; a correlacao entre metricas, logs e traces fornece o poder de investigacao.
+
+## Referencias e Fontes
+
+- **Site Reliability Engineering** (Google) — https://sre.google/sre-book/table-of-contents/ — Capitulos sobre monitoring, alerting, SLIs/SLOs e error budgets sao a referencia definitiva para operacoes em escala.
+- **Prometheus Documentation** — https://prometheus.io/docs/ — Documentacao oficial cobrindo tipos de metricas, PromQL, recording rules, alerting e integracao com service discovery.
+- **OpenTelemetry Documentation** — https://opentelemetry.io/docs/ — Especificacao completa dos SDKs, Collector, protocolos OTLP e semantic conventions para instrumentacao padronizada.
+- **Grafana Loki Documentation** — https://grafana.com/docs/loki/latest/ — LogQL, arquitetura de indexacao por labels e integracao com o ecossistema Grafana.
+- **The USE Method** (Brendan Gregg) — https://www.brendangregg.com/usemethod.html — Metodologia para analise de performance de recursos de infraestrutura.

@@ -1,0 +1,597 @@
+---
+title: "VPS e Servidores"
+description: "Provisioning, SSH, configuração de servidor Linux, nginx, reverse proxy, deploy manual e automatizado, DNS, SSL com Let's Encrypt e as práticas que todo dev precisa antes de usar cloud gerenciado"
+track: "platform"
+order: 10
+section: "Cloud e Operações"
+priority: "high"
+tags: ["vps", "ssh", "nginx", "linux", "deploy", "dns", "ssl", "servidor"]
+prerequisites: ["docker"]
+keyTakeaways:
+  - "Uma VPS é um servidor Linux virtual que você controla completamente — é a forma mais direta e barata de colocar algo em produção"
+  - "SSH com chave pública é inegociável: desabilitar login por senha e configurar fail2ban são os primeiros passos de qualquer servidor"
+  - "Nginx como reverse proxy é o padrão da indústria: termina SSL, faz load balancing, serve estáticos e roteia para aplicações"
+  - "DNS é o sistema de endereçamento da internet: A records apontam para IPs, CNAME para outros domínios, e TTL controla cache"
+  - "Let's Encrypt + certbot automatizam SSL/TLS gratuito — não existe desculpa para HTTP em produção"
+---
+
+## O que é uma VPS
+
+VPS -- Virtual Private Server -- é um servidor Linux virtualizado com root access completo. Diferente de hosting compartilhado (cPanel, centenas de sites no mesmo OS), uma VPS te dá isolamento real via hypervisor.
+
+```
+SHARED HOSTING          VPS                    DEDICATED           CLOUD (AWS/GCP)
+┌──────────────┐   ┌──────────────┐   ┌──────────────┐   ┌──────────────────┐
+│ Painel cPanel│   │ Root access  │   │ Hardware     │   │ VMs + auto-scale │
+│ Sem SSH      │   │ Instala tudo │   │ inteiro pra  │   │ Load balancing   │
+│ PHP/MySQL    │   │ Firewall, OS │   │ você. Sem    │   │ IAM, VPC, 200+   │
+│ pré-config   │   │ seu controle │   │ vizinhos     │   │ serviços         │
+├──────────────┤   ├──────────────┤   ├──────────────┤   ├──────────────────┤
+│ ~$5-15/mês   │   │ ~$4-40/mês   │   │ ~$40-200/mês │   │ ~$10-500+/mês    │
+│ Sites simples│   │ APIs, apps   │   │ Workloads    │   │ Escala, multi-AZ │
+│ WordPress    │   │ bancos, tudo │   │ pesados      │   │ compliance       │
+└──────────────┘   └──────────────┘   └──────────────┘   └──────────────────┘
+```
+
+### Providers e preços
+
+```
+PROVIDER          vCPU  RAM   SSD     PREÇO/MÊS   NOTA
+──────────────────────────────────────────────────────────
+DigitalOcean      1     1GB   25GB    $6           UX excelente, docs ótimas
+Hetzner           2     2GB   40GB    €3.79        Melhor custo-benefício (Europa)
+Linode (Akamai)   1     1GB   25GB    $5           Boa rede global
+Vultr             1     1GB   25GB    $6           Muitas localizações
+OVH               2     2GB   40GB    €3.50        Mais barato da Europa
+```
+
+VPS faz sentido para: projetos pequenos/médios, custo importa, side projects, MVPs, tráfego previsível. Cloud gerenciado faz sentido para: auto-scaling real, compliance (HIPAA, SOC2), time grande com IAM granular, multi-região. A realidade: muita empresa roda produção inteira em 2-3 VPS e está tudo bem.
+
+---
+
+## Acesso e Segurança Inicial
+
+Servidor novo com IP e senha de root. Bots escaneiam IPs novos automaticamente tentando brute-force SSH -- isso acontece em minutos. Os próximos 15 minutos definem a segurança do servidor.
+
+### SSH com chave pública
+
+```
+AUTENTICAÇÃO POR CHAVE:
+
+  Sua Máquina                         Servidor
+  ┌──────────┐                        ┌──────────┐
+  │ Chave    │──── "quero conectar" ──→│ Chave    │
+  │ Privada  │←── desafio criptográfico│ Pública  │
+  │ (NUNCA   │──── resposta assinada ──→│ Verifica │
+  │  sai da  │←── acesso concedido ────│ assinatur│
+  │  máquina)│                        └──────────┘
+  └──────────┘
+  A chave privada NUNCA é transmitida pela rede.
+  Ed25519: moderno, seguro, chaves menores. Use este.
+  RSA 4096: legado, ainda seguro, compatível com tudo.
+```
+
+```bash
+# Gerar chave Ed25519:
+ssh-keygen -t ed25519 -C "seu-email@exemplo.com"
+# Use passphrase — protege a chave se o laptop for roubado
+
+# Copiar para o servidor:
+ssh-copy-id -i ~/.ssh/id_ed25519.pub root@SEU_IP
+
+# ~/.ssh/config — gerenciar múltiplos servidores:
+# Host producao
+#     HostName 203.0.113.10
+#     User deploy
+#     IdentityFile ~/.ssh/id_ed25519
+#
+# Host staging
+#     HostName 203.0.113.20
+#     User deploy
+#     Port 2222
+#
+# Agora: ssh producao (em vez de ssh -i ~/.ssh/id_ed25519 deploy@203.0.113.10)
+```
+
+### Hardening DAY ONE
+
+```bash
+# 1. CRIAR USUÁRIO NÃO-ROOT COM SUDO
+adduser deploy
+usermod -aG sudo deploy
+rsync --archive --chown=deploy:deploy ~/.ssh /home/deploy
+
+# 2. DESABILITAR LOGIN POR SENHA (editar /etc/ssh/sshd_config):
+#   PermitRootLogin no
+#   PasswordAuthentication no
+#   PubkeyAuthentication yes
+# TESTAR em outra janela ANTES de fechar a sessão atual!
+sudo systemctl restart sshd
+
+# 3. FIREWALL COM UFW
+sudo ufw default deny incoming
+sudo ufw default allow outgoing
+sudo ufw allow 22/tcp     # SSH
+sudo ufw allow 80/tcp     # HTTP
+sudo ufw allow 443/tcp    # HTTPS
+sudo ufw enable
+
+# 4. FAIL2BAN — bloqueia IPs após tentativas falhas
+sudo apt install -y fail2ban
+sudo cp /etc/fail2ban/jail.conf /etc/fail2ban/jail.local
+```
+
+```ini
+# /etc/fail2ban/jail.local
+[DEFAULT]
+bantime  = 3600
+findtime = 600
+maxretry = 5
+
+[sshd]
+enabled  = true
+port     = ssh
+maxretry = 3
+bantime  = 86400
+```
+
+```bash
+sudo systemctl enable fail2ban && sudo systemctl start fail2ban
+
+# 5. ATUALIZAÇÕES AUTOMÁTICAS DE SEGURANÇA
+sudo apt install -y unattended-upgrades
+sudo dpkg-reconfigure --priority=low unattended-upgrades
+```
+
+---
+
+## Configuração do Servidor
+
+```bash
+# Pacotes essenciais:
+sudo apt update && sudo apt upgrade -y
+sudo apt install -y build-essential curl wget git htop tmux ufw unzip jq ncdu
+
+# Timezone (UTC recomendado para servidores):
+sudo timedatectl set-timezone UTC
+
+# Swap (obrigatório para VPS com 1GB RAM):
+sudo fallocate -l 2G /swapfile
+sudo chmod 600 /swapfile && sudo mkswap /swapfile && sudo swapon /swapfile
+echo '/swapfile none swap sw 0 0' | sudo tee -a /etc/fstab
+echo 'vm.swappiness=10' | sudo tee -a /etc/sysctl.conf && sudo sysctl -p
+```
+
+### Systemd e variáveis de ambiente
+
+```bash
+# Systemd — todo serviço no servidor roda via systemd:
+sudo systemctl start nginx         # Iniciar
+sudo systemctl enable nginx        # Auto-start no boot
+sudo systemctl status nginx        # Status + últimas linhas de log
+sudo systemctl reload nginx        # Recarregar config sem downtime
+
+# Logs com journalctl:
+sudo journalctl -u nginx -f                   # Follow em tempo real
+sudo journalctl -u nginx --since "1 hour ago" # Filtrar por tempo
+sudo journalctl -u nginx -p err               # Apenas erros
+
+# Variáveis de ambiente — NUNCA hardcode secrets:
+# Criar /etc/app/minha-api.env:
+#   DATABASE_URL=postgresql://user:pass@localhost:5432/meubanco
+#   JWT_SECRET=um-secret-longo-e-aleatorio
+#   NODE_ENV=production
+# Permissões: sudo chown root:deploy /etc/app/minha-api.env && sudo chmod 640
+```
+
+---
+
+## Nginx
+
+Nginx fica na frente da aplicação: recebe requisições, termina SSL, serve estáticos, faz load balancing e roteia para seus apps.
+
+```
+    Internet → Nginx (:80/:443) → proxy_pass → App (:3000)
+                  │                               │
+                  ├── Termina SSL                  └── Node/Go/Java
+                  ├── Serve /img, /css, /js
+                  ├── Rate limiting
+                  └── Security headers
+```
+
+```bash
+sudo apt install -y nginx && sudo systemctl enable nginx
+# Estrutura: /etc/nginx/sites-available/ (configs) → symlink em sites-enabled/
+# Workflow: criar config → sudo nginx -t (testar!) → sudo systemctl reload nginx
+```
+
+### Reverse proxy completo
+
+```nginx
+# /etc/nginx/sites-available/minha-api.conf
+
+upstream api_backend {
+    least_conn;
+    server 127.0.0.1:3000 max_fails=3 fail_timeout=30s;
+    server 127.0.0.1:3001 max_fails=3 fail_timeout=30s;
+}
+
+# Redirect HTTP → HTTPS
+server {
+    listen 80;
+    server_name meusite.com.br www.meusite.com.br;
+    return 301 https://$server_name$request_uri;
+}
+
+server {
+    listen 443 ssl http2;
+    server_name meusite.com.br www.meusite.com.br;
+
+    # SSL (certbot configura automaticamente)
+    ssl_certificate     /etc/letsencrypt/live/meusite.com.br/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/meusite.com.br/privkey.pem;
+    ssl_protocols       TLSv1.2 TLSv1.3;
+
+    # Security headers
+    add_header X-Frame-Options "SAMEORIGIN" always;
+    add_header X-Content-Type-Options "nosniff" always;
+    add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+    add_header Content-Security-Policy "default-src 'self';" always;
+
+    client_max_body_size 25M;
+    access_log /var/log/nginx/api-access.log;
+    error_log  /var/log/nginx/api-error.log;
+
+    # Estáticos direto pelo nginx (sem passar pelo app)
+    location /assets/ {
+        alias /var/www/meusite/assets/;
+        expires 1y;
+        add_header Cache-Control "public, immutable";
+        access_log off;
+    }
+
+    # API — reverse proxy
+    location / {
+        proxy_pass http://api_backend;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto $scheme;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+    }
+}
+```
+
+```nginx
+# /etc/nginx/conf.d/performance.conf — gzip e rate limiting
+
+gzip on;
+gzip_vary on;
+gzip_comp_level 6;
+gzip_min_length 1000;
+gzip_types text/plain text/css application/json application/javascript image/svg+xml;
+
+# Rate limiting: 10 req/s por IP, burst de 20
+limit_req_zone $binary_remote_addr zone=api_limit:10m rate=10r/s;
+# Usar na location: limit_req zone=api_limit burst=20 nodelay;
+```
+
+```bash
+# Ativar:
+sudo ln -s /etc/nginx/sites-available/minha-api.conf /etc/nginx/sites-enabled/
+sudo nginx -t && sudo systemctl reload nginx
+```
+
+---
+
+## DNS
+
+DNS traduz nomes (`meusite.com.br`) em IPs (`203.0.113.10`).
+
+```
+RESOLUÇÃO DNS:
+  Browser → Resolver (8.8.8.8) → Root Server → .br TLD → Authoritative NS
+     ↑                                                         │
+     └──────────── "203.0.113.10" ←────────────────────────────┘
+  Primeira vez: ~50-200ms. Depois: cache por TTL segundos.
+```
+
+### Tipos de registro
+
+```
+TIPO    EXEMPLO                              USO
+────────────────────────────────────────────────────────────────
+A       meusite.com.br → 203.0.113.10       Domínio → IPv4
+AAAA    meusite.com.br → 2001:db8::1        Domínio → IPv6
+CNAME   www.meusite.com.br → meusite.com.br Alias (NÃO usar no root)
+MX      meusite.com.br → mail.google.com    Servidor de email
+TXT     meusite.com.br → "v=spf1 ..."       SPF, DKIM, verificações
+NS      meusite.com.br → ns1.cloudflare.com Nameservers autoritativos
+CAA     meusite.com.br → letsencrypt.org     CAs autorizadas a emitir cert
+
+TTL ALTO (3600s): menos queries, mudanças demoram. Usar para MX, NS.
+TTL BAIXO (300s): propaga rápido. Usar durante migrações de servidor.
+DICA: baixar TTL para 300 pelo menos 24h ANTES de migrar.
+```
+
+```bash
+# Debugging DNS:
+dig meusite.com.br +short          # Resultado direto
+dig meusite.com.br MX              # Registros de email
+dig @8.8.8.8 meusite.com.br       # Consultar via Google DNS
+dig @1.1.1.1 meusite.com.br       # Consultar via Cloudflare DNS
+dig meusite.com.br +trace          # Cadeia completa de resolução
+nslookup meusite.com.br           # Alternativa mais simples
+```
+
+Cloudflare (plano gratuito) funciona como DNS + CDN + proteção DDoS. Com proxy ativado, o IP real da VPS fica escondido e estáticos são cacheados na edge.
+
+---
+
+## SSL/TLS e HTTPS
+
+HTTP transmite tudo em texto plano. Qualquer roteador entre o usuário e seu servidor pode ler senhas e dados. HTTPS resolve com criptografia end-to-end.
+
+```
+TLS HANDSHAKE (simplificado):
+  Browser ── ClientHello (ciphers suportados) ──→ Servidor
+  Browser ←── ServerHello (certificado + chave pública) ── Servidor
+  Browser ── Verifica certificado, gera chave de sessão ──→ Servidor
+  Browser ←──→ Comunicação criptografada (chave simétrica) ←──→ Servidor
+
+CADEIA DE CERTIFICADOS:
+  Root CA (pré-instalada no browser) → assina → Intermediate CA → assina → Seu cert
+  fullchain.pem = seu certificado + intermediate
+```
+
+```bash
+# Let's Encrypt + certbot — SSL gratuito e automático:
+sudo apt install -y certbot python3-certbot-nginx
+sudo certbot --nginx -d meusite.com.br -d www.meusite.com.br
+
+# Certbot automaticamente:
+# 1. Verifica que você controla o domínio (HTTP-01 challenge)
+# 2. Obtém certificado
+# 3. Configura nginx para SSL
+# 4. Configura redirect HTTP → HTTPS
+
+# Certificados expiram em 90 dias — renovação automática via timer:
+sudo systemctl status certbot.timer
+sudo certbot renew --dry-run       # Testar renovação
+
+# HSTS — força browser a sempre usar HTTPS:
+# add_header Strict-Transport-Security "max-age=31536000; includeSubDomains" always;
+```
+
+---
+
+## Deploy
+
+### Systemd service file
+
+```ini
+# /etc/systemd/system/minha-api.service
+[Unit]
+Description=Minha API Node.js
+After=network.target
+
+[Service]
+Type=simple
+User=deploy
+WorkingDirectory=/var/www/minha-api
+ExecStart=/usr/bin/node dist/server.js
+Restart=on-failure
+RestartSec=5
+EnvironmentFile=/etc/app/minha-api.env
+NoNewPrivileges=true
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=minha-api
+
+[Install]
+WantedBy=multi-user.target
+```
+
+```bash
+sudo systemctl daemon-reload && sudo systemctl enable minha-api && sudo systemctl start minha-api
+```
+
+### Script de deploy automatizado
+
+```bash
+#!/bin/bash
+# deploy.sh — rodar local: ./deploy.sh producao
+set -euo pipefail
+
+SERVER=${1:-producao}
+APP_DIR="/var/www/minha-api"
+
+echo "==> Build local..."
+npm run build
+
+echo "==> Sincronizando arquivos..."
+rsync -avz --delete \
+  --exclude='node_modules' --exclude='.git' --exclude='.env' \
+  ./dist/ "$SERVER:$APP_DIR/dist/"
+rsync -avz package.json package-lock.json "$SERVER:$APP_DIR/"
+
+echo "==> Instalando deps e reiniciando..."
+ssh "$SERVER" << 'REMOTE'
+  cd /var/www/minha-api
+  npm install --production
+  sudo systemctl restart minha-api
+  for i in {1..15}; do
+    curl -sf http://localhost:3000/health > /dev/null 2>&1 && echo "Online!" && exit 0
+    sleep 2
+  done
+  echo "ERRO: app não respondeu" && exit 1
+REMOTE
+
+echo "==> Deploy concluído!"
+```
+
+### PM2 para Node.js
+
+```bash
+sudo npm install -g pm2
+pm2 start dist/server.js --name minha-api -i max   # Cluster mode (1 proc/CPU)
+pm2 reload minha-api        # Zero-downtime reload
+pm2 save && pm2 startup     # Persistir e auto-start no boot
+```
+
+### Docker deploy em VPS
+
+```yaml
+# docker-compose.yml
+services:
+  api:
+    image: ghcr.io/meuuser/minha-api:latest
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:3000:3000"    # Só localhost — nginx faz proxy
+    env_file: .env.production
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    environment:
+      POSTGRES_DB: meubanco
+      POSTGRES_USER: meuuser
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U meuuser"]
+      interval: 10s
+      retries: 5
+
+volumes:
+  pgdata:
+```
+
+```bash
+# Deploy: docker compose pull && docker compose up -d && docker system prune -f
+```
+
+### Ansible para múltiplos servidores
+
+```yaml
+# Ansible conecta via SSH — sem agente nos servidores.
+# inventory.yml:
+# all:
+#   children:
+#     webservers:
+#       hosts:
+#         web1: { ansible_host: 203.0.113.10 }
+#         web2: { ansible_host: 203.0.113.11 }
+
+# deploy.yml (playbook):
+# - hosts: webservers
+#   become: yes
+#   tasks:
+#     - name: Atualizar código
+#       git: { repo: "https://github.com/...", dest: /var/www/minha-api, version: main }
+#     - name: Instalar dependências
+#       npm: { path: /var/www/minha-api, production: yes }
+#     - name: Reiniciar
+#       systemd: { name: minha-api, state: restarted, daemon_reload: yes }
+# ansible-playbook -i inventory.yml deploy.yml
+```
+
+---
+
+## Monitoramento Básico do Servidor
+
+```bash
+# RECURSOS:
+htop                              # CPU, RAM, swap, processos (interativo)
+df -h                             # Disco por partição
+free -h                           # RAM e swap
+uptime                            # Load average (se > nº de CPUs = sobrecarregado)
+
+# REDE:
+ss -tlnp                          # Portas TCP abertas + processo de cada uma
+ss -s                             # Resumo de conexões
+
+# PROCESSOS:
+ps aux --sort=-%mem | head -10    # Top 10 por memória
+ps aux --sort=-%cpu | head -10    # Top 10 por CPU
+
+# JOURNAL (logs systemd):
+sudo journalctl -u minha-api -f               # Follow tempo real
+sudo journalctl -u minha-api --since today    # Só hoje
+sudo journalctl --vacuum-size=500M            # Limpar logs antigos
+```
+
+```bash
+#!/bin/bash
+# /usr/local/bin/check-server.sh — cron a cada 5 min
+WEBHOOK="https://hooks.slack.com/services/SEU/WEBHOOK"
+
+DISK=$(df / | tail -1 | awk '{print $5}' | tr -d '%')
+[ "$DISK" -gt 85 ] && curl -s -X POST "$WEBHOOK" \
+  -d "{\"text\":\"ALERTA: Disco em ${DISK}% em $(hostname)\"}"
+
+MEM=$(free -m | awk '/Mem:/ {print $7}')
+[ "$MEM" -lt 100 ] && curl -s -X POST "$WEBHOOK" \
+  -d "{\"text\":\"ALERTA: ${MEM}MB RAM disponível em $(hostname)\"}"
+
+curl -sf http://localhost:3000/health > /dev/null 2>&1 || {
+  curl -s -X POST "$WEBHOOK" -d "{\"text\":\"API down em $(hostname)!\"}"
+  sudo systemctl restart minha-api
+}
+
+# crontab -e → */5 * * * * /usr/local/bin/check-server.sh
+```
+
+Log rotation com logrotate evita que logs encham o disco. Configurar em `/etc/logrotate.d/` com rotação diária, compressão e retenção de 14 dias.
+
+---
+
+## Exercícios
+
+### Exercício 1: Do zero ao deploy com HTTPS
+
+```
+1. Criar VPS (DigitalOcean/Hetzner, Ubuntu 24.04, 1 vCPU, 1GB RAM)
+2. Segurança: chave SSH ed25519, usuário deploy, desabilitar senha, UFW, fail2ban
+3. Ambiente: Node.js 20 LTS, nginx, swap 2GB
+4. Deploy: API Express com GET /health, systemd service, nginx reverse proxy
+5. Domínio: A record → IP, certbot para SSL, redirect HTTP → HTTPS
+Validação: curl https://seudominio.com.br/health retorna 200
+```
+
+### Exercício 2: Deploy automatizado com rollback
+
+```
+1. Criar deploy.sh que: roda testes, build, rsync, npm install, restart, health check
+2. Antes do deploy, backup da versão atual em /var/www/minha-api.backup
+3. Se health check falhar, restaurar backup automaticamente
+4. Testar: deploy código bom (sucesso) + deploy código quebrado (rollback)
+Validação: deploy de ponta a ponta com um comando, rollback automático
+```
+
+### Exercício 3: Docker Compose em produção
+
+```
+1. Dockerfile multi-stage para API (builder + production, non-root user)
+2. docker-compose.yml: API + PostgreSQL com volumes e health checks
+3. Nginx como reverse proxy para o container (porta só em localhost)
+4. CI (GitHub Actions): build imagem → push ghcr.io → SSH → docker compose pull/up
+Validação: app containerizada com HTTPS, deploy automatizado via CI
+```
+
+---
+
+## Referencias e Fontes
+
+- **"The Linux Command Line"** — William Shotts — fundamentos de Linux (disponível gratuitamente)
+- **Nginx Documentation** — https://nginx.org/en/docs/ — referência oficial
+- **Let's Encrypt Documentation** — https://letsencrypt.org/docs/ — SSL/TLS gratuito
+- **DigitalOcean Tutorials** — https://www.digitalocean.com/community/tutorials — guias práticos de VPS
+- **"UNIX and Linux System Administration Handbook"** — Nemeth et al. — a bíblia de sysadmin

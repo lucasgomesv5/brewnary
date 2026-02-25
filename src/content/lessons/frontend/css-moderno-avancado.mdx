@@ -1,0 +1,699 @@
+---
+title: "CSS Moderno Avançado"
+description: ":has(), Container Queries, Cascade Layers, CSS Nesting, scroll-driven animations, anchor positioning, View Transitions API, subgrid, @scope e comparação com Tailwind"
+track: "frontend"
+order: 14
+section: "Estilização"
+priority: "high"
+tags: ["CSS", "container-queries", "cascade-layers", "has-selector", "view-transitions", "scroll-animations", "anchor-positioning", "subgrid", "nesting"]
+prerequisites: ["css-completo"]
+keyTakeaways:
+  - ":has() é o 'parent selector' que CSS nunca teve — permite estilizar qualquer elemento baseado em seus descendentes, irmãos ou estado, habilitando lógica condicional pura em CSS"
+  - "Container Queries mudam o paradigma de responsive design: componentes respondem ao tamanho do seu container (não do viewport), tornando design systems verdadeiramente modulares"
+  - "Cascade Layers (@layer) resolvem o problema de especificidade em escala: você define a ordem de prioridade das camadas, e especificidade só importa DENTRO de cada layer"
+  - "View Transitions API traz animações de transição de página nativas ao browser, eliminando a necessidade de libraries como Framer Motion para page transitions"
+---
+
+## :has() — O Parent Selector que CSS Nunca Teve
+
+A pseudo-classe `:has()` aceita uma **lista de seletores relativos** como argumento. O elemento base é selecionado se qualquer um dos seletores corresponder a pelo menos um elemento quando ancorado no elemento base. A diferença conceitual é crucial: o `:has()` estiliza o **elemento pai**, não o descendente. O seletor dentro do parêntese é a **condição**.
+
+```css
+/* Estilizar o form quando qualquer input está inválido */
+form:has(input:invalid) {
+  border: 2px solid oklch(0.65 0.25 25);
+  background: oklch(0.97 0.01 25);
+}
+
+/* Estilizar o label quando o input-irmão está focado */
+label:has(+ input:focus) {
+  color: oklch(0.55 0.2 260);
+  font-weight: 600;
+}
+
+/* Card com imagem: layout horizontal */
+.card:has(img) {
+  display: grid;
+  grid-template-columns: 200px 1fr;
+  gap: 1.5rem;
+}
+
+/* Card SEM imagem: layout vertical com mais padding */
+.card:not(:has(img)) {
+  padding: 2rem;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Navigation com dropdown aberto: escurecer o resto */
+nav:has(.dropdown:hover) {
+  & > *:not(:hover) {
+    opacity: 0.6;
+  }
+}
+
+/* Container que tem exatamente 3 filhos diretos */
+.grid:has(> :nth-child(3):last-child) {
+  grid-template-columns: repeat(3, 1fr);
+}
+
+/* Toggle CSS puro baseado em checkbox */
+.theme-switcher:has(input[type="checkbox"]:checked) ~ main {
+  --bg: oklch(0.15 0 0);
+  --text: oklch(0.9 0 0);
+}
+```
+
+### Performance do :has()
+
+Os engines modernos (Blink, WebKit) usam **bloom filters** para descartar rapidamente elementos que não correspondem, e **invalidation sets** para recalcular estilos apenas quando o DOM muda de forma relevante.
+
+```css
+/* Eficiente: seletores simples e combinadores adjacentes */
+.card:has(img) { }
+label:has(+ input:focus) { }
+
+/* Menos eficiente: descendentes profundos */
+.page:has(.sidebar .widget .nested-component.active) { }
+
+/* Evite: :has() dentro de :has() (suporte inconsistente) */
+.a:has(.b:has(.c)) { }
+```
+
+---
+
+## Container Queries — Responsive Design Baseado em Componentes
+
+Media queries respondem ao **viewport**. Container Queries resolvem o problema fundamental: o componente responde ao tamanho do **seu container**.
+
+```
+Media Query: card na sidebar (300px) usa layout de 1200px (ERRADO)
+Container Query: card na sidebar (300px) usa layout de 300px (CORRETO)
+
+┌─────────────────────────────────────────────────────────────┐
+│ Viewport (1200px)                                           │
+│ ┌────────────────┐  ┌────────────────────────────────────┐  │
+│ │ Sidebar 300px   │  │ Main Content 900px                 │  │
+│ │ ┌────────────┐  │  │ ┌────────────┐  ┌────────────┐    │  │
+│ │ │ Card:      │  │  │ │ Card:      │  │ Card:      │    │  │
+│ │ │ layout p/  │  │  │ │ layout p/  │  │ layout p/  │    │  │
+│ │ │ 300px      │  │  │ │ 450px      │  │ 450px      │    │  │
+│ │ └────────────┘  │  │ └────────────┘  └────────────┘    │  │
+│ └────────────────┘  └────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────┘
+```
+
+```css
+/* O CONTAINER recebe container-type (não o componente) */
+.sidebar { container: sidebar / inline-size; }
+.main-content { container: main / inline-size; }
+
+/* container-type:
+   inline-size → queries na largura (mais comum)
+   size        → queries em ambas dimensões
+   normal      → sem containment (padrão)
+*/
+
+/* Query sem nome: usa o container ancestral mais próximo */
+@container (min-width: 400px) {
+  .card { grid-template-columns: 150px 1fr; }
+}
+
+/* Query com nome: usa especificamente o container "sidebar" */
+@container sidebar (min-width: 300px) {
+  .widget { font-size: 0.875rem; }
+}
+
+/* Sintaxe moderna com range */
+@container (300px <= width <= 600px) {
+  .card { /* layout medium */ }
+}
+```
+
+### Container Query Units e Exemplo Completo
+
+```css
+.card-title {
+  /* cqi = 1% da inline-size do container
+     cqw/cqh = largura/altura | cqi/cqb = inline/block | cqmin/cqmax */
+  font-size: clamp(1rem, 3cqi, 2rem);
+}
+
+/* Card que se adapta ao container */
+.card-container { container: card-area / inline-size; }
+
+@container card-area (width < 300px) {
+  .card { padding: 0.75rem; }
+  .card .card-image { display: none; }
+}
+
+@container card-area (width >= 500px) {
+  .card {
+    flex-direction: row;
+    & .card-image { width: 200px; flex-shrink: 0; }
+    & .card-body { flex: 1; }
+  }
+}
+```
+
+---
+
+## Cascade Layers (@layer)
+
+Em projetos grandes, a "guerra de especificidade" leva ao caos do `!important`. `@layer` resolve isso: especificidade só importa **dentro** de cada layer. Entre layers, a **ordem de declaração** vence.
+
+```css
+/* 1. Declare a ordem (a última tem maior prioridade) */
+@layer reset, base, components, utilities;
+
+/* 2. Popule cada layer (a ordem de preenchimento NÃO importa) */
+@layer reset {
+  *, *::before, *::after { margin: 0; padding: 0; box-sizing: border-box; }
+}
+
+@layer base {
+  body { font-family: system-ui, sans-serif; line-height: 1.6; color: var(--text); }
+  a { color: var(--link); text-underline-offset: 0.15em; }
+}
+
+@layer components {
+  .btn {
+    display: inline-flex; align-items: center; gap: 0.5rem;
+    padding: 0.625rem 1.25rem; border-radius: 0.5rem; font-weight: 600;
+  }
+}
+
+@layer utilities {
+  .sr-only { position: absolute; width: 1px; height: 1px; clip: rect(0,0,0,0); }
+  .hidden { display: none; }
+}
+```
+
+### Especificidade entre layers vs dentro de layers
+
+```css
+@layer base, components;
+
+@layer base {
+  #main-nav a { color: blue; }     /* Especificidade: (0,1,0) */
+}
+@layer components {
+  a { color: red; }                 /* Especificidade: (0,0,1) */
+}
+
+/* RESULTADO: links ficam VERMELHOS.
+   "components" declarado DEPOIS de "base" → vence, independente de especificidade. */
+```
+
+### Unlayered styles e @import
+
+Estilos **fora de qualquer layer** (unlayered) tem prioridade sobre **todos** os layers — independente de especificidade. Isso e intencional: permite migracao incremental. Codigo legado (unlayered) continua funcionando enquanto voce organiza os layers progressivamente.
+
+```css
+@import url("normalize.css") layer(reset);
+@import url("design-system.css") layer(design-system);
+
+/* Layers aninhados */
+@layer framework {
+  @layer base { /* framework.base */ }
+  @layer components { /* framework.components */ }
+}
+@layer app { /* app vence framework (declarado depois) */ }
+```
+
+---
+
+## CSS Nesting — Aninhamento Nativo
+
+```css
+.card {
+  padding: 1rem;
+  border-radius: 0.75rem;
+  background: var(--surface);
+
+  & .title { font-size: 1.5rem; font-weight: 700; }
+
+  &:hover {
+    box-shadow: 0 4px 12px rgb(0 0 0 / 0.1);
+    translate: 0 -2px;
+  }
+
+  &::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    box-shadow: inset 0 0 0 1px rgb(0 0 0 / 0.1);
+    pointer-events: none;
+  }
+
+  /* Media queries aninhadas */
+  @media (width >= 768px) { padding: 2rem; }
+
+  /* Container queries aninhadas */
+  @container (width >= 500px) {
+    display: grid;
+    grid-template-columns: 200px 1fr;
+  }
+}
+```
+
+Diferenca chave do Sass: CSS nativo **nao permite concatenacao de strings**. `&__element` funciona no Sass (gera `.block__element`) mas nao no CSS nativo. Alem disso, no Sass, seletores sem `&` sao automaticamente interpretados como descendentes. No CSS nativo, `.title { }` dentro de `.card { }` tambem funciona como descendente (implicitamente `& .title`), mas o uso explicito de `&` e recomendado para clareza.
+
+```css
+/* Combinando nesting com cascade layers */
+@layer components {
+  .card {
+    background: var(--surface);
+    & .title { color: var(--heading); }
+    &:hover { background: var(--surface-hover); }
+  }
+}
+```
+
+---
+
+## Custom Properties Avancado
+
+Custom properties cascateiam, sao dinamicas (mudam em runtime), e com `@property` ganham tipos e animacao.
+
+```css
+:root {
+  --gray-50: oklch(0.98 0 0);
+  --gray-900: oklch(0.17 0 0);
+  --gray-950: oklch(0.10 0 0);
+  --blue-500: oklch(0.62 0.2 260);
+  --blue-600: oklch(0.55 0.2 260);
+
+  /* Semantic tokens (light mode) */
+  --bg: var(--gray-50);
+  --surface: white;
+  --text: var(--gray-900);
+  --primary: var(--blue-600);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: var(--gray-950);
+    --surface: var(--gray-900);
+    --text: oklch(0.93 0 0);
+  }
+}
+
+/* Scoped tokens: variáveis em nível de componente */
+.btn {
+  --_bg: var(--btn-bg, var(--primary));
+  --_color: var(--btn-color, white);
+  background: var(--_bg);
+  color: var(--_color);
+
+  &:hover { --_bg: var(--btn-bg-hover, var(--blue-500)); }
+}
+.btn-danger { --btn-bg: oklch(0.63 0.22 25); }
+.btn-ghost { --btn-bg: transparent; --btn-color: var(--text); }
+```
+
+### @property: Tipos e Animacao
+
+Sem `@property`, custom properties sao strings e nao podem ser interpoladas. Com `@property`, o browser sabe animar:
+
+```css
+@property --gradient-angle {
+  syntax: "<angle>";
+  inherits: false;
+  initial-value: 0deg;
+}
+
+.gradient-border {
+  --gradient-angle: 0deg;
+  background:
+    linear-gradient(var(--surface), var(--surface)) padding-box,
+    conic-gradient(from var(--gradient-angle), var(--primary), oklch(0.63 0.22 25), var(--primary)) border-box;
+  border: 3px solid transparent;
+  transition: --gradient-angle 500ms ease;
+  &:hover { --gradient-angle: 180deg; }
+}
+```
+
+---
+
+## Scroll-Driven Animations
+
+Scroll-driven animations permitem vincular animacoes ao **progresso do scroll** ou a **visibilidade de um elemento** no viewport. Antes, implementar fade-in on scroll ou progress bars exigia `IntersectionObserver` ou libraries como GSAP ScrollTrigger. Agora, tudo e feito com CSS puro.
+
+Duas timelines principais:
+- **`scroll()`**: progresso baseado na posicao do scroll de um container
+- **`view()`**: progresso baseado na visibilidade do elemento no viewport
+
+```css
+/* Progress bar que preenche conforme o scroll da pagina */
+.reading-progress {
+  position: fixed;
+  top: 0; left: 0;
+  width: 100%; height: 3px;
+  background: var(--primary);
+  transform-origin: left;
+  animation: grow-progress linear both;
+  animation-timeline: scroll(); /* scroll(root) | scroll(nearest) | scroll(self) */
+}
+@keyframes grow-progress {
+  from { transform: scaleX(0); }
+  to { transform: scaleX(1); }
+}
+
+/* Fade-in quando elemento entra no viewport — ZERO JavaScript */
+.fade-in-on-scroll {
+  animation: fade-in linear both;
+  animation-timeline: view();
+  animation-range: entry 0% entry 100%;
+  /* animation-range: entry | exit | contain | cover */
+}
+@keyframes fade-in {
+  from { opacity: 0; translate: 0 50px; }
+  to { opacity: 1; translate: 0 0; }
+}
+
+/* Parallax puro com CSS */
+.parallax-bg {
+  animation: parallax-shift linear both;
+  animation-timeline: view();
+  animation-range: cover 0% cover 100%;
+}
+@keyframes parallax-shift {
+  from { translate: 0 -20%; }
+  to { translate: 0 20%; }
+}
+```
+
+---
+
+## Anchor Positioning
+
+Antes do anchor positioning, posicionar tooltips, popovers e dropdowns relativamente a um "trigger element" exigia JavaScript (Floating UI, Popper.js) para calcular posicoes e lidar com overflow do viewport. Anchor positioning resolve isso em CSS puro — o browser calcula a posicao e lida com fallbacks automaticamente.
+
+```css
+/* 1. Nomear a ancora */
+.trigger-button { anchor-name: --my-trigger; }
+
+/* 2. Posicionar relativamente */
+.popover {
+  position: fixed;
+  position-anchor: --my-trigger;
+  top: anchor(bottom);
+  left: anchor(center);
+  translate: -50% 8px;
+}
+
+/* Posicionamento simplificado com inset-area */
+.tooltip {
+  position: fixed;
+  position-anchor: --trigger;
+  inset-area: top center; /* bottom center | right center | top left | ... */
+}
+
+/* Fallback: se nao cabe acima, tenta abaixo */
+.popover {
+  position: fixed;
+  position-anchor: --trigger;
+  inset-area: top center;
+  position-try: --try-bottom, --try-right;
+}
+@position-try --try-bottom { inset-area: bottom center; }
+@position-try --try-right { inset-area: right center; }
+```
+
+Isso substitui toda a logica de "flip" e "shift" que libraries como Floating UI implementam em JavaScript. O browser faz o calculo de forma nativa, com melhor performance e zero bundle size adicional.
+
+---
+
+## Color Functions Modernas
+
+### oklch(): Cores Perceptualmente Uniformes
+
+O espaco de cor OKLCH separa **luminosidade**, **chroma** (saturacao) e **hue** (matiz) de forma perceptualmente uniforme. Diferente de HSL, mudar a luminosidade em OKLCH produz resultados **previsiveis** para o olho humano. Isso significa que duas cores com o mesmo L parecem igualmente claras/escuras — algo que HSL nao garante.
+
+```css
+/* oklch(L C H / alpha)
+   L = Lightness (0-1) | C = Chroma (0-0.4) | H = Hue (0-360) */
+
+/* Paleta harmoniosa: mesmo L e C, variando so o H */
+:root {
+  --red: oklch(0.65 0.25 25);   --orange: oklch(0.65 0.25 55);
+  --green: oklch(0.65 0.25 145); --blue: oklch(0.65 0.25 260);
+}
+
+/* color-mix(): hover states consistentes */
+.btn:hover { background: color-mix(in oklch, var(--primary), white 15%); }
+.btn:active { background: color-mix(in oklch, var(--primary), black 15%); }
+
+/* Relative color syntax: derivar cores de uma base */
+.card {
+  --base: oklch(0.62 0.20 260);
+  --light: oklch(from var(--base) calc(l + 0.2) c h);
+  --dark: oklch(from var(--base) calc(l - 0.2) c h);
+  --complement: oklch(from var(--base) l c calc(h + 180));
+}
+```
+
+---
+
+## View Transitions API
+
+View Transitions permite animar a transicao entre dois estados de DOM (ou duas paginas) com animacoes de morphing nativas do browser. O browser tira um "screenshot" do estado anterior, renderiza o novo estado, e anima a transicao entre os dois. O resultado sao transicoes fluidas que antes exigiam libraries como Framer Motion ou GSAP.
+
+```css
+/* Habilitar view transitions para navegacao MPA */
+@view-transition { navigation: auto; }
+
+::view-transition-old(root) { animation: fade-out 200ms ease-out; }
+::view-transition-new(root) { animation: fade-in 300ms ease-in; }
+
+@keyframes fade-out { to { opacity: 0; scale: 0.95; } }
+@keyframes fade-in { from { opacity: 0; scale: 1.05; } }
+
+/* Morph: nomear elementos que devem "morphar" entre paginas */
+.product-card img { view-transition-name: product-image; }
+.product-detail img { view-transition-name: product-image; } /* Mesmo nome! */
+
+/* O browser anima posicao, tamanho e aparencia automaticamente */
+::view-transition-group(product-image) {
+  animation-duration: 400ms;
+  animation-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+}
+```
+
+```
+Pseudo-element tree:
+::view-transition
+├── ::view-transition-group(root)
+│   └── ::view-transition-image-pair(root)
+│       ├── ::view-transition-old(root)      ← screenshot do estado anterior
+│       └── ::view-transition-new(root)      ← screenshot do estado novo
+├── ::view-transition-group(product-image)
+│   └── ::view-transition-image-pair(product-image)
+│       ├── ::view-transition-old(product-image)
+│       └── ::view-transition-new(product-image)
+```
+
+Integracao com Astro:
+
+```astro
+---
+import { ViewTransitions } from 'astro:transitions';
+---
+<html>
+  <head><ViewTransitions /></head>
+  <body>
+    <img transition:name="hero-image" src={heroImage} />
+    <h1 transition:name="page-title">{title}</h1>
+    <slot />
+  </body>
+</html>
+```
+
+---
+
+## Subgrid — Heranca de Grid Tracks
+
+O problema: quando voce cria um grid e coloca items nele, os **filhos dos items** (netos do grid container) nao participam do grid. Cada item cria seu proprio contexto de formatacao. Isso significa que, em um layout de cards, os titulos de cada card nao se alinham entre si — porque cada card calcula suas proprias rows independentemente.
+
+```
+Sem subgrid:                          Com subgrid:
+┌──────────┐ ┌──────────┐           ┌──────────┐ ┌──────────┐
+│ Titulo   │ │ Titulo   │           │ Titulo   │ │ Titulo   │
+│ curto    │ │ muito    │           │ curto    │ │ muito    │
+│          │ │ longo    │           │          │ │ longo    │
+├──────────┤ │ demais   │           ├──────────┤ ├──────────┤
+│ Conteudo │ ├──────────┤           │ Conteudo │ │ Conteudo │
+└──────────┘ │ Conteudo │           └──────────┘ └──────────┘
+             └──────────┘
+↑ Desalinhado               ↑ Alinhado entre cards
+```
+
+```css
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 1.5rem;
+}
+
+.card {
+  display: grid;
+  grid-template-rows: subgrid; /* Herda row tracks do pai */
+  grid-row: span 3;           /* Ocupa 3 rows no grid pai */
+  gap: 0.75rem;
+  padding: 1.5rem;
+}
+
+/* Agora .card-title, .card-body e .card-footer compartilham
+   as mesmas row tracks entre todos os cards */
+.card-footer { align-self: end; border-top: 1px solid var(--border); }
+```
+
+---
+
+## @scope — Escopo Nativo de Estilos
+
+`@scope` permite definir um escopo de estilizacao diretamente em CSS, sem Shadow DOM, CSS Modules ou CSS-in-JS. Os seletores dentro de um `@scope` so afetam descendentes do elemento raiz do escopo.
+
+```css
+/* Estilos escopados para descendentes de .card */
+@scope (.card) {
+  .title { font-size: 1.25rem; font-weight: 700; }
+  .body { color: var(--text-muted); }
+  img { border-radius: 0.5rem; }
+}
+
+/* Donut scope: estiliza entre .card e .card-content (exclui descendentes) */
+@scope (.card) to (.card-content) {
+  p { color: var(--text-muted); }
+  /* p dentro de .card-content NAO e afetado */
+}
+```
+
+### Proximity Scoping
+
+Quando multiplos escopos se aplicam, o **mais proximo** vence:
+
+```css
+@scope (.light-theme) { p { color: oklch(0.2 0 0); } }
+@scope (.dark-theme) { p { color: oklch(0.9 0 0); } }
+```
+
+```html
+<div class="light-theme">
+  <p>Texto escuro (light-theme mais proximo)</p>
+  <div class="dark-theme">
+    <p>Texto claro (dark-theme mais proximo)</p>
+  </div>
+</div>
+```
+
+```
+┌───────────────────┬──────────────┬────────────┬──────────┬─────────────┐
+│ Feature           │ @scope       │ CSS Modules│ Shadow   │ styled-     │
+│                   │              │            │ DOM      │ components  │
+├───────────────────┼──────────────┼────────────┼──────────┼─────────────┤
+│ Isolamento        │ Soft         │ Hash-based │ Hard     │ Hash-based  │
+│ Theming global    │ Funciona     │ Via :global│ Nao pene.│ ThemeProvid.│
+│ Bundle size       │ Zero runtime │ Zero       │ Zero     │ Runtime JS  │
+│ Proximity scoping │ Nativo       │ Nao        │ Nao      │ Nao         │
+│ Donut scope       │ Nativo       │ Nao        │ Nao      │ Nao         │
+└───────────────────┴──────────────┴────────────┴──────────┴─────────────┘
+```
+
+---
+
+## Comparacao: CSS Moderno vs Tailwind
+
+A discussao entre utility-first CSS (Tailwind) e CSS semantico moderno nao e sobre "certo vs errado" — sao **filosofias diferentes** para problemas diferentes. A resposta correta depende do contexto do projeto, do time e dos requisitos.
+
+**Quando Tailwind**: prototipacao rapida, times grandes que precisam de convencoes forcadas, consistencia via design tokens embutidos, projetos onde muitos devs nao dominam CSS.
+
+**Quando CSS Moderno**: design systems com tokens customizados (`@property`, `oklch()`), performance (zero runtime), animacoes complexas (scroll-driven, view transitions), bundle size minimo, controle fino (`@scope`, cascade layers).
+
+**Abordagem hibrida**: Tailwind para layout/spacing + CSS custom para animations e theming complexo.
+
+```
+┌──────────────────┬───────────────────────────┬──────────────────────────┐
+│ Aspecto          │ Tailwind CSS              │ CSS Moderno Nativo       │
+├──────────────────┼───────────────────────────┼──────────────────────────┤
+│ DX               │ Rapido p/ prototipar      │ Mais verboso, mais poder │
+│ Performance      │ Bom (com purge/JIT)       │ Excelente, zero runtime  │
+│ Manutenibilidade │ HTML verboso, @apply ajuda│ Cascade layers organizam │
+│ Learning curve   │ Baixa (memorizar classes) │ Maior (cascade, specif.) │
+│ Animacoes        │ Basicas                   │ Scroll-driven, view trans│
+│ Theming          │ Config/plugins, rebuild   │ Custom props, runtime    │
+│ Bundle size      │ ~10-30KB (apos purge)     │ Sem overhead de runtime  │
+└──────────────────┴───────────────────────────┴──────────────────────────┘
+```
+
+---
+
+## Exercicios Praticos
+
+### Exercicio 1: Card Responsivo com Container Queries e :has()
+
+Crie um componente `.card` que muda de layout vertical para horizontal quando o container tem mais de 500px. Quando o card **tem** imagem, mostra layout com imagem; quando **nao tem**, usa layout text-only com padding maior. Use container query units para font-size responsivo.
+
+```css
+/* Dica de estrutura: */
+.card-wrapper { container: card / inline-size; }
+
+.card { /* base styles */ }
+.card:has(img) { /* layout com imagem */ }
+.card:not(:has(img)) { /* layout text-only */ }
+
+@container card (width >= 500px) {
+  .card:has(img) { /* layout horizontal com imagem */ }
+}
+```
+
+### Exercicio 2: Theme System com @layer e Custom Properties
+
+Monte um theme system completo:
+1. Defina `@layer reset, tokens, base, components, utilities`
+2. Crie tokens com `oklch()` para light e dark mode
+3. Use `color-mix()` para gerar hover states derivados automaticamente
+4. Teste que a prioridade dos layers funciona: um seletor de alta especificidade em `base` NAO deve sobrescrever um seletor simples em `components`
+
+### Exercicio 3: Scroll-Driven Animation Gallery
+
+Crie uma galeria de imagens onde:
+1. Uma progress bar no topo mostra o progresso do scroll (`animation-timeline: scroll()`)
+2. Cada imagem faz fade-in + slide-up ao entrar no viewport (`animation-timeline: view()`)
+3. Adicione um efeito parallax no hero section
+
+### Exercicio 4: Tooltip com Anchor Positioning
+
+Implemente um tooltip que:
+1. Usa `anchor-name` e `position-anchor` para posicionar relativamente ao trigger
+2. Tenta posicionar acima do trigger, mas faz fallback para baixo se nao houver espaco
+3. Aplica uma animacao de entrada usando CSS nesting
+
+```css
+.trigger { anchor-name: --tooltip-anchor; }
+.tooltip {
+  position: fixed;
+  position-anchor: --tooltip-anchor;
+  /* complete a implementacao... */
+}
+```
+
+### Exercicio 5: Dashboard com Subgrid e @scope
+
+Crie um dashboard layout onde:
+1. O grid principal tem 3 colunas
+2. Cada card usa `subgrid` para alinhar header, body e footer entre cards
+3. Use `@scope` para isolar os estilos de cada tipo de card (`.metric-card`, `.chart-card`, `.table-card`)
+4. Aplique `@container` para que os cards se adaptem ao seu espaco individual
+
+---
+
+## Referencias
+
+- [MDN Web Docs — CSS](https://developer.mozilla.org/en-US/docs/Web/CSS) — referencia completa de todas as features
+- [web.dev — CSS](https://web.dev/learn/css) — guias do time do Chrome sobre CSS moderno
+- [Every Layout](https://every-layout.dev/) — Heydon Pickering e Andy Bell: layouts resilientes
+- [Chrome Developers — Scroll-driven animations](https://developer.chrome.com/docs/css-ui/scroll-driven-animations)
+- [Open Props](https://open-props.style/) — design tokens como custom properties
+- [Interop 2024/2025](https://wpt.fyi/interop-2024) — compatibilidade cross-browser das features modernas

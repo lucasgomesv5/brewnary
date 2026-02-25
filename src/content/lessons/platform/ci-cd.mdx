@@ -1,0 +1,807 @@
+---
+title: "CI/CD"
+description: "Integração, entrega e deploy contínuos com GitHub Actions, design de pipelines, estratégias de deploy e segurança no pipeline"
+track: "platform"
+order: 3
+section: "Ferramentas"
+priority: "high"
+tags: ["ci-cd", "github-actions", "pipeline", "deploy"]
+prerequisites: []
+keyTakeaways:
+  - "CI (Integração Contínua), CD (Entrega Contínua) e CD (Deploy Contínuo) são práticas distintas com níveis crescentes de automação"
+  - "Pipelines como código são versionados, auditáveis e passam por code review — trate-os com o mesmo rigor do código da aplicação"
+  - "Estratégias de deploy como blue-green e canary reduzem o risco de incidentes ao limitar o blast radius de mudanças"
+---
+
+## CI vs CD vs CD: Definições Precisas
+
+```
+INTEGRAÇÃO CONTÍNUA (CI):
+  Desenvolvedores integram código frequentemente (várias vezes ao dia)
+  Cada integração é verificada por build automatizado + testes
+  Objetivo: detectar problemas de integração o mais cedo possível
+  Métricas: tempo do pipeline, taxa de falha, cobertura de testes
+
+  commit → build → lint → type-check → unit tests → integration tests
+                                                          ↓
+                                                    ✅ Merge permitido
+
+ENTREGA CONTÍNUA (Continuous Delivery):
+  Código está SEMPRE em estado deployável após passar pelo pipeline
+  Deploy para produção requer aprovação manual (gate)
+  Objetivo: reduzir o risco e o custo de cada release
+
+  CI ✅ → build artifact → deploy staging → testes e2e → [APROVAÇÃO] → deploy prod
+
+DEPLOY CONTÍNUO (Continuous Deployment):
+  Cada commit que passa por todos os testes vai automaticamente para produção
+  Sem intervenção humana — pipeline decide tudo
+  Requer: alta confiança nos testes, feature flags, monitoramento robusto
+
+  CI ✅ → build artifact → deploy staging → testes e2e → deploy prod (automático)
+```
+
+## Design de Pipelines: Stages, Jobs e Artifacts
+
+```
+PIPELINE BEM DESENHADO:
+┌─────────┐   ┌──────────┐   ┌───────────┐   ┌──────────┐   ┌──────────┐
+│  Build  │ → │  Verify  │ → │   Test    │ → │  Deploy  │ → │ Validate │
+│         │   │          │   │           │   │ Staging  │   │          │
+│ compile │   │ lint     │   │ unit      │   │          │   │ smoke    │
+│ deps    │   │ typecheck│   │ integ     │   │          │   │ e2e      │
+│ artifact│   │ security │   │ e2e       │   │          │   │ perf     │
+└─────────┘   └──────────┘   └───────────┘   └──────────┘   └──────────┘
+                                                                  │
+                                                            ┌──────────┐
+                                                            │  Deploy  │
+                                                            │   Prod   │
+                                                            └──────────┘
+
+PRINCÍPIOS:
+1. Fail fast: etapas mais rápidas primeiro (lint < unit < integration < e2e)
+2. Paralelizar: jobs independentes rodam simultaneamente
+3. Artifacts: build uma vez, deploy muitas (mesmo artefato em todos os ambientes)
+4. Idempotência: rodar o pipeline N vezes produz o mesmo resultado
+5. Reprodutibilidade: mesmo commit → mesmo resultado (pin de versões)
+```
+
+## GitHub Actions: Sintaxe Completa
+
+```yaml
+# .github/workflows/ci.yml
+name: CI/CD Pipeline
+
+on:
+  push:
+    branches: [main, develop]
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+  pull_request:
+    branches: [main]
+  workflow_dispatch:  # Permite trigger manual
+    inputs:
+      environment:
+        description: 'Ambiente de deploy'
+        required: true
+        type: choice
+        options: [staging, production]
+
+# Permissões mínimas (princípio do menor privilégio):
+permissions:
+  contents: read
+  pull-requests: write
+  packages: write
+
+# Variáveis de ambiente globais:
+env:
+  NODE_VERSION: "20"
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
+
+# Concurrency: cancelar runs anteriores na mesma branch:
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # ============================================================
+  # JOB 1: BUILD E VERIFICAÇÃO
+  # ============================================================
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: 'npm'  # Cache baseado no hash do package-lock.json
+
+      - name: Instalar dependências
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Type check
+        run: npm run type-check
+
+      - name: Build
+        run: npm run build
+
+      # Persistir artefato para jobs seguintes:
+      - uses: actions/upload-artifact@v4
+        with:
+          name: build-output
+          path: dist/
+          retention-days: 1
+
+  # ============================================================
+  # JOB 2: TESTES (paralelo ao lint se possível)
+  # ============================================================
+  test:
+    runs-on: ubuntu-latest
+    needs: build  # Depende do build
+    timeout-minutes: 15
+
+    # Matrix build: testar em múltiplas versões:
+    strategy:
+      fail-fast: false  # Não cancelar outros ao falhar
+      matrix:
+        node-version: [18, 20, 22]
+        shard: [1, 2, 3]  # Test splitting: dividir testes em 3 shards
+
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_DB: test_db
+          POSTGRES_USER: test
+          POSTGRES_PASSWORD: test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd="pg_isready -U test"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=5
+
+      redis:
+        image: redis:7-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd="redis-cli ping"
+          --health-interval=10s
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'npm'
+
+      - run: npm ci
+
+      - name: Executar testes (shard ${{ matrix.shard }}/3)
+        run: |
+          npm test -- --shard=${{ matrix.shard }}/3 --coverage
+        env:
+          DATABASE_URL: postgres://test:test@localhost:5432/test_db
+          REDIS_URL: redis://localhost:6379
+
+      - name: Upload cobertura
+        if: matrix.node-version == 20 && matrix.shard == 1
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage
+          path: coverage/
+
+  # ============================================================
+  # JOB 3: SECURITY SCANNING
+  # ============================================================
+  security:
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Dependency audit
+        run: npm audit --audit-level=high
+
+      - name: SAST com CodeQL
+        uses: github/codeql-action/analyze@v3
+        with:
+          languages: javascript
+
+      - name: Scan de secrets
+        uses: trufflesecurity/trufflehog@main
+        with:
+          extra_args: --only-verified
+
+  # ============================================================
+  # JOB 4: BUILD E PUSH DA IMAGEM DOCKER
+  # ============================================================
+  docker:
+    runs-on: ubuntu-latest
+    needs: [test, security]
+    if: github.ref == 'refs/heads/main'
+
+    outputs:
+      image-tag: ${{ steps.meta.outputs.tags }}
+      image-digest: ${{ steps.build.outputs.digest }}
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Metadados da imagem
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=sha,prefix=
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+
+      - name: Build e push
+        id: build
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+          platforms: linux/amd64,linux/arm64
+
+  # ============================================================
+  # JOB 5: DEPLOY
+  # ============================================================
+  deploy-staging:
+    runs-on: ubuntu-latest
+    needs: docker
+    environment:
+      name: staging
+      url: https://staging.example.com
+
+    steps:
+      - name: Deploy para staging
+        run: |
+          echo "Deploying ${{ needs.docker.outputs.image-tag }}"
+          # kubectl set image deployment/api api=${{ needs.docker.outputs.image-tag }}
+
+  deploy-production:
+    runs-on: ubuntu-latest
+    needs: deploy-staging
+    environment:
+      name: production
+      url: https://example.com
+    # Environment protection rules no GitHub:
+    # - Required reviewers
+    # - Wait timer
+    # - Deployment branches
+
+    steps:
+      - name: Deploy para produção
+        run: |
+          echo "Deploying to production"
+```
+
+## Reusable Workflows e Composite Actions
+
+```yaml
+# .github/workflows/reusable-deploy.yml
+# Workflow reutilizável — chamado por outros workflows:
+name: Deploy Reutilizável
+
+on:
+  workflow_call:
+    inputs:
+      environment:
+        required: true
+        type: string
+      image-tag:
+        required: true
+        type: string
+    secrets:
+      KUBE_CONFIG:
+        required: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: ${{ inputs.environment }}
+    steps:
+      - name: Configurar kubectl
+        run: |
+          echo "${{ secrets.KUBE_CONFIG }}" | base64 -d > kubeconfig
+          export KUBECONFIG=kubeconfig
+
+      - name: Deploy
+        run: |
+          kubectl set image deployment/api api=${{ inputs.image-tag }}
+          kubectl rollout status deployment/api --timeout=300s
+```
+
+```yaml
+# .github/actions/setup-project/action.yml
+# Composite action — reutilizar steps entre jobs:
+name: 'Setup do Projeto'
+description: 'Configura Node.js, instala deps e faz cache'
+
+inputs:
+  node-version:
+    description: 'Versão do Node.js'
+    required: false
+    default: '20'
+
+runs:
+  using: 'composite'
+  steps:
+    - uses: actions/setup-node@v4
+      with:
+        node-version: ${{ inputs.node-version }}
+        cache: 'npm'
+
+    - name: Instalar dependências
+      shell: bash
+      run: npm ci
+
+    - name: Cache de build
+      uses: actions/cache@v4
+      with:
+        path: .next/cache
+        key: nextjs-${{ hashFiles('package-lock.json') }}-${{ hashFiles('src/**') }}
+        restore-keys: nextjs-${{ hashFiles('package-lock.json') }}-
+
+# Uso em um workflow:
+# steps:
+#   - uses: actions/checkout@v4
+#   - uses: ./.github/actions/setup-project
+#     with:
+#       node-version: '20'
+```
+
+## Estratégias de Deploy
+
+```
+1. ROLLING UPDATE (padrão no Kubernetes):
+   Substitui instâncias gradualmente. Sempre há instâncias rodando.
+
+   v1 v1 v1 v1  →  v1 v1 v1 v2  →  v1 v1 v2 v2  →  v1 v2 v2 v2  →  v2 v2 v2 v2
+
+   Vantagens: sem downtime, uso eficiente de recursos
+   Desvantagens: duas versões coexistem temporariamente
+   Cuidado: mudanças de banco precisam ser backwards compatible
+
+2. BLUE-GREEN:
+   Dois ambientes idênticos. Switch instantâneo via load balancer.
+
+   [Blue v1] ← LB        [Blue v1]
+   [Green  ]         →    [Green v2] ← LB  (switch instantâneo)
+
+   Vantagens: rollback instantâneo (switch de volta), zero downtime
+   Desvantagens: custo dobrado de infraestrutura, sincronização de dados
+   Ideal para: aplicações com releases menos frequentes
+
+3. CANARY:
+   Direciona percentual pequeno do tráfego para a nova versão.
+
+   [v1] ← 95% tráfego      [v1] ← 90%       [v1] ← 50%       [v2] ← 100%
+   [v2] ← 5% tráfego  →    [v2] ← 10%  →    [v2] ← 50%  →
+
+   Vantagens: blast radius mínimo, validação com tráfego real
+   Desvantagens: complexidade de roteamento, métricas por versão
+   Implementação: Istio, AWS ALB weighted target groups, Flagger
+
+4. FEATURE FLAGS (deploy ≠ release):
+   Deploy o código para todos, mas ativa a feature gradualmente.
+
+   if (featureFlags.isEnabled('new-checkout', { userId })) {
+     return newCheckoutFlow();
+   }
+   return legacyCheckoutFlow();
+
+   Ferramentas: LaunchDarkly, Unleash, Flagsmith, ConfigCat
+   Vantagens: granularidade por usuário/%, rollback sem redeploy
+   Desvantagens: complexidade no código, flags precisam ser limpas
+```
+
+## Artifact Management e Promoção de Ambientes
+
+```bash
+# PRINCÍPIO: Build uma vez, promova o mesmo artefato entre ambientes
+# NUNCA rebuildar para cada ambiente — garante que o que testou é o que deploya
+
+# Fluxo de promoção:
+# Build → Artifact Registry → Deploy Dev → Deploy Staging → Deploy Prod
+#                                  ↓             ↓               ↓
+#                              smoke tests   e2e tests     canary + monitor
+
+# Exemplo com container images:
+# Tag por commit SHA (imutável):
+docker tag api:latest ghcr.io/org/api:a1b2c3d
+docker push ghcr.io/org/api:a1b2c3d
+
+# Promover para staging (retag):
+docker tag ghcr.io/org/api:a1b2c3d ghcr.io/org/api:staging
+docker push ghcr.io/org/api:staging
+
+# Promover para produção:
+docker tag ghcr.io/org/api:a1b2c3d ghcr.io/org/api:production
+docker tag ghcr.io/org/api:a1b2c3d ghcr.io/org/api:v1.2.3
+docker push ghcr.io/org/api:production
+docker push ghcr.io/org/api:v1.2.3
+
+# ATENÇÃO: nunca use :latest em produção
+# :latest é mutável — você perde rastreabilidade
+# Sempre use SHA ou semver para deployments
+```
+
+## Rollback Strategies
+
+```bash
+# 1. ROLLBACK DE INFRAESTRUTURA (Kubernetes):
+kubectl rollout undo deployment/api
+kubectl rollout undo deployment/api --to-revision=3
+kubectl rollout history deployment/api  # Ver histórico de revisions
+
+# 2. ROLLBACK DE ARTEFATO:
+# Redeploy da versão anterior (mesmo artefato que já foi testado):
+kubectl set image deployment/api api=ghcr.io/org/api:v1.1.0
+# Ou via Helm:
+helm rollback api 3  # Volta para revision 3
+
+# 3. ROLLBACK AUTOMÁTICO baseado em métricas:
+# Flagger (Kubernetes) faz canary com rollback automático:
+# apiVersion: flagger.app/v1beta1
+# kind: Canary
+# spec:
+#   analysis:
+#     interval: 1m
+#     threshold: 5       # Máximo de falhas antes de rollback
+#     metrics:
+#       - name: request-success-rate
+#         thresholdRange:
+#           min: 99       # Se < 99% de sucesso → rollback
+#       - name: request-duration
+#         thresholdRange:
+#           max: 500      # Se latência > 500ms → rollback
+
+# 4. DATABASE ROLLBACK — o mais difícil:
+# Migrations são forward-only em produção
+# Rollback de schema: executar migration reversa (se existir)
+# Rollback de dados: restore de backup (PITR - Point In Time Recovery)
+# Melhor abordagem: expand-contract (compatibilidade entre versões)
+```
+
+## GitOps com ArgoCD
+
+```yaml
+# GitOps: Git como single source of truth para infraestrutura
+# Fluxo: Git commit → ArgoCD detecta mudança → sincroniza com cluster
+
+# Estrutura de repositório GitOps:
+# infra/
+# ├── base/
+# │   ├── deployment.yaml
+# │   ├── service.yaml
+# │   └── kustomization.yaml
+# ├── overlays/
+# │   ├── staging/
+# │   │   ├── kustomization.yaml
+# │   │   └── patches/
+# │   └── production/
+# │       ├── kustomization.yaml
+# │       └── patches/
+
+# ArgoCD Application:
+# apiVersion: argoproj.io/v1alpha1
+# kind: Application
+# metadata:
+#   name: api-production
+# spec:
+#   project: default
+#   source:
+#     repoURL: https://github.com/org/infra.git
+#     targetRevision: main
+#     path: overlays/production
+#   destination:
+#     server: https://kubernetes.default.svc
+#     namespace: production
+#   syncPolicy:
+#     automated:
+#       prune: true       # Remover recursos deletados do Git
+#       selfHeal: true    # Reverter mudanças manuais no cluster
+#     syncOptions:
+#       - CreateNamespace=true
+
+# Alternativa: Flux CD
+# Mais leve, nativo do Kubernetes, usa CRDs
+# flux bootstrap github \
+#   --owner=org \
+#   --repository=infra \
+#   --branch=main \
+#   --path=clusters/production
+```
+
+## Segurança no Pipeline (DevSecOps)
+
+```yaml
+# SAST (Static Application Security Testing):
+# Analisa código fonte em busca de vulnerabilidades
+# Ferramentas: CodeQL, Semgrep, SonarQube
+- name: Semgrep SAST
+  run: |
+    pip install semgrep
+    semgrep scan --config=p/owasp-top-ten --error
+
+# DAST (Dynamic Application Security Testing):
+# Testa a aplicação rodando em busca de vulnerabilidades
+# Ferramentas: OWASP ZAP, Nuclei
+- name: OWASP ZAP Scan
+  uses: zaproxy/action-full-scan@v0.10.0
+  with:
+    target: 'https://staging.example.com'
+
+# Dependency Scanning:
+# Verifica dependências por CVEs conhecidas
+- name: Audit de dependências
+  run: npm audit --audit-level=high --production
+
+# Container Image Scanning:
+- name: Trivy scan
+  uses: aquasecurity/trivy-action@master
+  with:
+    image-ref: ghcr.io/org/api:${{ github.sha }}
+    severity: 'CRITICAL,HIGH'
+    exit-code: '1'  # Falhar o pipeline se encontrar vulnerabilidades
+
+# SBOM (Software Bill of Materials):
+# Lista completa de componentes do software
+- name: Gerar SBOM
+  uses: anchore/sbom-action@v0
+  with:
+    image: ghcr.io/org/api:${{ github.sha }}
+    format: spdx-json
+    output-file: sbom.spdx.json
+
+# Secret scanning (prevenir vazamento):
+- name: Detectar secrets
+  uses: trufflesecurity/trufflehog@main
+  with:
+    extra_args: --only-verified --results=verified
+
+# Assinatura de artefatos (supply chain security):
+- name: Assinar imagem com Cosign
+  run: |
+    cosign sign --yes ghcr.io/org/api@${{ steps.build.outputs.digest }}
+```
+
+## Métricas de Pipeline e Melhoria Contínua
+
+```
+MÉTRICAS DORA (DevOps Research and Assessment):
+
+1. Deployment Frequency — Com que frequência você deploya?
+   Elite: múltiplas vezes por dia
+   High: entre uma vez por dia e uma vez por semana
+   Medium: entre uma vez por semana e uma vez por mês
+   Low: menos de uma vez por mês
+
+2. Lead Time for Changes — Tempo do commit até produção?
+   Elite: menos de uma hora
+   High: entre um dia e uma semana
+   Medium: entre uma semana e um mês
+   Low: mais de um mês
+
+3. Mean Time to Recovery (MTTR) — Tempo para restaurar o serviço?
+   Elite: menos de uma hora
+   High: menos de um dia
+   Medium: menos de uma semana
+   Low: mais de uma semana
+
+4. Change Failure Rate — % de deploys que causam falha?
+   Elite: 0-15%
+   High: 16-30%
+   Medium: 31-45%
+   Low: 46-60%
+
+COMO MEDIR:
+- GitHub Actions: duração dos workflows, taxa de falha
+- Ferramentas: Sleuth, LinearB, Haystack, DORA dashboard do Grafana
+- Exportar métricas para Prometheus/Grafana para dashboards
+```
+
+---
+
+## Trunk-Based Development vs GitFlow
+
+```
+Trunk-Based Development:                GitFlow:
+─────────────────────────              ──────────────────
+main ─●─●─●─●─●─●─●─●─●─             main ──●──────●──────●──
+       \/ \/ \/                                \    /  \    /
+  short-lived branches                  develop ─●──●────●──●──
+  (horas, max 1-2 dias)                          │       │
+                                        feature/x──●──●──┘
+                                        feature/y────●──●──┘
+
+Trunk-Based:                           GitFlow:
+✅ Integração contínua real            ❌ Branches longa vida → merge hell
+✅ Deploy contínuo (CD)                ❌ Release branches complexos
+✅ Feature flags para WIP              ✅ Bom para software com versões
+✅ Menos conflitos                     ✅ Releases planejadas
+✅ Recomendado por DORA/Google         ❌ Mais lento para entregar
+
+Recomendação: Trunk-Based para SaaS/web apps.
+GitFlow apenas para software com releases versionadas (mobile, libs).
+```
+
+## Feature Flags: Separar Deploy de Release
+
+```javascript
+// Feature flags permitem:
+// 1. Deploy código para 100% dos servidores
+// 2. Ativar feature para X% dos usuários
+// 3. Rollback instantâneo (desliga a flag)
+
+import { UnleashClient } from 'unleash-proxy-client';
+
+const unleash = new UnleashClient({
+  url: 'https://unleash.empresa.com/api/frontend',
+  clientKey: process.env.UNLEASH_CLIENT_KEY,
+  appName: 'api',
+});
+
+await unleash.start();
+
+// Toggle simples
+if (unleash.isEnabled('new-checkout-flow')) {
+  return renderNewCheckout();
+}
+return renderOldCheckout();
+
+// Gradual rollout (percentual)
+if (unleash.isEnabled('new-payment-gateway', { userId: user.id })) {
+  return processWithNewGateway(payment);
+}
+return processWithOldGateway(payment);
+```
+
+## Progressive Delivery: Canary e Traffic Shifting
+
+```yaml
+# Flagger automatiza canary analysis no Kubernetes
+apiVersion: flagger.app/v1beta1
+kind: Canary
+metadata:
+  name: api
+  namespace: production
+spec:
+  targetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: api
+  analysis:
+    interval: 1m
+    threshold: 10
+    maxWeight: 50
+    stepWeight: 10
+    # 0% → 10% → 20% → 30% → 40% → 50% → promote para 100%
+    metrics:
+      - name: request-success-rate
+        thresholdRange:
+          min: 99.0
+        interval: 1m
+      - name: request-duration
+        thresholdRange:
+          max: 500    # Máximo 500ms p99
+        interval: 1m
+```
+
+```
+Fluxo do Canary Deploy:
+1. Nova imagem detectada no Deployment
+2. Flagger cria Deployment canary (api-canary)
+3. Direciona 10% do tráfego para canary
+4. Analisa métricas (success rate, latência)
+5. Se OK: incrementa para 20%, 30%... até 50%
+6. Se métricas degradam: rollback automático para 0%
+7. Se todas as verificações passam: promote para 100%
+```
+
+## Infrastructure Pipelines (Terraform em CI)
+
+```yaml
+name: Terraform
+on:
+  pull_request:
+    paths: ['infra/**']
+  push:
+    branches: [main]
+    paths: ['infra/**']
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::123456:role/terraform
+          aws-region: us-east-1
+      - uses: hashicorp/setup-terraform@v3
+      - run: terraform init
+        working-directory: infra/production
+      - id: plan
+        run: terraform plan -no-color -out=tfplan
+        working-directory: infra/production
+
+  apply:
+    needs: plan
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    runs-on: ubuntu-latest
+    environment: production-infra
+    steps:
+      - uses: actions/checkout@v4
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::123456:role/terraform
+          aws-region: us-east-1
+      - uses: hashicorp/setup-terraform@v3
+      - run: terraform init && terraform apply -auto-approve
+        working-directory: infra/production
+```
+
+## Secrets em CI/CD
+
+```yaml
+# OIDC — autenticação sem secrets estáticos (recomendado)
+- uses: aws-actions/configure-aws-credentials@v4
+  with:
+    role-to-assume: arn:aws:iam::123456:role/github-actions
+    aws-region: us-east-1
+    # Nenhum secret estático necessário!
+
+# HashiCorp Vault — secrets dinâmicos
+- name: Import secrets from Vault
+  uses: hashicorp/vault-action@v3
+  with:
+    url: https://vault.empresa.com
+    method: jwt
+    role: github-actions
+    secrets: |
+      secret/data/production/db password | DB_PASSWORD ;
+      secret/data/production/api jwt_secret | JWT_SECRET ;
+```
+
+---
+
+## Referencias e Fontes
+
+- **"Continuous Delivery"** — Jez Humble & David Farley — o livro definitivo sobre CI/CD
+- **"Accelerate"** — Nicole Forsgren, Jez Humble, Gene Kim — métricas DORA e práticas de elite
+- **GitHub Actions Documentation** — https://docs.github.com/en/actions
+- **ArgoCD Documentation** — https://argo-cd.readthedocs.io/
+- **Flagger Documentation** — https://flagger.app/ — progressive delivery para Kubernetes
+- **Unleash** — https://www.getunleash.io/ — feature flags open source

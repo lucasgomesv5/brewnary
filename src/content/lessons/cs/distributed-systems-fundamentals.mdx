@@ -1,0 +1,1216 @@
+---
+title: "Fundamentos de Sistemas Distribuídos"
+description: "Modelos de sistema, tempo lógico (Lamport/vector clocks), consenso (Raft), replicação, consistência (linearizability, eventual, causal), CAP/PACELC, CRDTs, sharding e detecção de falhas"
+track: "cs"
+order: 15
+section: "Sistemas"
+priority: "high"
+tags: ["distributed-systems", "consenso", "raft", "replicação", "consistência", "CAP", "CRDTs", "sharding", "lamport-clocks"]
+prerequisites: ["redes-e-internet", "sistemas-operacionais"]
+keyTakeaways:
+  - "Sistemas distribuídos são fundamentalmente limitados por latência, falhas parciais e ausência de relógio global — o FLP impossibility prova que consenso determinístico é impossível com even one crash failure"
+  - "Raft simplifica Paxos com leader election + log replication, garantindo safety sempre e liveness quando a maioria dos nós está ativa"
+  - "CAP é frequentemente mal interpretado — PACELC (Partition: AC, Else: LC) captura melhor o trade-off real entre latência e consistência no dia-a-dia"
+  - "CRDTs permitem escritas concorrentes sem coordenação usando propriedades matemáticas (comutatividade, associatividade, idempotência)"
+---
+
+# Fundamentos de Sistemas Distribuídos
+
+## 1. Por que Sistemas Distribuídos?
+
+Um **sistema distribuído** é um conjunto de processos autônomos que se comunicam por troca de mensagens através de uma rede, e que cooperam para realizar uma tarefa. Para o usuário externo, o sistema deve se comportar como uma entidade coesa — essa propriedade é chamada de **transparência de distribuição**.
+
+### Motivações fundamentais
+
+Existem três razões primárias para distribuir um sistema:
+
+1. **Escalabilidade horizontal** — adicionar mais máquinas é mais barato e eficaz do que vertical scaling (hardware mais potente). Além disso, existe um teto físico para single-node scaling.
+2. **Disponibilidade** — se um nó falha, outros continuam servindo requisições. Um sistema com N réplicas independentes e probabilidade de falha p por nó tem disponibilidade 1 - p^N.
+3. **Tolerância a falhas** — não apenas sobreviver a falhas, mas continuar operando **corretamente** durante falhas parciais. Isso é fundamentalmente mais difícil do que disponibilidade.
+
+### Tipos de falha
+
+Falhas em sistemas distribuídos são classificadas em uma hierarquia de severidade:
+
+```
+Severidade crescente →
+
+┌─────────────┬───────────────┬───────────────┬──────────────┐
+│   Crash     │   Omission    │    Timing     │  Byzantine   │
+│  (fail-stop)│  (mensagens   │ (respostas    │ (comportam.  │
+│             │   perdidas)   │  fora do      │  arbitrário, │
+│  Nó para    │               │  prazo)       │  inclui      │
+│  de vez     │  Send-omission│               │  malícia)    │
+│             │  Recv-omission│  Só modelos   │              │
+│  Mais fácil │               │  síncronos    │  Mais difícil│
+│  de tratar  │               │               │  de tratar   │
+└─────────────┴───────────────┴───────────────┴──────────────┘
+```
+
+| Tipo | Descrição | Exemplo real |
+|---|---|---|
+| **Crash** | Nó para de funcionar e não volta | OOM killer do Linux mata o processo |
+| **Crash-recovery** | Nó para, mas pode reiniciar com estado persistido | Pod reiniciado pelo Kubernetes |
+| **Omission** | Mensagens são perdidas (send ou receive) | Pacotes UDP descartados por congestion |
+| **Timing** | Resposta chega, mas fora do prazo esperado | GC pause de 10s no Java |
+| **Byzantine** | Nó se comporta de forma arbitrária (inclui mentir) | Servidor comprometido, bit flip em memória |
+
+### Two Generals Problem
+
+O Two Generals Problem (1975) demonstra que **é impossível** para dois processos coordenarem uma ação sobre um canal de comunicação não-confiável com certeza absoluta.
+
+```
+            Canal não-confiável (mensageiros podem ser capturados)
+             ┌──────────────────────────────────┐
+             │        Vale inimigo               │
+             │     (mensagens podem se perder)    │
+             │                                    │
+  ┌──────┐   │   "Atacar ao amanhecer?"          │   ┌──────┐
+  │Gen A │───┼──────────────────────────────►────┼───│Gen B │
+  │      │   │                                    │   │      │
+  │      │◄──┼────────────────────────────────◄──┼───│      │
+  │      │   │         "OK, confirmo"             │   │      │
+  │      │   │                                    │   │      │
+  │      │───┼──────────────────────────────►────┼───│      │
+  │      │   │    "Confirmo sua confirmação"      │   │      │
+  │      │   │                                    │   │      │
+  │      │   │         ... ad infinitum ...       │   │      │
+  └──────┘   └──────────────────────────────────┘   └──────┘
+
+  Problema: quem enviou a última mensagem nunca sabe se ela chegou.
+  Não existe número finito de roundtrips que garanta acordo.
+```
+
+O Two Generals é a razão pela qual protocolos como TCP usam timeouts e retransmissões probabilísticas em vez de garantias absolutas. Em sistemas distribuídos, **trocamos certeza por probabilidade** — e protocolos de consenso como Raft formalizam exatamente quando e como isso é seguro.
+
+---
+
+## 2. Modelos de Sistema
+
+A análise formal de protocolos distribuídos depende de **modelos** que definem as premissas sobre a rede e os nós.
+
+### Modelo síncrono vs assíncrono
+
+| Propriedade | Síncrono | Assíncrono |
+|---|---|---|
+| Latência de mensagem | Limitada por Δ conhecido | Sem limite superior |
+| Clock drift | Limitado, relógios quase-perfeitos | Sem relógio global confiável |
+| Tempo de processamento | Limitado por Φ conhecido | Sem garantia |
+| Detecção de falhas | Perfeita (timeout = crash) | Impossível com certeza |
+| Existe na prática? | Raro (sistemas hard real-time) | Sim — internet, cloud |
+
+### Modelo parcialmente síncrono
+
+Na prática, a maioria dos sistemas assume **sincronia parcial** (Dwork, Lynch, Stockmeyer 1988): o sistema se comporta de forma assíncrona por períodos arbitrários, mas **eventualmente** se torna síncrono (mensagens chegam dentro de um bound). Isso é chamado de **GST (Global Stabilization Time)**.
+
+- Antes do GST: mensagens podem atrasar indefinidamente
+- Depois do GST: mensagens chegam em até Δ tempo
+
+Raft e Paxos operam neste modelo — garantem **safety** sempre (mesmo no período assíncrono) e **liveness** apenas após o GST.
+
+### Modelos de falha
+
+| Modelo | Premissa | Protocolos típicos |
+|---|---|---|
+| **Fail-stop** | Nó que falha para permanentemente e falhas são detectáveis | Protocolos acadêmicos simples |
+| **Crash-recovery** | Nó pode falhar e reiniciar; estado em disco sobrevive | Raft, Paxos, ZAB |
+| **Byzantine** | Nós podem se comportar arbitrariamente (inclui malícia) | PBFT, Tendermint, blockchain |
+
+Para tolerar **f** falhas:
+- Crash: precisamos de **2f + 1** nós (maioria sobrevive)
+- Byzantine: precisamos de **3f + 1** nós (2/3 honestos)
+
+---
+
+## 3. Tempo em Sistemas Distribuídos
+
+### Por que relógios físicos falham
+
+Relógios de quartzo comuns têm **clock drift** de ~10-50 ppm (parts per million), o que equivale a ~1-4 segundos por dia. NTP (Network Time Protocol) sincroniza relógios, mas tem limitações fundamentais:
+
+- Precisão típica: 1-10ms em LAN, 10-100ms na internet
+- NTP assume latência simétrica (ida = volta) — frequentemente falso
+- **Leap seconds** causam ambiguidade (23:59:60 não existe em Unix time)
+- Cloud VMs podem ter clock jumps após live migration
+
+**Consequência**: em um sistema distribuído, se o nó A registra timestamp T1 e o nó B registra T2 > T1, **não podemos garantir** que o evento de B realmente ocorreu depois do evento de A.
+
+### Lamport Clocks
+
+Leslie Lamport (1978) definiu a relação **happened-before** (→) sem depender de relógios físicos:
+
+1. Se **a** e **b** são eventos no mesmo processo e **a** ocorre antes de **b**, então **a → b**
+2. Se **a** é o envio de uma mensagem e **b** é o recebimento, então **a → b**
+3. Transitividade: se **a → b** e **b → c**, então **a → c**
+
+Eventos sem relação happened-before são **concorrentes** (a ∥ b).
+
+O **Lamport clock** é um contador lógico monotonicamente crescente:
+
+```typescript
+class LamportClock {
+  private counter: number = 0;
+  private readonly nodeId: string;
+
+  constructor(nodeId: string) {
+    this.nodeId = nodeId;
+  }
+
+  // Evento local: incrementa o contador
+  tick(): number {
+    this.counter++;
+    return this.counter;
+  }
+
+  // Envio de mensagem: incrementa e retorna timestamp para incluir na msg
+  send(): number {
+    this.counter++;
+    return this.counter;
+  }
+
+  // Recebimento de mensagem: max(local, recebido) + 1
+  receive(incomingTimestamp: number): number {
+    this.counter = Math.max(this.counter, incomingTimestamp) + 1;
+    return this.counter;
+  }
+
+  getTime(): number {
+    return this.counter;
+  }
+}
+
+// Exemplo de uso
+const clockA = new LamportClock("A");
+const clockB = new LamportClock("B");
+
+clockA.tick();          // A: 1 (evento local)
+const msgTs = clockA.send();  // A: 2 (envia mensagem com ts=2)
+clockB.tick();          // B: 1 (evento local concorrente)
+clockB.receive(msgTs);  // B: max(1, 2) + 1 = 3
+```
+
+**Limitação de Lamport clocks**: se L(a) < L(b), **não** podemos concluir que a → b. Lamport clocks capturam causalidade em apenas uma direção: `a → b ⟹ L(a) < L(b)`, mas o inverso é falso. Para a bicondicional, precisamos de vector clocks.
+
+### Vector Clocks
+
+Vector clocks (Fidge 1988, Mattern 1989) mantêm um vetor de contadores — um por processo — permitindo determinar **exatamente** a relação causal entre quaisquer dois eventos.
+
+Para N processos, cada processo i mantém um vetor V[0..N-1]:
+
+- **V[i]** conta os eventos locais de i
+- **V[j]** (j ≠ i) reflete o conhecimento de i sobre o progresso de j
+
+```typescript
+class VectorClock {
+  private clock: Map<string, number>;
+  private readonly nodeId: string;
+
+  constructor(nodeId: string, allNodeIds: string[]) {
+    this.nodeId = nodeId;
+    this.clock = new Map();
+    for (const id of allNodeIds) {
+      this.clock.set(id, 0);
+    }
+  }
+
+  // Evento local: incrementa apenas o próprio contador
+  tick(): Map<string, number> {
+    this.clock.set(this.nodeId, this.clock.get(this.nodeId)! + 1);
+    return new Map(this.clock);
+  }
+
+  // Envio: incrementa e retorna cópia do vetor
+  send(): Map<string, number> {
+    this.clock.set(this.nodeId, this.clock.get(this.nodeId)! + 1);
+    return new Map(this.clock);
+  }
+
+  // Recebimento: merge component-wise + incrementa local
+  receive(incoming: Map<string, number>): Map<string, number> {
+    for (const [nodeId, timestamp] of incoming) {
+      const current = this.clock.get(nodeId) ?? 0;
+      this.clock.set(nodeId, Math.max(current, timestamp));
+    }
+    this.clock.set(this.nodeId, this.clock.get(this.nodeId)! + 1);
+    return new Map(this.clock);
+  }
+
+  // Comparação: a ≤ b iff ∀i: a[i] ≤ b[i]
+  static happenedBefore(
+    a: Map<string, number>,
+    b: Map<string, number>
+  ): boolean {
+    let atLeastOneLess = false;
+    for (const [nodeId, aVal] of a) {
+      const bVal = b.get(nodeId) ?? 0;
+      if (aVal > bVal) return false; // a tem componente maior → não é ≤
+      if (aVal < bVal) atLeastOneLess = true;
+    }
+    return atLeastOneLess; // a < b (strictly)
+  }
+
+  static areConcurrent(
+    a: Map<string, number>,
+    b: Map<string, number>
+  ): boolean {
+    return !VectorClock.happenedBefore(a, b) &&
+           !VectorClock.happenedBefore(b, a);
+  }
+}
+```
+
+```
+Exemplo com 3 processos (A, B, C):
+
+A:  [1,0,0] ──── [2,0,0] ────────────── [3,2,0] ──── [4,2,0]
+                      │                     ▲
+                      │  send               │  receive
+                      ▼                     │
+B:  [0,1,0] ──── [2,2,0] ──── [2,3,0] ────┘
+                                 │
+                                 │  send
+                                 ▼
+C:  [0,0,1] ────────────── [2,3,2]
+
+Comparações:
+  A[1,0,0] → B[2,2,0]?  1≤2, 0≤2 → sim, A happened-before B
+  A[2,0,0] ∥ B[0,1,0]?  2>0 mas 0<1 → concorrentes
+  B[2,3,0] → C[2,3,2]?  2≤2, 3≤3, 0≤2 → sim
+```
+
+### Hybrid Logical Clocks (HLC)
+
+HLCs (Kulkarni et al., 2014) combinam relógio físico com componente lógico. Usados no CockroachDB e no Spanner (que usa TrueTime, uma variante com GPS/atomic clocks).
+
+A ideia é simples: manter um timestamp `(physical, logical)` onde:
+- **physical** = max(NTP local, physical recebido) — nunca retrocede
+- **logical** = desempata eventos com mesmo physical timestamp, resetando para 0 quando physical avança
+
+Vantagem sobre Lamport/vector clocks: timestamps são compactos (64 bits) e têm correspondência aproximada com wall-clock time, o que facilita queries como "dê-me todos os eventos após T".
+
+---
+
+## 4. Consenso
+
+**Consenso** é o problema de fazer N processos concordarem em um valor, mesmo quando alguns processos falham. Formalmente, um protocolo de consenso deve satisfazer:
+
+- **Agreement**: todos os processos corretos decidem o mesmo valor
+- **Validity**: o valor decidido foi proposto por algum processo
+- **Termination**: todo processo correto eventualmente decide
+
+### FLP Impossibility
+
+O resultado mais importante da teoria de sistemas distribuídos é o **FLP Impossibility** (Fischer, Lynch, Paterson 1985):
+
+> Em um sistema assíncrono com canais confiáveis, não existe protocolo de consenso determinístico que tolere **sequer uma** crash failure.
+
+**Intuição**: em um sistema assíncrono, é impossível distinguir um processo que falhou de um que está apenas lento. Qualquer protocolo determinístico pode ser forçado a um estado de indecisão perpétua por um adversário que controla o scheduling de mensagens.
+
+**Como contornamos FLP na prática?**
+1. **Randomização** — protocolos probabilísticos (Ben-Or) terminam com probabilidade 1
+2. **Sincronia parcial** — assumir que o sistema eventualmente se estabiliza (Raft, Paxos)
+3. **Failure detectors** — oráculos imperfeitos que eventualmente são confiáveis (Ω failure detector)
+
+### Paxos (simplificado)
+
+Paxos (Lamport 1989/1998) tem três roles:
+
+```
+┌───────────┐     propose(v)     ┌───────────┐     accept(v)     ┌──────────┐
+│  Proposer │ ──────────────────►│  Acceptor │ ──────────────────►│  Learner │
+│           │◄────────────────── │           │                    │          │
+│           │     promise        │           │                    │          │
+└───────────┘                    └───────────┘                    └──────────┘
+```
+
+**Fase 1 (Prepare)**:
+1. Proposer escolhe um número de proposta **n** (único, crescente)
+2. Envia `Prepare(n)` para maioria dos acceptors
+3. Acceptor responde `Promise(n, v_accepted)` se n > maior n prometido
+
+**Fase 2 (Accept)**:
+1. Se Proposer recebe maioria de promises, envia `Accept(n, v)` onde v é o valor com maior n_accepted entre as promises (ou o valor do proposer se nenhum foi aceito)
+2. Acceptor aceita se n ≥ maior n prometido
+3. Quando maioria aceita, valor é **chosen** — learners são notificados
+
+Paxos é notoriamente difícil de implementar corretamente. Multi-Paxos (para sequência de valores) é ainda mais complexo. Por isso, Raft foi criado.
+
+### Raft (detalhado)
+
+Raft (Ongaro & Ousterhout 2014) foi projetado para ser **compreensível**. Decompõe o consenso em três subproblemas independentes:
+
+#### Leader Election
+
+Cada nó está em um de três estados: **Follower**, **Candidate**, **Leader**.
+
+```
+                     ┌──────────────────────────────────────────┐
+                     │                                          │
+                     ▼                                          │
+              ┌──────────┐   election timeout   ┌───────────┐  │
+  inicia ───► │ Follower │ ──────────────────► │ Candidate │  │
+              └──────────┘                      └───────────┘  │
+                   ▲                              │    │    │   │
+                   │                    recebe    │    │    │   │
+                   │                   majority   │    │    │   │
+                   │                    votes     │    │    │   │
+                   │                              ▼    │    │   │
+                   │                        ┌────────┐ │    │   │
+                   │                        │ Leader │ │    │   │
+                   │                        └────────┘ │    │   │
+                   │                              │    │    │   │
+                   │  descobre leader ou          │    │    │   │
+                   │  term mais alto              │    │    │   │
+                   │◄─────────────────────────────┘    │    │   │
+                   │                                   │    │   │
+                   │  election timeout (split vote)    │    │   │
+                   │                                   │    │   │
+                   │        novo election ◄────────────┘    │   │
+                   │                                        │   │
+                   │  descobre term mais alto               │   │
+                   └────────────────────────────────────────┘   │
+                                                                │
+                        descobre term mais alto                 │
+                        (leader vê term > currentTerm) ─────────┘
+```
+
+Cada eleição ocorre em um **term** (inteiro monotonicamente crescente). Dentro de cada term, há no máximo um leader.
+
+**RequestVote RPC:**
+1. Candidate incrementa currentTerm, vota em si mesmo
+2. Envia `RequestVote(term, candidateId, lastLogIndex, lastLogTerm)` para todos
+3. Nó concede voto se: (a) não votou nesse term ainda, E (b) log do candidate é pelo menos tão atualizado quanto o seu (comparação: lastLogTerm maior, ou mesmo term e lastLogIndex ≥)
+
+**Election timeout**: randomizado entre 150-300ms para evitar split votes repetidos.
+
+#### Log Replication
+
+O leader recebe comandos dos clientes e os replica como **log entries**:
+
+```
+Leader (term 3):
+  Index:  1        2        3        4        5
+  ┌────────┬────────┬────────┬────────┬────────┐
+  │ x←1    │ y←2    │ x←3    │ y←1    │ z←5    │
+  │ term=1 │ term=1 │ term=2 │ term=3 │ term=3 │
+  └────────┴────────┴────────┴────────┴────────┘
+                               ▲
+                          commitIndex = 4
+                     (replicado na maioria)
+
+Follower A:
+  ┌────────┬────────┬────────┬────────┐
+  │ x←1    │ y←2    │ x←3    │ y←1    │  (falta entry 5)
+  │ term=1 │ term=1 │ term=2 │ term=3 │
+  └────────┴────────┴────────┴────────┘
+
+Follower B:
+  ┌────────┬────────┬────────┐
+  │ x←1    │ y←2    │ x←3    │          (falta entries 4-5)
+  │ term=1 │ term=1 │ term=2 │
+  └────────┴────────┴────────┘
+```
+
+**AppendEntries RPC:**
+1. Leader envia `AppendEntries(term, leaderId, prevLogIndex, prevLogTerm, entries[], leaderCommit)`
+2. Follower aceita se term ≥ currentTerm E log[prevLogIndex].term == prevLogTerm
+3. Se inconsistência: leader decrementa nextIndex e retenta (backtracking)
+4. Entry é **committed** quando replicada na maioria — leader avança commitIndex e notifica followers
+
+#### Safety Properties
+
+Raft garante:
+- **Election Safety**: no máximo um leader por term
+- **Leader Append-Only**: leader nunca sobrescreve ou deleta entries do seu log
+- **Log Matching**: se dois logs contêm entry com mesmo index e term, todos os entries anteriores são idênticos
+- **Leader Completeness**: se um entry é committed em um term, ele estará no log de todos os leaders de terms futuros
+- **State Machine Safety**: se um nó aplica um entry em um dado index, nenhum outro nó aplica um entry diferente nesse index
+
+### Aplicações de consenso na prática
+
+| Sistema | Protocolo | Uso |
+|---|---|---|
+| **etcd** | Raft | Metadata store do Kubernetes |
+| **Consul** | Raft | Service discovery, KV store |
+| **CockroachDB** | Multi-Raft | Consenso por range de dados |
+| **ZooKeeper** | ZAB (Zookeeper Atomic Broadcast) | Coordenação distribuída |
+| **TiKV** | Multi-Raft | Storage layer do TiDB |
+
+---
+
+## 5. Replicação
+
+Replicação mantém cópias dos mesmos dados em múltiplos nós. Existem três modelos fundamentais.
+
+### Single-leader replication
+
+Todas as escritas vão para um **leader** (primary/master); followers (replicas/slaves) recebem um replication stream.
+
+```
+   Clientes
+   │  │  │
+   ▼  ▼  ▼
+┌──────────┐     replication log (WAL)
+│  Leader   │─────────────────────────────┐
+│ (read +   │                              │
+│  write)   │────────────────────┐         │
+└──────────┘                    │         │
+                                 ▼         ▼
+                          ┌──────────┐ ┌──────────┐
+                          │ Follower │ │ Follower │
+                          │   (read) │ │   (read) │
+                          └──────────┘ └──────────┘
+```
+
+**Replicação síncrona vs assíncrona:**
+
+| Aspecto | Síncrona | Assíncrona | Semi-síncrona |
+|---|---|---|---|
+| Write confirmada quando | Todos followers confirmam | Leader persiste localmente | Leader + 1 follower confirmam |
+| Durabilidade | Máxima | Risco de perda | Boa |
+| Latência de write | Alta (mais lento follower) | Baixa | Moderada |
+| Exemplo | - | MySQL default | MySQL semi-sync |
+
+**Failover**: quando o leader falha, um follower é promovido. Riscos:
+- **Split-brain**: dois nós acham que são leader — mitigado por fencing tokens e epoch numbers
+- **Dados perdidos**: writes assíncronas não replicadas são perdidas
+
+### Multi-leader replication
+
+Múltiplos nós aceitam escritas. Útil para multi-datacenter (cada DC tem seu leader).
+
+**Problema central**: conflitos de escrita concorrente. Se user A atualiza campo X no DC1 e user B atualiza campo X no DC2 simultaneamente, qual valor vence?
+
+**Estratégias de resolução de conflito:**
+- **Last Write Wins (LWW)**: timestamp mais alto vence — simples mas perde dados
+- **Merge automático**: se os valores são compatíveis (ex: counters, sets)
+- **Custom resolution**: aplicação define lógica (ex: Dynamo's "add to cart" merge)
+- **CRDTs**: resolução automática sem perda (seção 8)
+
+### Leaderless replication
+
+Não há leader — qualquer réplica aceita writes. O cliente envia writes para **W** réplicas e reads de **R** réplicas.
+
+**Quorum condition**: `W + R > N` garante que pelo menos uma réplica consultada no read tem o dado mais recente.
+
+```
+N = 3 réplicas, W = 2, R = 2
+
+Write(x=42):
+  ┌────────┐  ✓ write ack
+  │ Node 1 │  x=42
+  └────────┘
+  ┌────────┐  ✓ write ack
+  │ Node 2 │  x=42     W=2 confirmações → write bem-sucedida
+  └────────┘
+  ┌────────┐  ✗ timeout (node down)
+  │ Node 3 │  x=old
+  └────────┘
+
+Read(x):
+  ┌────────┐  → x=42 (timestamp: T2)
+  │ Node 1 │
+  └────────┘
+  ┌────────┐  → x=old (timestamp: T1)     R=2 respostas → retorna
+  │ Node 3 │                                valor com maior timestamp
+  └────────┘
+  Resultado: x=42 ✓ (T2 > T1)
+```
+
+**Sloppy quorums e hinted handoff** (DynamoDB): se os W nós designados estão indisponíveis, writes são aceitas por nós substitutos com "hints" para entregar ao nó correto quando ele voltar.
+
+### Comparativo dos modelos
+
+| Aspecto | Single-leader | Multi-leader | Leaderless |
+|---|---|---|---|
+| Consistência | Forte (se sync) | Eventual (conflitos) | Eventual (quorum) |
+| Latência de write | Moderada | Baixa (local DC) | Moderada (W acks) |
+| Tolerância a falhas | Failover necessário | Alta | Alta |
+| Complexidade | Baixa | Alta (conflitos) | Moderada |
+| Exemplo | PostgreSQL | CouchDB, Galera | Cassandra, DynamoDB |
+
+---
+
+## 6. Modelos de Consistência
+
+Modelos de consistência definem o **contrato** entre o data store e os clientes sobre quais valores um read pode retornar.
+
+### Linearizability (Strong Consistency)
+
+Definição formal: um sistema é **linearizável** se toda operação parece ter efeito atomicamente em algum ponto entre sua invocação e sua resposta, e a ordem resultante é consistente com real-time order.
+
+```
+Tempo real →
+
+Cliente A:  |--write(x=1)--|
+Cliente B:          |--read(x)=?--|
+
+Se o sistema é linearizável:
+  - Se o write de A termina ANTES do read de B iniciar → read DEVE retornar 1
+  - Se as operações se sobrepõem → read pode retornar 0 ou 1, mas uma vez que
+    qualquer read retorna 1, nenhum read subsequente pode retornar 0
+
+Contra-exemplo (NÃO linearizável):
+  t0: write(x=1) completa
+  t1: read(x) retorna 1   ← OK
+  t2: read(x) retorna 0   ← VIOLA linearizability (recency guarantee)
+```
+
+Linearizability é caro — requer coordenação (consenso) a cada operação. Sistemas que oferecem: Spanner (TrueTime), CockroachDB, etcd.
+
+### Sequential Consistency
+
+Mais fraco que linearizability: as operações de todos os processos aparecem em **alguma** ordem sequencial total que é consistente com a ordem de programa de cada processo individual, mas **não** precisa respeitar real-time order.
+
+Diferença chave: linearizability respeita tempo real; sequential consistency só respeita a ordem local de cada processo.
+
+### Causal Consistency
+
+Operações causalmente relacionadas (a → b) são vistas na mesma ordem por todos os nós. Operações concorrentes podem ser vistas em ordens diferentes por nós diferentes.
+
+**Session guarantees** (subconjuntos práticos de causal consistency):
+- **Read Your Writes**: após escrever v, o mesmo cliente sempre lê v ou mais recente
+- **Monotonic Reads**: se um read retorna v, reads subsequentes nunca retornam valor anterior a v
+- **Monotonic Writes**: writes do mesmo cliente são aplicadas na ordem em que foram emitidas
+- **Writes Follow Reads**: se um write w ocorre após um read que retornou v, w é ordenado após o write que produziu v
+
+### Eventual Consistency
+
+O modelo mais fraco que ainda é útil: se nenhuma nova escrita ocorrer, **eventualmente** todos os reads retornam o mesmo valor. Não há garantia de quando, nem de que reads intermediários são consistentes.
+
+**Quando é suficiente**: DNS, caches, timelines de social media, contadores de likes, analytics.
+
+### Hierarquia de consistências
+
+```
+                   Linearizability
+                        │
+                        │ (relaxa real-time ordering)
+                        ▼
+               Sequential Consistency
+                        │
+                        │ (relaxa ordem total)
+                        ▼
+                Causal Consistency
+                        │
+                        │ (relaxa causalidade)
+                        ▼
+               Eventual Consistency
+
+     Mais forte ─────────────────────── Mais fraco
+     Mais lento ─────────────────────── Mais rápido
+     Mais coordenação ───────────────── Menos coordenação
+```
+
+---
+
+## 7. CAP Theorem e PACELC
+
+### CAP Theorem
+
+Enunciado formal (Brewer 2000, prova: Gilbert & Lynch 2002):
+
+> Em um sistema distribuído que replica dados, é impossível garantir simultaneamente:
+> - **C**onsistency (linearizability)
+> - **A**vailability (todo request a um nó não-falhado recebe resposta)
+> - **P**artition tolerance (o sistema opera mesmo com mensagens perdidas entre nós)
+
+Como partições de rede **acontecem** na prática (não é uma escolha), a decisão real é entre **CP** e **AP** durante uma partição:
+
+```
+        Partição de rede ocorre
+               │
+        ┌──────┴──────┐
+        │              │
+   Escolhe C       Escolhe A
+   (CP system)     (AP system)
+        │              │
+   Rejeita writes  Aceita writes
+   ou reads nos     em ambos lados
+   nós minoritários  (divergência)
+        │              │
+   Ex: etcd,       Ex: Cassandra,
+   MongoDB (default)  DynamoDB (default)
+```
+
+### Por que CAP é mal interpretado
+
+1. **"C" em CAP é linearizability** — não é qualquer noção de consistência. Muitos sistemas oferecem consistência mais fraca e não estão "escolhendo A sobre C" no sentido CAP.
+2. **Partições são raras** — 99.99% do tempo o sistema opera sem partição. CAP nada diz sobre os trade-offs do dia-a-dia.
+3. **É binário demais** — na realidade, existe um espectro de trade-offs.
+
+### PACELC
+
+Daniel Abadi (2012) propôs PACELC como extensão:
+
+> Se houver **P**artição, trade-off entre **A**vailability e **C**onsistency; **E**lse (operação normal), trade-off entre **L**atency e **C**onsistency.
+
+| Sistema | Partição: A ou C? | Normal: L ou C? | Classificação |
+|---|---|---|---|
+| **DynamoDB** | A | L | PA/EL |
+| **Cassandra** | A | L | PA/EL |
+| **PostgreSQL** (sync rep) | C | C | PC/EC |
+| **MongoDB** (default) | C | L | PC/EL |
+| **CockroachDB** | C | C | PC/EC |
+| **Cosmos DB** | Configurável | Configurável | Configurável |
+
+PACELC captura a realidade: mesmo sem partições, escolher consistência forte implica coordenação adicional, que aumenta latência. Este é o trade-off que importa no dia-a-dia.
+
+---
+
+## 8. CRDTs (Conflict-free Replicated Data Types)
+
+CRDTs são estruturas de dados que podem ser replicadas em múltiplos nós, atualizadas independentemente e concorrentemente, e **convergem automaticamente** para um estado consistente sem necessidade de consenso.
+
+A base matemática: operações formam um **semilattice** (conjunto parcialmente ordenado com operação de merge/join que é comutativa, associativa e idempotente).
+
+### Dois tipos de CRDTs
+
+- **State-based (CvRDT)**: nós trocam estado completo periodicamente; merge é idempotente
+- **Operation-based (CmRDT)**: nós propagam operações; requer entrega confiável e exatamente uma vez
+
+### G-Counter (Grow-only Counter)
+
+Cada nó mantém seu próprio contador. O valor global é a soma de todos.
+
+```typescript
+class GCounter {
+  // Map de nodeId → contagem local desse nó
+  private counters: Map<string, number>;
+  private readonly nodeId: string;
+
+  constructor(nodeId: string) {
+    this.nodeId = nodeId;
+    this.counters = new Map();
+    this.counters.set(nodeId, 0);
+  }
+
+  // Incrementa apenas o contador local
+  increment(amount: number = 1): void {
+    const current = this.counters.get(this.nodeId) ?? 0;
+    this.counters.set(this.nodeId, current + amount);
+  }
+
+  // Valor global = soma de todos os contadores
+  value(): number {
+    let total = 0;
+    for (const count of this.counters.values()) {
+      total += count;
+    }
+    return total;
+  }
+
+  // Merge: component-wise max (comutativo, associativo, idempotente)
+  merge(other: GCounter): void {
+    for (const [nodeId, count] of other.counters) {
+      const current = this.counters.get(nodeId) ?? 0;
+      this.counters.set(nodeId, Math.max(current, count));
+    }
+  }
+
+  // Serializa para transmissão
+  getState(): Map<string, number> {
+    return new Map(this.counters);
+  }
+}
+
+// Exemplo: contando views em 3 nós
+const nodeA = new GCounter("A");
+const nodeB = new GCounter("B");
+const nodeC = new GCounter("C");
+
+nodeA.increment(5);   // A viu 5 views
+nodeB.increment(3);   // B viu 3 views
+nodeC.increment(7);   // C viu 7 views
+
+// Após sync:
+nodeA.merge(nodeB);
+nodeA.merge(nodeC);
+console.log(nodeA.value()); // 15
+```
+
+### PN-Counter (Positive-Negative Counter)
+
+Suporta increment e decrement usando dois G-Counters internos.
+
+```typescript
+class PNCounter {
+  private positive: GCounter;
+  private negative: GCounter;
+  private readonly nodeId: string;
+
+  constructor(nodeId: string) {
+    this.nodeId = nodeId;
+    this.positive = new GCounter(nodeId);
+    this.negative = new GCounter(nodeId);
+  }
+
+  increment(amount: number = 1): void {
+    this.positive.increment(amount);
+  }
+
+  decrement(amount: number = 1): void {
+    this.negative.increment(amount);
+  }
+
+  value(): number {
+    return this.positive.value() - this.negative.value();
+  }
+
+  merge(other: PNCounter): void {
+    this.positive.merge(other.positive);
+    this.negative.merge(other.negative);
+  }
+}
+
+// Exemplo: estoque distribuído
+const warehouse1 = new PNCounter("wh1");
+const warehouse2 = new PNCounter("wh2");
+
+warehouse1.increment(100); // +100 unidades
+warehouse2.decrement(30);  // -30 vendidas
+
+warehouse1.merge(warehouse2);
+console.log(warehouse1.value()); // 70
+```
+
+### LWW-Register (Last Write Wins Register)
+
+Armazena um valor com timestamp; merge mantém o mais recente.
+
+```typescript
+class LWWRegister<T> {
+  private val: T;
+  private timestamp: number;
+  private readonly nodeId: string;
+
+  constructor(nodeId: string, initialValue: T) {
+    this.nodeId = nodeId;
+    this.val = initialValue;
+    this.timestamp = 0;
+  }
+
+  set(value: T, timestamp: number): void {
+    if (timestamp > this.timestamp) {
+      this.val = value;
+      this.timestamp = timestamp;
+    }
+  }
+
+  get(): T {
+    return this.val;
+  }
+
+  merge(other: LWWRegister<T>): void {
+    if (other.timestamp > this.timestamp) {
+      this.val = other.val;
+      this.timestamp = other.timestamp;
+    }
+    // Em caso de empate, pode-se usar nodeId como tiebreaker
+  }
+}
+```
+
+**Limitação**: LWW silenciosamente descarta escritas concorrentes com timestamp menor. É simples mas perde dados.
+
+### OR-Set (Observed-Remove Set)
+
+Um set que suporta add e remove sem conflitos. Cada elemento é tagueado com um identificador único. Remove só apaga as tags observadas — adds concorrentes com tags diferentes sobrevivem.
+
+```typescript
+class ORSet<T> {
+  // Map de elemento → Set de tags únicas
+  private elements: Map<T, Set<string>>;
+  private tagCounter: number = 0;
+  private readonly nodeId: string;
+
+  constructor(nodeId: string) {
+    this.nodeId = nodeId;
+    this.elements = new Map();
+  }
+
+  private generateTag(): string {
+    this.tagCounter++;
+    return `${this.nodeId}:${this.tagCounter}`;
+  }
+
+  add(element: T): void {
+    if (!this.elements.has(element)) {
+      this.elements.set(element, new Set());
+    }
+    this.elements.get(element)!.add(this.generateTag());
+  }
+
+  remove(element: T): void {
+    // Remove TODAS as tags atualmente observadas
+    // Tags adicionadas concorrentemente em outros nós sobrevivem
+    this.elements.delete(element);
+  }
+
+  has(element: T): boolean {
+    const tags = this.elements.get(element);
+    return tags !== undefined && tags.size > 0;
+  }
+
+  values(): T[] {
+    const result: T[] = [];
+    for (const [element, tags] of this.elements) {
+      if (tags.size > 0) result.push(element);
+    }
+    return result;
+  }
+
+  merge(other: ORSet<T>): void {
+    // União de todas as tags de ambos os sets
+    for (const [element, otherTags] of other.elements) {
+      if (!this.elements.has(element)) {
+        this.elements.set(element, new Set());
+      }
+      for (const tag of otherTags) {
+        this.elements.get(element)!.add(tag);
+      }
+    }
+    // Nota: implementação completa requer tombstone tracking para removes
+  }
+}
+```
+
+O OR-Set é usado no Redis (CRDT module) e foi a base do Riak Sets. A semântica "add wins over concurrent remove" é geralmente a mais intuitiva para aplicações.
+
+### Quando usar CRDTs
+
+| Caso de uso | CRDT recomendado | Exemplo real |
+|---|---|---|
+| Contadores distribuídos | G-Counter / PN-Counter | Contagem de likes, views |
+| Collaborative editing | Sequence CRDTs (RGA, YATA) | Figma, Google Docs (variações) |
+| Carrinho de compras | OR-Set | Amazon (inspiração original) |
+| Feature flags offline | LWW-Register | Apps mobile offline-first |
+| Shared state em games | LWW-Map | State sync em multiplayer |
+
+---
+
+## 9. Sharding (Particionamento)
+
+Sharding divide os dados entre múltiplos nós para escalar horizontalmente. Cada shard (partição) contém um subconjunto dos dados.
+
+### Range-based partitioning
+
+Dados são divididos por faixas de chave ordenadas.
+
+```
+Shard A: keys [a, g)    →  Node 1
+Shard B: keys [g, n)    →  Node 2
+Shard C: keys [n, t)    →  Node 3
+Shard D: keys [t, z]    →  Node 4
+```
+
+**Vantagem**: range queries eficientes (ex: "todos os usernames entre 'lucas' e 'maria'").
+
+**Desvantagem**: hotspots se a distribuição de chaves não é uniforme (ex: todos os writes em keys começando com 'a' sobrecarregam Node 1). Bigtable, HBase e CockroachDB usam range partitioning com split automático de ranges quentes.
+
+### Hash-based partitioning
+
+Aplica-se uma função hash à chave e mapeia o resultado para um shard.
+
+```
+shard = hash(key) % num_shards
+```
+
+**Vantagem**: distribuição uniforme (assumindo boa hash function).
+
+**Desvantagem**: range queries requerem scatter-gather (query todos os shards). Rebalanceamento ao adicionar/remover nós é custoso — mover 1/N dos dados por nó.
+
+### Consistent hashing
+
+Consistent hashing (Karger et al. 1997) resolve o problema de rebalanceamento. Os nós e as chaves são mapeados para posições em um anel (ring) de 0 a 2^32.
+
+```
+                    0 / 2^32
+                      │
+              ┌───────┴───────┐
+             Node A          Node D
+            (pos: 50)       (pos: 230)
+           ╱                         ╲
+          ╱                           ╲
+     key "user:1"                 key "order:5"
+     hash=30 → Node A            hash=200 → Node D
+          ╲                           ╱
+           ╲                         ╱
+            Node B          Node C
+           (pos: 100)     (pos: 180)
+              └───────┬───────┘
+                      │
+
+  Regra: cada key é atribuída ao primeiro nó
+  encontrado percorrendo o anel no sentido horário.
+
+  Se Node B falha:
+  - Apenas as keys entre Node A e Node B migram para Node C
+  - Keys de todos os outros nós NÃO são afetadas
+  - Impacto: O(K/N) keys movidas vs O(K) com hash % N
+```
+
+**Virtual nodes**: para melhorar a distribuição, cada nó físico é mapeado para múltiplas posições (vnodes) no anel. Cassandra usa 256 vnodes por padrão.
+
+```typescript
+import { createHash } from 'crypto';
+
+class ConsistentHashRing<T> {
+  private ring: Map<number, T> = new Map(); // position → node
+  private sortedPositions: number[] = [];
+  private readonly virtualNodes: number;
+
+  constructor(virtualNodes: number = 150) {
+    this.virtualNodes = virtualNodes;
+  }
+
+  private hash(key: string): number {
+    const h = createHash('md5').update(key).digest();
+    // Usa os primeiros 4 bytes como uint32
+    return h.readUInt32BE(0);
+  }
+
+  addNode(node: T): void {
+    for (let i = 0; i < this.virtualNodes; i++) {
+      const virtualKey = `${String(node)}:vnode${i}`;
+      const position = this.hash(virtualKey);
+      this.ring.set(position, node);
+      this.sortedPositions.push(position);
+    }
+    this.sortedPositions.sort((a, b) => a - b);
+  }
+
+  removeNode(node: T): void {
+    for (let i = 0; i < this.virtualNodes; i++) {
+      const virtualKey = `${String(node)}:vnode${i}`;
+      const position = this.hash(virtualKey);
+      this.ring.delete(position);
+    }
+    this.sortedPositions = this.sortedPositions.filter(
+      (pos) => this.ring.has(pos)
+    );
+  }
+
+  getNode(key: string): T | undefined {
+    if (this.sortedPositions.length === 0) return undefined;
+
+    const hash = this.hash(key);
+
+    // Binary search para encontrar o primeiro nó com posição >= hash
+    let lo = 0;
+    let hi = this.sortedPositions.length;
+
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      if (this.sortedPositions[mid] < hash) {
+        lo = mid + 1;
+      } else {
+        hi = mid;
+      }
+    }
+
+    // Wrap around para o início do anel
+    const index = lo % this.sortedPositions.length;
+    return this.ring.get(this.sortedPositions[index]);
+  }
+
+  // Retorna N nós distintos para replicação
+  getNodes(key: string, count: number): T[] {
+    const result: Set<T> = new Set();
+    const hash = this.hash(key);
+
+    let lo = 0;
+    let hi = this.sortedPositions.length;
+    while (lo < hi) {
+      const mid = (lo + hi) >>> 1;
+      if (this.sortedPositions[mid] < hash) lo = mid + 1;
+      else hi = mid;
+    }
+
+    let index = lo % this.sortedPositions.length;
+    while (result.size < count && result.size < this.ring.size) {
+      const node = this.ring.get(this.sortedPositions[index])!;
+      result.add(node); // Set garante nós distintos (ignora vnodes do mesmo nó)
+      index = (index + 1) % this.sortedPositions.length;
+    }
+
+    return Array.from(result);
+  }
+}
+
+// Uso
+const ring = new ConsistentHashRing<string>(150);
+ring.addNode("db-node-1");
+ring.addNode("db-node-2");
+ring.addNode("db-node-3");
+
+console.log(ring.getNode("user:12345"));     // "db-node-2"
+console.log(ring.getNodes("user:12345", 2)); // ["db-node-2", "db-node-3"]
+
+// Adicionar um nó move apenas ~1/N das keys
+ring.addNode("db-node-4");
+console.log(ring.getNode("user:12345"));     // Pode mudar ou não
+```
+
+### Rebalancing strategies
+
+| Estratégia | Descrição | Usado em |
+|---|---|---|
+| **Fixed partitions** | Número de partições fixo no início; atribuídas a nós | Riak, Elasticsearch, Couchbase |
+| **Dynamic splitting** | Partições dividem ao exceder tamanho; merges quando muito pequenas | HBase, CockroachDB |
+| **Proportional to nodes** | Número de partições proporcional ao número de nós | Cassandra (vnodes) |
+
+**Regra prática**: nunca rebalanceie automaticamente baseado em carga — use decisões operacionais ou algoritmos conservadores para evitar cascading failures.
+
+---
+
+## 10. Detecção de Falhas
+
+Em sistemas assíncronos, não é possível distinguir com certeza um nó falhado de um nó lento. Failure detectors fornecem **suspeitas** — não certezas.
+
+### Heartbeats com timeout fixo
+
+O mecanismo mais simples: cada nó envia heartbeats periódicos. Se nenhum heartbeat chega em T segundos, o nó é declarado morto.
+
+```
+Node A:  ♥ ─── ♥ ─── ♥ ─── ♥ ───────── [timeout] → "B morreu!"
+Node B:  ♥ ─── ♥ ─── ♥ ─── [GC pause 12s] ─── ♥  → "Estou vivo!"
+
+Problema: GC pause, network congestion ou CPU spike causam falsos positivos.
+```
+
+**Trade-off**: timeout curto → detecção rápida mas mais falsos positivos. Timeout longo → menos falsos positivos mas detecção lenta.
+
+### Phi Accrual Failure Detector
+
+Usado pelo Cassandra. Em vez de uma decisão binária (vivo/morto), calcula um valor contínuo **φ (phi)** que representa a probabilidade de falha.
+
+O detector mantém uma janela dos últimos intervalos entre heartbeats e modela a distribuição (tipicamente Gaussiana). Dado o tempo desde o último heartbeat, calcula:
+
+```
+φ = -log10(P(intervalo > T_now - T_last_heartbeat))
+
+Se φ > threshold (ex: 8), declara suspeita de falha.
+φ = 1 → P(falha) ≈ 10%
+φ = 2 → P(falha) ≈ 1%
+φ = 8 → P(falha) ≈ 0.000001%
+```
+
+**Vantagem**: adapta-se automaticamente às condições da rede. Em uma rede estável, heartbeats atrasados geram φ alto rapidamente. Em uma rede instável, o detector se torna mais tolerante.
+
+### Gossip Protocols
+
+Gossip (epidemic) protocols disseminam informação de forma descentralizada, inspirados em como rumores se espalham.
+
+**SWIM (Scalable Weakly-consistent Infection-style Process Group Membership)**:
+
+```
+1. Node A escolhe Node B aleatoriamente e envia PING
+2. Se B responde com ACK → B está vivo
+3. Se B não responde em timeout:
+   a. A escolhe k nós aleatórios e pede PING-REQ(B)
+   b. Esses k nós tentam PING B diretamente
+   c. Se algum recebe ACK de B → B está vivo
+   d. Se nenhum → A marca B como SUSPECT
+4. Após período de suspeita, B é declarado FAULTY
+
+  ┌────┐  PING   ┌────┐
+  │ A  │────────►│ B  │──── (não responde)
+  └────┘         └────┘
+     │
+     │  PING-REQ(B)
+     ▼
+  ┌────┐  PING   ┌────┐
+  │ C  │────────►│ B  │──── (não responde)
+  └────┘         └────┘
+  ┌────┐  PING   ┌────┐
+  │ D  │────────►│ B  │──── (não responde)
+  └────┘         └────┘
+
+  → B é SUSPECT
+```
+
+SWIM tem detecção de falhas em O(1) por período e disseminação de membership em O(log N) rounds (propriedade epidemic). Usado pelo HashiCorp Serf (base do Consul) e Memberlist.
+
+**Gossip para disseminação de dados**: cada nó periodicamente escolhe um peer aleatório e troca informações (anti-entropy). Após O(log N) rounds, toda a informação se dissemina para todos os nós com alta probabilidade. Cassandra usa gossip para disseminar metadata do cluster (schema, token ranges, node status).
+
+---
+
+## 11. Exercicios
+
+### Exercicio 1: Implementar Lamport Clock com deteccao de concorrencia
+
+Implemente um sistema com 3 processos simulados que trocam mensagens. Use Lamport clocks para timestampar eventos. Identifique pares de eventos concorrentes e explique por que Lamport clocks sozinhos nao conseguem detectar concorrencia (precisa de vector clocks).
+
+### Exercicio 2: Simular Raft Leader Election
+
+Implemente uma simulacao simplificada de leader election do Raft com 5 nos. Cada no deve:
+- Iniciar como Follower com election timeout aleatorio (150-300ms)
+- Transicionar para Candidate ao expirar o timeout
+- Enviar RequestVote para todos os outros nos
+- Eleger-se leader ao receber maioria (3 de 5)
+
+Simule um cenario de split vote e mostre como o timeout aleatorio resolve o problema.
+
+### Exercicio 3: Consistent Hashing com metricas
+
+Usando a implementacao de `ConsistentHashRing` da secao 9, escreva um programa que:
+1. Adiciona 5 nos ao anel
+2. Distribui 10.000 keys aleatorias
+3. Mede o desvio padrao da distribuicao entre nos
+4. Remove 1 no e mede quantas keys mudam de dono
+5. Compare com `hash % N` para as mesmas operacoes
+
+### Exercicio 4: CRDT convergencia
+
+Crie um cenario com 3 replicas de um PN-Counter onde:
+1. Cada replica faz operacoes locais (increments e decrements) concorrentemente
+2. Replicas sincronizam em pares (A↔B, depois B↔C, depois A↔C)
+3. Verifique que apos full sync, todas as replicas convergem para o mesmo valor
+4. Mostre que a ordem de merge nao importa (comutatividade e associatividade)
+
+### Exercicio 5: Quorum Calculator
+
+Implemente uma funcao que, dado N (numero de replicas), calcule todas as combinacoes validas de (W, R) que satisfazem `W + R > N`. Para cada combinacao, classifique:
+- Se W > N/2: write-heavy quorum
+- Se R > N/2: read-heavy quorum
+- Se W = R: balanced quorum
+
+Teste com N = 3, 5 e 7. Discuta o trade-off entre durabilidade (W alto) e latencia de leitura (R baixo).
+
+### Exercicio 6: Failure Detector adaptativo
+
+Implemente um Phi Accrual Failure Detector simplificado que:
+1. Recebe heartbeats com intervalos variaveis (simulando rede instavel)
+2. Mantem uma janela deslizante dos ultimos 100 intervalos
+3. Calcula media e desvio padrao
+4. Dado o tempo desde o ultimo heartbeat, calcula phi
+5. Declare falha quando phi > 8
+
+Teste com heartbeats normais (intervalo ~1s com jitter de 50ms) e depois simule um no que para de enviar heartbeats. Observe como phi cresce gradualmente.
+
+---
+
+## 12. Referencias
+
+### Livros
+
+- **Designing Data-Intensive Applications** — Martin Kleppmann (O'Reilly, 2017). O recurso mais completo e acessivel sobre sistemas distribuidos para engenheiros. Capitulos 5-9 cobrem replicacao, particionamento, transacoes e consistencia.
+- **Distributed Systems** — Maarten van Steen & Andrew S. Tanenbaum (3rd ed., 2017). Textbook academico abrangente cobrindo desde fundamentos ate middleware.
+- **Database Internals** — Alex Petrov (O'Reilly, 2019). Detalhes de implementacao de storage engines e protocolos distribuidos.
+
+### Papers fundamentais
+
+- **Time, Clocks, and the Ordering of Events in a Distributed System** — Leslie Lamport (1978). O paper que definiu happened-before e relógios lógicos.
+- **In Search of an Understandable Consensus Algorithm (Extended Version)** — Diego Ongaro & John Ousterhout (2014). O paper do Raft — leitura obrigatória.
+- **Impossibility of Distributed Consensus with One Faulty Process** — Fischer, Lynch, Paterson (1985). O resultado FLP.
+- **Dynamo: Amazon's Highly Available Key-value Store** — DeCandia et al. (2007). Introduziu consistent hashing + quorums + vector clocks na prática.
+- **Conflict-free Replicated Data Types** — Shapiro et al. (2011). Formalizacao de CRDTs.
+- **CAP Twelve Years Later: How the "Rules" Have Changed** — Eric Brewer (2012). O próprio autor revisitando e clarificando o CAP.
+
+### Recursos online
+
+- **Jepsen** (jepsen.io) — Kyle Kingsbury testa a consistência real de bancos distribuídos. Leitura essencial para entender a distância entre promessas de marketing e realidade.
+- **The Morning Paper** — Adrian Colyer. Resumos diários de papers de sistemas distribuídos.
+- **Raft Visualization** (thesecretlivesofdata.com/raft) — Animação interativa do protocolo Raft.
+- **Distributed Systems lecture series** — Martin Kleppmann (University of Cambridge). Disponível gratuitamente no YouTube.

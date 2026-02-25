@@ -1,0 +1,650 @@
+---
+title: "Web Components e Micro-Frontends"
+description: "Custom Elements, Shadow DOM, HTML Templates, Lit, interop com React, micro-frontends (Module Federation, single-spa), composition patterns e design systems framework-agnostic"
+track: "frontend"
+order: 16
+section: "Avançado"
+priority: "medium"
+tags: ["web-components", "shadow-DOM", "custom-elements", "micro-frontends", "module-federation", "lit", "design-systems", "single-spa"]
+prerequisites: ["react-internals", "dom-e-eventos"]
+keyTakeaways:
+  - "Web Components são padrões nativos do browser (Custom Elements + Shadow DOM + Templates) que criam componentes encapsulados e reutilizáveis sem dependência de framework"
+  - "Shadow DOM fornece encapsulamento real de CSS e DOM — estilos internos não vazam para fora e estilos externos não afetam o componente (exceto via CSS custom properties)"
+  - "Micro-frontends permitem que times diferentes deployem partes da UI independentemente, mas o custo (bundle duplication, complexidade de routing, UX inconsistente) frequentemente supera o benefício"
+  - "Module Federation (Webpack 5/Rspack) resolve o problema de shared dependencies em micro-frontends, permitindo que apps carreguem módulos de outros apps em runtime"
+---
+
+> **Ponto chave:** Web Components são a resposta do browser para componentes reutilizáveis. Enquanto React, Vue e Angular vêm e vão, Custom Elements e Shadow DOM são padrões W3C nativos. Dominar esses padrões te permite construir design systems que sobrevivem a migrações de framework.
+
+---
+
+## 1. Web Components: Visão Geral
+
+Web Components é um termo guarda-chuva para três specs que criam componentes encapsulados:
+
+```
+┌─────────────────┬──────────────────┬────────────────────┐
+│ Custom Elements │   Shadow DOM     │  HTML Templates    │
+│ Define novos    │ Encapsula DOM    │ <template> e <slot>│
+│ elementos HTML  │ e CSS em árvore  │ markup inerte e    │
+│ com lifecycle   │ isolada          │ pontos de composição│
+└─────────────────┴──────────────────┴────────────────────┘
+```
+
+**Browser support:** baseline em todos os browsers modernos desde 2020+. Sem necessidade de polyfill.
+
+**Quando usar:** design systems cross-framework, widgets embeddable (chat, payment), componentes para CMS, micro-frontends com tecnologias diferentes, componentes que precisam sobreviver a migrações de framework.
+
+**Quando NÃO usar:** app 100% React (o framework já resolve), SSR crítico (Declarative Shadow DOM ainda é limitado), time inteiro domina um framework.
+
+---
+
+## 2. Custom Elements
+
+### 2.1 Definindo e Registrando
+
+```javascript
+class MyGreeting extends HTMLElement {
+  connectedCallback() {
+    const name = this.getAttribute('name') || 'World';
+    this.innerHTML = `<p>Hello, ${name}!</p>`;
+  }
+}
+// Nome DEVE conter hífen — evita conflito com tags HTML nativas
+customElements.define('my-greeting', MyGreeting);
+```
+
+### 2.2 Lifecycle Callbacks
+
+```javascript
+class MyComponent extends HTMLElement {
+  constructor() { super(); this._count = 0; }  // elemento CRIADO, NÃO acessar DOM
+
+  connectedCallback() { this.render(); }        // INSERIDO no DOM — setup real aqui
+
+  disconnectedCallback() {                      // REMOVIDO do DOM — cleanup
+    this._controller?.abort();
+  }
+
+  attributeChangedCallback(name, oldValue, newValue) {  // atributo OBSERVADO mudou
+    if (oldValue !== newValue) this.render();
+  }
+
+  adoptedCallback() {}  // movido para novo document (raro, via document.adoptNode)
+
+  static get observedAttributes() { return ['name', 'variant']; }  // OBRIGATÓRIO
+
+  render() { /* ... */ }
+}
+customElements.define('my-component', MyComponent);
+```
+
+### 2.3 Exemplo Completo: Custom Counter
+
+```javascript
+class MyCounter extends HTMLElement {
+  static observedAttributes = ['count'];
+
+  constructor() { super(); this.attachShadow({ mode: 'open' }); }
+  connectedCallback() { this.render(); }
+  attributeChangedCallback() { this.render(); }
+
+  render() {
+    const count = parseInt(this.getAttribute('count') || '0');
+    this.shadowRoot.innerHTML = `
+      <style>
+        :host { display: inline-flex; align-items: center; gap: 8px; }
+        button { padding: 8px 16px; font-size: 1rem; border: 1px solid #ccc;
+                 border-radius: 4px; cursor: pointer; background: white; }
+        button:hover { background: #f0f0f0; }
+        span { min-width: 2ch; text-align: center; font-weight: bold; }
+      </style>
+      <button id="dec">-</button>
+      <span>${count}</span>
+      <button id="inc">+</button>
+    `;
+    this.shadowRoot.getElementById('dec').onclick = () =>
+      this.setAttribute('count', count - 1);
+    this.shadowRoot.getElementById('inc').onclick = () =>
+      this.setAttribute('count', count + 1);
+  }
+}
+customElements.define('my-counter', MyCounter);
+```
+
+### 2.4 Best Practices
+
+```
+1. Naming: prefixo do projeto (ds-button, acme-input) — sempre kebab-case com hífen
+2. Attributes vs Properties: attributes são strings no HTML, properties são valores JS.
+   Reflita attributes↔properties para API consistente.
+3. Comunicação: use CustomEvent com bubbles:true e composed:true para subir eventos
+4. Não use innerHTML no constructor — o elemento pode não estar no DOM ainda
+```
+
+---
+
+## 3. Shadow DOM Deep Dive
+
+### 3.1 Light DOM vs Shadow DOM
+
+```
+┌────────────── Document (Light DOM) ──────────────┐
+│  <h1>Página principal</h1>                       │
+│  <my-card>                                       │
+│    ┌──────── Shadow Root ───────────┐            │
+│    │ <style> h1 { color: red; } </style>         │
+│    │ ← NÃO afeta o h1 da página!   │            │
+│    │ <h1>Título do card</h1>        │            │
+│    │ <slot></slot>                  │            │
+│    └────────────────────────────────┘            │
+│    <p>Conteúdo projetado via slot</p>            │
+│  </my-card>                                      │
+└──────────────────────────────────────────────────┘
+```
+
+### 3.2 mode: 'open' vs 'closed'
+
+```javascript
+this.attachShadow({ mode: 'open' });   // element.shadowRoot → ShadowRoot
+this.attachShadow({ mode: 'closed' }); // element.shadowRoot → null
+// Quase sempre use 'open'. 'closed' dá falsa sensação de segurança.
+```
+
+### 3.3 Encapsulamento e :host
+
+```css
+/* Dentro do Shadow DOM — estilos são SCOPED */
+p { color: blue; }                        /* só afeta <p> dentro deste shadow */
+:host { display: block; padding: 16px; }  /* seleciona o próprio custom element */
+:host(.dark) { background: #1a1a1a; }     /* aplica quando host tem classe .dark */
+:host-context(.theme-dark) { background: #1a1a1a; } /* baseado em ancestral */
+```
+
+### 3.4 CSS Custom Properties como API de Theming
+
+CSS custom properties **atravessam** a shadow boundary — a forma correta de theming:
+
+```css
+/* Dentro do Shadow DOM — consome variáveis externas */
+button {
+  background: var(--btn-bg, #0066cc);
+  color: var(--btn-color, white);
+  padding: var(--btn-padding, 8px 16px);
+  border-radius: var(--btn-radius, 4px);
+}
+```
+
+```css
+/* CSS global controla o theme sem quebrar encapsulamento */
+themable-button { --btn-bg: #e63946; --btn-radius: 20px; }
+.dark-theme themable-button { --btn-bg: #457b9d; }
+```
+
+### 3.5 ::part(), ::slotted() e Slots
+
+```html
+<!-- Shadow DOM interno com part attributes -->
+<div class="card">
+  <div part="header"><slot name="title"></slot></div>
+  <div part="body"><slot></slot></div>    <!-- default slot -->
+</div>
+```
+
+```css
+/* Consumidor estiliza as partes expostas via ::part() */
+fancy-card::part(header) { background: linear-gradient(135deg, #667eea, #764ba2); }
+
+/* ::slotted() estiliza conteúdo projetado via slot */
+::slotted(h2) { margin-top: 0; color: #333; }
+```
+
+```html
+<!-- Uso com named slots -->
+<modal-dialog>
+  <h2 slot="title">Confirmar ação</h2>
+  <p>Tem certeza?</p>                    <!-- default slot -->
+  <div slot="actions"><button>OK</button></div>
+</modal-dialog>
+```
+
+### 3.6 Event Retargeting
+
+Eventos dentro do Shadow DOM sofrem **retargeting** ao cruzar a boundary:
+
+```javascript
+document.querySelector('my-component').addEventListener('click', (e) => {
+  e.target;          // <my-component> (retargeted, não o <button> interno)
+  e.composedPath();  // [button, div, shadow-root, my-component, body, ...]
+});
+
+// Para custom events cruzarem a shadow boundary:
+this.dispatchEvent(new CustomEvent('item-selected', {
+  bubbles: true,   composed: true,   detail: { id: 42 }
+}));
+```
+
+---
+
+## 4. HTML Templates
+
+`<template>` define markup que o browser parseia mas **não renderiza** até ser clonado:
+
+```javascript
+const template = document.createElement('template');
+template.innerHTML = `
+  <style>.notification { padding: 12px; border-radius: 4px; }</style>
+  <div class="notification"><span class="message"></span></div>
+`;
+
+class NotificationBanner extends HTMLElement {
+  constructor() {
+    super();
+    this.attachShadow({ mode: 'open' });
+    // cloneNode(true) — muito mais eficiente que innerHTML para múltiplas instâncias
+    this.shadowRoot.appendChild(template.content.cloneNode(true));
+  }
+  connectedCallback() {
+    this.shadowRoot.querySelector('.message').textContent = this.getAttribute('message');
+  }
+}
+customElements.define('notification-banner', NotificationBanner);
+```
+
+**Declarative Shadow DOM** permite SSR de Web Components:
+
+```html
+<my-card>
+  <template shadowrootmode="open">
+    <style>:host { display: block; padding: 16px; }</style>
+    <slot></slot>
+  </template>
+  <p>Conteúdo renderizado no servidor.</p>
+</my-card>
+```
+
+---
+
+## 5. Lit
+
+### 5.1 Por Que Lit
+
+Vanilla Web Components são verbose. Lit adiciona reactive properties, template diffing eficiente e scoped styles em ~5KB gzipped:
+
+```typescript
+import { LitElement, html, css } from 'lit';
+import { customElement, property, state } from 'lit/decorators.js';
+
+interface Todo { id: number; text: string; done: boolean; }
+
+@customElement('todo-list')
+export class TodoList extends LitElement {
+  static styles = css`
+    :host { display: block; max-width: 400px; font-family: system-ui; }
+    .input-row { display: flex; gap: 8px; margin-bottom: 16px; }
+    input { flex: 1; padding: 8px; border: 1px solid #ddd; border-radius: 4px; }
+    button { padding: 8px 16px; background: #0066cc; color: white; border: none; border-radius: 4px; }
+    ul { list-style: none; padding: 0; }
+    li { display: flex; align-items: center; gap: 8px; padding: 8px 0; border-bottom: 1px solid #eee; }
+    .done { text-decoration: line-through; opacity: 0.6; }
+  `;
+
+  @property({ type: String }) title = 'Minhas Tarefas';
+  @state() private _todos: Todo[] = [];
+  @state() private _input = '';
+
+  render() {
+    const remaining = this._todos.filter(t => !t.done).length;
+    return html`
+      <h2>${this.title}</h2>
+      <div class="input-row">
+        <input .value=${this._input}
+          @input=${(e: InputEvent) => this._input = (e.target as HTMLInputElement).value}
+          @keydown=${(e: KeyboardEvent) => e.key === 'Enter' && this._addTodo()}
+          placeholder="Nova tarefa..." />
+        <button @click=${this._addTodo}>Adicionar</button>
+      </div>
+      <ul>${this._todos.map(todo => html`
+        <li>
+          <input type="checkbox" .checked=${todo.done} @change=${() => this._toggle(todo.id)} />
+          <span class=${todo.done ? 'done' : ''}>${todo.text}</span>
+        </li>
+      `)}</ul>
+      <p>${remaining} restante${remaining !== 1 ? 's' : ''}</p>
+    `;
+  }
+
+  private _addTodo() {
+    if (!this._input.trim()) return;
+    this._todos = [...this._todos, { id: Date.now(), text: this._input.trim(), done: false }];
+    this._input = '';
+  }
+
+  private _toggle(id: number) {
+    this._todos = this._todos.map(t => t.id === id ? { ...t, done: !t.done } : t);
+  }
+
+  firstUpdated() { this.shadowRoot?.querySelector('input')?.focus(); }
+
+  updated(changed: Map<string, unknown>) {
+    if (changed.has('title')) console.log(`Título: ${this.title}`);
+  }
+}
+```
+
+### 5.2 @lit/react Wrapper
+
+```typescript
+import { createComponent } from '@lit/react';
+import React from 'react';
+import { TodoList } from './todo-list.js';
+
+export const TodoListReact = createComponent({
+  tagName: 'todo-list', elementClass: TodoList, react: React,
+  events: { onTodoAdded: 'todo-added' },
+});
+```
+
+---
+
+## 6. Interop com React
+
+### O Problema
+
+React trata tudo como attribute (string), não property. Objetos viram `[object Object]`, eventos não conectam:
+
+```tsx
+<my-element data={{ id: 1 }} />     // setAttribute('data', '[object Object]') ❌
+<my-element onItemSelected={fn} />  // setAttribute('onitemselected', fn) ❌
+```
+
+### Soluções
+
+**1. @lit/react** (recomendada) — wrapper que converte properties e eventos corretamente.
+
+**2. ref + manual property setting:**
+
+```tsx
+function App() {
+  const ref = useRef<HTMLElement>(null);
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    (el as any).data = { id: 1 };
+    const handler = (e: CustomEvent) => console.log(e.detail);
+    el.addEventListener('item-selected', handler);
+    return () => el.removeEventListener('item-selected', handler);
+  }, []);
+  return <my-element ref={ref} name="Lucas" />;
+}
+```
+
+**3. React 19:** suporte nativo melhorado — diferencia properties de attributes automaticamente e conecta event handlers via `on*`.
+
+---
+
+## 7. Micro-Frontends
+
+### 7.1 Motivação e Quando Usar
+
+Micro-frontends aplicam microservices ao frontend — UI composta por pedaços independentes:
+
+```
+┌───────────────── Shell / Host App ──────────────────┐
+│   (routing, layout, autenticação, navigation)        │
+├────────────┬────────────────┬────────────────────────┤
+│ MFE: Catálogo │ MFE: Carrinho │ MFE: Checkout        │
+│ Time: Discover│ Time: Commerce│ Time: Payments        │
+│ Tech: React   │ Tech: Vue     │ Tech: React           │
+└────────────┴────────────────┴────────────────────────┘
+```
+
+**Vale a pena:** 50+ devs frontend, times com domínios distintos, deploy independente real, migração gradual de framework. **Não vale:** time pequeno (menos de 15 devs), UI fortemente acoplada, "autonomia tecnológica" como desculpa para falta de padrão.
+
+### 7.2 Trade-offs
+
+```
+Problema               │ Impacto
+───────────────────────┼───────────────────────────────
+Bundle duplication     │ 3 MFEs com React = 3 cópias (300KB+)
+UX inconsistente       │ Sem design system rígido, cada MFE diverge
+Routing complexity     │ Quem controla a URL? Deep linking entre MFEs?
+Shared state           │ Carrinho↔catálogo, auth global
+Performance            │ Múltiplos runtimes = mais JS
+Dev experience         │ Rodar 5 MFEs localmente é doloroso
+```
+
+### 7.3 Module Federation
+
+Webpack 5 / Rspack Module Federation permite apps carregarem módulos de outros apps em runtime.
+
+**Remote (expõe módulos):**
+
+```javascript
+// webpack.config.js — app-catalog
+new ModuleFederationPlugin({
+  name: 'catalog',
+  filename: 'remoteEntry.js',
+  exposes: {
+    './ProductList': './src/components/ProductList',
+    './ProductDetail': './src/components/ProductDetail',
+  },
+  shared: {
+    react: { singleton: true, requiredVersion: '^18.0.0' },
+    'react-dom': { singleton: true, requiredVersion: '^18.0.0' },
+  },
+});
+```
+
+**Host (consome módulos):**
+
+```javascript
+// webpack.config.js — shell
+new ModuleFederationPlugin({
+  name: 'shell',
+  remotes: {
+    catalog: 'catalog@https://catalog.example.com/remoteEntry.js',
+    cart: 'cart@https://cart.example.com/remoteEntry.js',
+  },
+  shared: {
+    react: { singleton: true, requiredVersion: '^18.0.0' },
+    'react-dom': { singleton: true, requiredVersion: '^18.0.0' },
+  },
+});
+```
+
+**Uso — import resolvido em runtime:**
+
+```tsx
+const ProductList = React.lazy(() => import('catalog/ProductList'));
+
+function CatalogPage() {
+  return (
+    <Suspense fallback={<Skeleton />}>
+      <ProductList category="electronics" />
+    </Suspense>
+  );
+}
+```
+
+**Fluxo interno:** host carrega → rota acessada → fetch do `remoteEntry.js` → container verifica shared deps (React já carregado? reutiliza como singleton) → módulo carregado e renderizado.
+
+### 7.4 Composition Patterns
+
+```
+Pattern            │ Quando                    │ Trade-offs
+───────────────────┼───────────────────────────┼─────────────────────
+Client-side        │ SPAs, interatividade      │ Mais JS, loading states
+(Module Federation)│                           │
+Build-time         │ Monorepo, controle total  │ Deploy não independente
+(npm, turborepo)   │                           │
+Server-side        │ SEO, performance          │ Infra complexa
+(SSI, ESI, SSR)    │                           │
+Edge-side          │ CDN, fragments cacheáveis │ Lógica limitada
+(Cloudflare Workers)│                          │
+```
+
+### 7.5 single-spa
+
+Orquestrador de lifecycle de micro-frontends baseado em rotas:
+
+```javascript
+import { registerApplication, start } from 'single-spa';
+
+registerApplication({
+  name: 'catalog',
+  app: () => System.import('@myorg/catalog'),
+  activeWhen: '/catalog',
+});
+
+registerApplication({
+  name: 'cart',
+  app: () => System.import('@myorg/cart'),
+  activeWhen: '/cart',
+});
+
+start();
+```
+
+Cada MFE exporta lifecycle hooks:
+
+```javascript
+import singleSpaReact from 'single-spa-react';
+const lifecycle = singleSpaReact({ React, ReactDOM, rootComponent: CatalogApp });
+export const { bootstrap, mount, unmount } = lifecycle;
+```
+
+### 7.6 Shared State entre MFEs
+
+**Custom Events (Event Bus):**
+
+```javascript
+// MFE Catalog dispara
+window.dispatchEvent(new CustomEvent('cart:add-item', {
+  detail: { productId: 'abc-123', quantity: 1 },
+}));
+// MFE Cart escuta
+window.addEventListener('cart:add-item', (e) => addToCart(e.detail));
+```
+
+**Shared Store:** pacote npm com singleton exportado, pattern pub/sub (subscribe/notify). Type-safe, mas acopla MFEs ao contrato do store.
+
+**URL State:** query params como canal de comunicação — funciona naturalmente com routing. Simples, mas limitado a dados serializáveis na URL.
+
+**Broadcast Channel API:** comunicação entre tabs/iframes do mesmo origin:
+
+```javascript
+const channel = new BroadcastChannel('app-events');
+channel.postMessage({ type: 'USER_LOGGED_IN', payload: { userId: '123' } });
+channel.addEventListener('message', (e) => { /* ... */ });
+```
+
+---
+
+## 8. Design Systems com Web Components
+
+### 8.1 Theming com Design Tokens
+
+```css
+:root {
+  --ds-color-primary: #0066cc;
+  --ds-color-danger: #dc3545;
+  --ds-color-surface: #ffffff;
+  --ds-color-text: #212529;
+  --ds-spacing-sm: 8px;
+  --ds-spacing-md: 16px;
+  --ds-radius-sm: 4px;
+  --ds-font-family: 'Inter', system-ui, sans-serif;
+  --ds-shadow-md: 0 4px 6px rgba(0,0,0,0.07);
+}
+
+[data-theme="dark"] {
+  --ds-color-primary: #4da3ff;
+  --ds-color-surface: #1a1a2e;
+  --ds-color-text: #e0e0e0;
+}
+```
+
+```typescript
+@customElement('ds-button')
+export class DsButton extends LitElement {
+  static styles = css`
+    button {
+      font-family: var(--ds-font-family);
+      padding: var(--ds-spacing-sm) var(--ds-spacing-md);
+      border-radius: var(--ds-radius-sm);
+      border: none; cursor: pointer;
+    }
+    :host([variant="primary"]) button { background: var(--ds-color-primary); color: white; }
+    :host([variant="danger"]) button { background: var(--ds-color-danger); color: white; }
+    :host([disabled]) button { opacity: 0.5; cursor: not-allowed; }
+  `;
+
+  @property({ reflect: true }) variant = 'primary';
+  @property({ type: Boolean, reflect: true }) disabled = false;
+
+  render() {
+    return html`<button ?disabled=${this.disabled} part="button"><slot></slot></button>`;
+  }
+}
+```
+
+### 8.2 Exemplos do Ecossistema
+
+**Shoelace (Web Awesome):** 50+ componentes production-ready, Lit, theming via custom properties. **Spectrum Web Components (Adobe):** acessibilidade WCAG 2.1 AA. **Carbon Web Components (IBM):** design system Carbon como Web Components.
+
+### 8.3 Storybook
+
+```typescript
+import type { Meta, StoryObj } from '@storybook/web-components';
+import { html } from 'lit';
+import './ds-button.js';
+
+const meta: Meta = {
+  title: 'Components/Button',
+  component: 'ds-button',
+  argTypes: {
+    variant: { control: 'select', options: ['primary', 'secondary', 'danger'] },
+    disabled: { control: 'boolean' },
+  },
+};
+export default meta;
+
+export const Primary: StoryObj = {
+  render: (args) => html`
+    <ds-button variant=${args.variant} ?disabled=${args.disabled}>Click me</ds-button>
+  `,
+};
+```
+
+---
+
+## 9. Exercícios
+
+### Exercício 1: Tooltip Web Component
+Crie `<ds-tooltip>` vanilla (sem Lit): atributos `text` e `position` (top/bottom/left/right), Shadow DOM, mostra no hover e focus, CSS custom properties para theming, `role="tooltip"` e `aria-describedby`.
+
+### Exercício 2: Design System Tokens
+Crie `tokens.css` com variáveis completas. Construa `<ds-theme-provider>` que aceita `theme="light"|"dark"`. Crie `<ds-button>`, `<ds-input>`, `<ds-card>` consumindo tokens. Teste troca de tema em runtime.
+
+### Exercício 3: Lit + React Integration
+Crie `<user-profile-card>` com Lit aceitando `user: { name, avatar, bio }` como property. Use `@lit/react` para wrapper. Demonstre passagem de properties e consumo de CustomEvent no React.
+
+### Exercício 4: Module Federation POC
+Host app (shell) + 2 remotes. Configure shared deps como singleton. Implemente fallback UI quando remote falha. Teste: deploy remote com mudança, host reflete sem redeploy.
+
+### Exercício 5: Micro-Frontend Communication
+Implemente 3 patterns: Custom Events, Shared Store, URL State. Compare qual é melhor para auth global, carrinho de compras e filtros de busca.
+
+---
+
+## 10. Referências
+
+- [MDN Web Components](https://developer.mozilla.org/en-US/docs/Web/API/Web_Components) — documentação completa das APIs nativas
+- [Lit](https://lit.dev) — framework para Web Components do Google
+- [Custom Elements Everywhere](https://custom-elements-everywhere.com) — compatibilidade de frameworks com Custom Elements
+- [Module Federation](https://module-federation.io) — documentação oficial
+- [single-spa](https://single-spa.js.org) — orquestração de micro-frontends
+- [Micro Frontends in Action](https://www.manning.com/books/micro-frontends-in-action) — Michael Geers (Manning)
+- [Web Awesome (Shoelace)](https://webawesome.com) — design system open-source com Web Components
+- [Spectrum Web Components](https://opensource.adobe.com/spectrum-web-components) — Adobe design system

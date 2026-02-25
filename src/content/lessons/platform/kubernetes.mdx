@@ -1,0 +1,822 @@
+---
+title: "Kubernetes (K8s)"
+description: "Arquitetura do control plane, API objects, networking model, RBAC, gerenciamento de recursos e Helm em profundidade"
+track: "platform"
+order: 4
+section: "Orquestração e Cloud"
+priority: "medium"
+tags: ["kubernetes", "k8s", "deployment", "service", "rbac", "helm", "cni"]
+prerequisites: ["docker"]
+keyTakeaways:
+  - "O control plane (API Server, etcd, Scheduler, Controller Manager) mantém o estado desejado enquanto kubelets nos nodes executam os containers"
+  - "O modelo de networking do Kubernetes exige que todo Pod tenha IP único e roteável, sem NAT — implementado por CNI plugins como Calico ou Cilium"
+  - "RBAC com princípio do menor privilégio, resource quotas e LimitRanges são essenciais para clusters multi-tenant em produção"
+---
+
+## Arquitetura do Kubernetes
+
+### Control Plane
+
+O control plane é o cérebro do cluster. Todos os componentes são stateless exceto o etcd.
+
+```
+┌── Control Plane ──────────────────────────────────────────────────┐
+│                                                                    │
+│  ┌─────────────┐  ┌───────────┐  ┌──────────┐  ┌──────────────┐ │
+│  │  API Server  │  │   etcd    │  │ Scheduler│  │  Controller  │ │
+│  │  (kube-      │  │ (cluster  │  │ (decide  │  │  Manager     │ │
+│  │  apiserver)  │←→│  state)   │  │  onde     │  │ (reconcilia │ │
+│  │              │  │           │  │  rodar)   │  │  estado)     │ │
+│  └──────┬───────┘  └───────────┘  └──────────┘  └──────────────┘ │
+│         │                                                          │
+│  ┌──────┴───────┐                                                  │
+│  │ cloud-        │  ← Integração com AWS/GCP/Azure                │
+│  │ controller-   │    (load balancers, discos, rotas)              │
+│  │ manager       │                                                 │
+│  └───────────────┘                                                 │
+└────────────────────────────────────────────────────────────────────┘
+          │ HTTPS (mTLS)
+          ▼
+┌── Node ───────────────────────────────────────────────────────────┐
+│  ┌──────────┐  ┌────────────┐  ┌────────────────────┐           │
+│  │ kubelet   │  │ kube-proxy │  │ Container Runtime  │           │
+│  │ (agente)  │  │ (rede/svc) │  │ (containerd/CRI-O)│           │
+│  └──────────┘  └────────────┘  └────────────────────┘           │
+│  ┌─── Pod ────┐  ┌─── Pod ────┐  ┌─── Pod ────┐                │
+│  │ Container  │  │ Container  │  │ Container  │                 │
+│  │ Container  │  │            │  │ Init Cont. │                 │
+│  └────────────┘  └────────────┘  └────────────┘                 │
+└────────────────────────────────────────────────────────────────────┘
+```
+
+**API Server (kube-apiserver)**: ponto central de comunicação. Toda operação passa por ele — kubectl, kubelets, controllers. Valida requests, autentica via certificados/tokens, autoriza via RBAC e persiste no etcd. Expõe API RESTful versionada (`/apis/apps/v1/deployments`).
+
+**etcd**: banco key-value distribuído (Raft consensus). Armazena todo o estado do cluster. Perder o etcd sem backup = perder o cluster. Em produção, sempre em cluster de 3 ou 5 membros.
+
+```bash
+# Backup do etcd (operação crítica)
+etcdctl snapshot save backup.db \
+  --endpoints=https://127.0.0.1:2379 \
+  --cacert=/etc/kubernetes/pki/etcd/ca.crt \
+  --cert=/etc/kubernetes/pki/etcd/server.crt \
+  --key=/etc/kubernetes/pki/etcd/server.key
+```
+
+**Scheduler (kube-scheduler)**: observa Pods sem node atribuído e decide onde colocá-los. Considera: resource requests, affinity/anti-affinity, taints/tolerations, topology constraints, volume locality.
+
+**Controller Manager**: executa controllers em loop de reconciliação. Cada controller observa o estado atual e age para convergir ao estado desejado. Exemplos: Deployment controller, ReplicaSet controller, Node controller, Job controller.
+
+**Kubelet**: agente em cada node. Recebe PodSpecs do API server, garante que os containers definidos estão rodando. Reporta status, executa probes (liveness, readiness, startup). Comunica com o container runtime via CRI (Container Runtime Interface).
+
+**Kube-proxy**: implementa Services. Mantém regras de rede (iptables ou IPVS) que redirecionam tráfego para os Pods corretos. Modo IPVS é mais eficiente para clusters grandes (O(1) vs O(n) de iptables).
+
+## API Objects em Profundidade
+
+### Pod: Unidade Fundamental
+
+```yaml
+apiVersion: v1
+kind: Pod
+metadata:
+  name: app-debug
+  labels:
+    app: api
+    version: v1
+  annotations:
+    prometheus.io/scrape: "true"
+    prometheus.io/port: "9090"
+spec:
+  # Init containers executam em sequência ANTES dos containers principais
+  initContainers:
+    - name: wait-for-db
+      image: busybox
+      command: ['sh', '-c', 'until nc -z db-service 5432; do sleep 1; done']
+
+    - name: run-migrations
+      image: app:v1.2.3
+      command: ['npx', 'prisma', 'migrate', 'deploy']
+      env:
+        - name: DATABASE_URL
+          valueFrom:
+            secretKeyRef:
+              name: app-secrets
+              key: database-url
+
+  containers:
+    - name: api
+      image: app:v1.2.3
+      ports:
+        - containerPort: 3000
+          name: http
+        - containerPort: 9090
+          name: metrics
+
+      resources:
+        requests:
+          cpu: "250m"          # 0.25 cores — garantido pelo scheduler
+          memory: "256Mi"      # 256 MiB — garantido
+        limits:
+          cpu: "1000m"         # 1 core — máximo (throttling se exceder)
+          memory: "512Mi"      # 512 MiB — OOM kill se exceder
+
+      # Startup probe: período inicial de grace
+      startupProbe:
+        httpGet:
+          path: /health
+          port: http
+        failureThreshold: 30
+        periodSeconds: 2         # Até 60s para iniciar
+
+      # Liveness: está vivo? Se falhar → reinicia
+      livenessProbe:
+        httpGet:
+          path: /health
+          port: http
+        periodSeconds: 10
+        failureThreshold: 3
+
+      # Readiness: está pronto para receber tráfego?
+      readinessProbe:
+        httpGet:
+          path: /ready
+          port: http
+        periodSeconds: 5
+        failureThreshold: 2
+
+      lifecycle:
+        preStop:
+          exec:
+            command: ["/bin/sh", "-c", "sleep 10"]
+            # Delay para permitir que kube-proxy remova o Pod
+            # dos endpoints ANTES de enviar SIGTERM
+
+      volumeMounts:
+        - name: config
+          mountPath: /app/config
+          readOnly: true
+        - name: tmp
+          mountPath: /tmp
+
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        readOnlyRootFilesystem: true
+        allowPrivilegeEscalation: false
+        capabilities:
+          drop: ["ALL"]
+
+    # Sidecar container (ex: log forwarder, proxy)
+    - name: log-forwarder
+      image: fluent-bit:latest
+      volumeMounts:
+        - name: shared-logs
+          mountPath: /var/log/app
+
+  volumes:
+    - name: config
+      configMap:
+        name: app-config
+    - name: tmp
+      emptyDir:
+        sizeLimit: 100Mi
+    - name: shared-logs
+      emptyDir: {}
+
+  serviceAccountName: app-sa
+  terminationGracePeriodSeconds: 30
+
+  # Affinity/anti-affinity para distribuição
+  affinity:
+    podAntiAffinity:
+      preferredDuringSchedulingIgnoredDuringExecution:
+        - weight: 100
+          podAffinityTerm:
+            labelSelector:
+              matchLabels:
+                app: api
+            topologyKey: kubernetes.io/hostname
+    # Prefere distribuir réplicas em nodes diferentes
+```
+
+### Workload Resources
+
+```yaml
+# Deployment — aplicações stateless com rolling updates
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api
+spec:
+  replicas: 3
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 1
+      maxSurge: 1
+  revisionHistoryLimit: 5        # Mantém 5 versões para rollback
+  selector:
+    matchLabels:
+      app: api
+  template:
+    metadata:
+      labels:
+        app: api
+    spec:
+      containers:
+        - name: api
+          image: registry/api:v1.2.3
+---
+# StatefulSet — aplicações stateful (banco, cache, message broker)
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: postgres
+spec:
+  serviceName: postgres          # Headless service obrigatório
+  replicas: 3
+  selector:
+    matchLabels:
+      app: postgres
+  template:
+    metadata:
+      labels:
+        app: postgres
+    spec:
+      containers:
+        - name: postgres
+          image: postgres:16
+          volumeMounts:
+            - name: data
+              mountPath: /var/lib/postgresql/data
+  volumeClaimTemplates:          # PVC por Pod (postgres-0, postgres-1, postgres-2)
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        storageClassName: gp3
+        resources:
+          requests:
+            storage: 100Gi
+# StatefulSet garante:
+# - Identidade estável: postgres-0, postgres-1, postgres-2
+# - Storage persistente por Pod
+# - Ordem de criação e deleção (0 → 1 → 2; 2 → 1 → 0)
+# - DNS previsível: postgres-0.postgres.namespace.svc.cluster.local
+---
+# DaemonSet — um Pod em CADA node (logging, monitoring, CNI)
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: fluentbit
+spec:
+  selector:
+    matchLabels:
+      app: fluentbit
+  template:
+    metadata:
+      labels:
+        app: fluentbit
+    spec:
+      containers:
+        - name: fluentbit
+          image: fluent/fluent-bit:latest
+          volumeMounts:
+            - name: varlog
+              mountPath: /var/log
+              readOnly: true
+      volumes:
+        - name: varlog
+          hostPath:
+            path: /var/log
+      tolerations:               # Rodar inclusive em nodes com taints
+        - operator: Exists
+---
+# Job — execução única (migrations, batch processing)
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: db-migration
+spec:
+  backoffLimit: 3                # Tentativas em caso de falha
+  activeDeadlineSeconds: 300     # Timeout total
+  ttlSecondsAfterFinished: 3600  # Limpar depois de 1h
+  template:
+    spec:
+      restartPolicy: Never
+      containers:
+        - name: migrate
+          image: app:v1.2.3
+          command: ["npx", "prisma", "migrate", "deploy"]
+---
+# CronJob — execução periódica
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: daily-backup
+spec:
+  schedule: "0 3 * * *"         # Todo dia às 3h
+  concurrencyPolicy: Forbid      # Não executa se anterior ainda roda
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 5
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: backup
+              image: backup-tool:latest
+              command: ["./backup.sh"]
+```
+
+## Services: Networking Interno
+
+```yaml
+# ClusterIP — acessível apenas dentro do cluster (padrão)
+apiVersion: v1
+kind: Service
+metadata:
+  name: api
+spec:
+  type: ClusterIP
+  selector:
+    app: api
+  ports:
+    - port: 80
+      targetPort: 3000
+      protocol: TCP
+# DNS: api.namespace.svc.cluster.local
+# Redireciona para Pods com label app=api via iptables/IPVS
+---
+# Headless Service — sem ClusterIP, retorna IPs dos Pods diretamente
+apiVersion: v1
+kind: Service
+metadata:
+  name: postgres
+spec:
+  clusterIP: None               # Headless
+  selector:
+    app: postgres
+  ports:
+    - port: 5432
+# DNS: postgres-0.postgres.namespace.svc.cluster.local (registro A por Pod)
+# Usado por StatefulSets para discovery direto
+---
+# NodePort — expõe em porta alta (30000-32767) de cada node
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-nodeport
+spec:
+  type: NodePort
+  selector:
+    app: api
+  ports:
+    - port: 80
+      targetPort: 3000
+      nodePort: 30080
+---
+# LoadBalancer — provisiona load balancer na cloud
+apiVersion: v1
+kind: Service
+metadata:
+  name: api-lb
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-type: nlb
+    service.beta.kubernetes.io/aws-load-balancer-scheme: internet-facing
+spec:
+  type: LoadBalancer
+  selector:
+    app: api
+  ports:
+    - port: 443
+      targetPort: 3000
+```
+
+## Ingress: Roteamento HTTP/HTTPS
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: app-ingress
+  annotations:
+    nginx.ingress.kubernetes.io/rate-limit-connections: "10"
+    nginx.ingress.kubernetes.io/rate-limit-rps: "100"
+    nginx.ingress.kubernetes.io/proxy-body-size: "10m"
+    nginx.ingress.kubernetes.io/ssl-redirect: "true"
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+spec:
+  ingressClassName: nginx
+  tls:
+    - hosts:
+        - api.empresa.com
+        - app.empresa.com
+      secretName: app-tls
+  rules:
+    - host: api.empresa.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: api
+                port:
+                  number: 80
+    - host: app.empresa.com
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: frontend
+                port:
+                  number: 80
+```
+
+## ConfigMaps e Secrets
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+data:
+  LOG_LEVEL: "info"
+  FEATURE_FLAG_NEW_UI: "true"
+  config.yaml: |
+    server:
+      port: 3000
+      gracefulShutdown: 30s
+    cache:
+      ttl: 300
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: app-secrets
+type: Opaque
+stringData:                      # stringData aceita plain text (base64 automático)
+  database-url: "postgres://user:pass@postgres:5432/myapp"
+  jwt-secret: "super-secret-key"
+# IMPORTANTE: Secrets do K8s são apenas base64, NÃO criptografia
+# Use Sealed Secrets, SOPS ou External Secrets Operator para secrets reais
+```
+
+```bash
+# Sealed Secrets — criptografa secrets para armazenar no Git
+kubeseal --format=yaml < secret.yaml > sealed-secret.yaml
+# Apenas o controller no cluster pode descriptografar
+
+# External Secrets Operator — sincroniza com AWS Secrets Manager/Vault
+apiVersion: external-secrets.io/v1beta1
+kind: ExternalSecret
+metadata:
+  name: app-secrets
+spec:
+  refreshInterval: 1h
+  secretStoreRef:
+    name: aws-secrets-manager
+    kind: ClusterSecretStore
+  target:
+    name: app-secrets
+  data:
+    - secretKey: database-url
+      remoteRef:
+        key: prod/myapp/database-url
+```
+
+## PersistentVolumes e CSI
+
+```yaml
+# StorageClass — define como provisionar volumes
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: gp3
+provisioner: ebs.csi.aws.com
+parameters:
+  type: gp3
+  iops: "3000"
+  throughput: "125"
+  encrypted: "true"
+reclaimPolicy: Retain            # Não deleta o volume ao apagar PVC
+volumeBindingMode: WaitForFirstConsumer  # Provisiona na AZ do Pod
+allowVolumeExpansion: true
+---
+# PersistentVolumeClaim — request de storage por um Pod
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: app-data
+spec:
+  accessModes:
+    - ReadWriteOnce              # RWO: um node por vez
+  storageClassName: gp3
+  resources:
+    requests:
+      storage: 50Gi
+```
+
+## RBAC: Controle de Acesso
+
+```yaml
+# ServiceAccount para a aplicação
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: app-sa
+  namespace: production
+  annotations:
+    eks.amazonaws.com/role-arn: arn:aws:iam::123456:role/app-role  # IRSA
+---
+# Role — permissões dentro de um namespace
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: app-role
+  namespace: production
+rules:
+  - apiGroups: [""]
+    resources: ["configmaps", "secrets"]
+    verbs: ["get", "list"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+---
+# RoleBinding — associa Role ao ServiceAccount
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: app-role-binding
+  namespace: production
+subjects:
+  - kind: ServiceAccount
+    name: app-sa
+    namespace: production
+roleRef:
+  kind: Role
+  name: app-role
+  apiGroup: rbac.authorization.k8s.io
+---
+# ClusterRole — permissões no cluster inteiro (cross-namespace)
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: monitoring-reader
+rules:
+  - apiGroups: [""]
+    resources: ["nodes", "nodes/metrics", "pods"]
+    verbs: ["get", "list", "watch"]
+  - nonResourceURLs: ["/metrics"]
+    verbs: ["get"]
+```
+
+## Resource Management: QoS, LimitRanges, ResourceQuotas
+
+```yaml
+# LimitRange — defaults e limites por Pod/Container no namespace
+apiVersion: v1
+kind: LimitRange
+metadata:
+  name: default-limits
+  namespace: production
+spec:
+  limits:
+    - type: Container
+      default:                   # Valores padrão se não especificado
+        cpu: "500m"
+        memory: "256Mi"
+      defaultRequest:
+        cpu: "100m"
+        memory: "128Mi"
+      max:                       # Máximo permitido
+        cpu: "4"
+        memory: "4Gi"
+      min:                       # Mínimo permitido
+        cpu: "50m"
+        memory: "64Mi"
+---
+# ResourceQuota — limite total do namespace
+apiVersion: v1
+kind: ResourceQuota
+metadata:
+  name: production-quota
+  namespace: production
+spec:
+  hard:
+    requests.cpu: "20"
+    requests.memory: "40Gi"
+    limits.cpu: "40"
+    limits.memory: "80Gi"
+    pods: "100"
+    services: "20"
+    persistentvolumeclaims: "30"
+    secrets: "50"
+```
+
+### QoS Classes
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│ Classe      │ Condição                   │ Prioridade OOM   │
+├─────────────┼────────────────────────────┼──────────────────┤
+│ Guaranteed  │ requests == limits para    │ Último a morrer  │
+│             │ CPU e memória              │                  │
+│ Burstable   │ requests < limits          │ Intermediário    │
+│ BestEffort  │ Sem requests nem limits    │ Primeiro a morrer│
+└──────────────────────────────────────────────────────────────┘
+
+# Regra: SEMPRE defina requests. Em produção, defina limits também.
+# BestEffort = primeiro a ser evicted quando o node fica sem recursos.
+```
+
+## HPA e VPA
+
+```yaml
+# HPA — escala horizontal baseado em métricas
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: api-hpa
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: api
+  minReplicas: 3
+  maxReplicas: 20
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+        - type: Pods
+          value: 4
+          periodSeconds: 60        # Máximo +4 pods por minuto
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Percent
+          value: 10
+          periodSeconds: 60        # Máximo -10% por minuto
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80
+    # Métricas customizadas via Prometheus adapter
+    - type: Pods
+      pods:
+        metric:
+          name: http_requests_per_second
+        target:
+          type: AverageValue
+          averageValue: "1000"
+```
+
+## Networking Model e CNI
+
+```
+Modelo de rede do Kubernetes:
+1. Todo Pod tem IP único e roteável (sem NAT entre Pods)
+2. Todo Pod pode falar com qualquer outro Pod diretamente
+3. O IP que o Pod vê é o mesmo que outros Pods veem
+
+CNI Plugins:
+┌──────────┬─────────────────────────────────────────────────┐
+│ Calico   │ BGP routing, Network Policies avançadas,        │
+│          │ eBPF dataplane. Mais popular em bare-metal.     │
+├──────────┼─────────────────────────────────────────────────┤
+│ Cilium   │ eBPF nativo, observabilidade L7, mTLS,          │
+│          │ Network Policies L3-L7. Recomendado para novos. │
+├──────────┼─────────────────────────────────────────────────┤
+│ AWS VPC  │ IPs diretamente do VPC. Integração nativa.      │
+│ CNI      │ Limitado por ENI (IPs por instance type).       │
+├──────────┼─────────────────────────────────────────────────┤
+│ Flannel  │ Simples, VXLAN overlay. Sem Network Policies.   │
+└──────────┴─────────────────────────────────────────────────┘
+```
+
+```yaml
+# NetworkPolicy — firewall no nível do Pod
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: api-netpol
+  namespace: production
+spec:
+  podSelector:
+    matchLabels:
+      app: api
+  policyTypes:
+    - Ingress
+    - Egress
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              app: nginx-ingress
+      ports:
+        - port: 3000
+  egress:
+    - to:
+        - podSelector:
+            matchLabels:
+              app: postgres
+      ports:
+        - port: 5432
+    - to:                          # Permitir DNS
+        - namespaceSelector: {}
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - port: 53
+          protocol: UDP
+```
+
+## Helm Charts
+
+```bash
+# Estrutura de um chart
+mychart/
+├── Chart.yaml              # Metadados (nome, versão, dependências)
+├── values.yaml             # Valores padrão
+├── values-production.yaml  # Override para produção
+├── templates/
+│   ├── _helpers.tpl        # Template helpers
+│   ├── deployment.yaml
+│   ├── service.yaml
+│   ├── ingress.yaml
+│   ├── hpa.yaml
+│   ├── configmap.yaml
+│   ├── secret.yaml
+│   └── tests/
+│       └── test-connection.yaml
+└── charts/                 # Dependências (subcharts)
+```
+
+```yaml
+# values.yaml
+image:
+  repository: registry.io/app
+  tag: "v1.0.0"
+  pullPolicy: IfNotPresent
+
+replicaCount: 3
+
+resources:
+  requests:
+    cpu: "250m"
+    memory: "256Mi"
+  limits:
+    cpu: "1"
+    memory: "512Mi"
+
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 20
+  targetCPUUtilization: 70
+```
+
+```bash
+# Comandos essenciais
+helm install app ./mychart -f values-production.yaml -n production
+helm upgrade app ./mychart --set image.tag=v1.2.3 -n production
+helm rollback app 1 -n production     # Volta para revisão 1
+helm diff upgrade app ./mychart --set image.tag=v1.2.3  # Preview (plugin)
+helm template app ./mychart -f values-production.yaml    # Render local
+
+# kubectl essenciais para debugging
+kubectl get pods -n production -o wide
+kubectl describe pod <pod-name> -n production
+kubectl logs <pod-name> -n production -f --previous  # Logs do container anterior
+kubectl exec -it <pod-name> -n production -- sh
+kubectl top pods -n production                       # Uso de recursos
+kubectl get events -n production --sort-by='.lastTimestamp'
+kubectl rollout undo deployment/api -n production    # Rollback imediato
+```
+
+Kubernetes é complexo, mas cada componente resolve um problema real. A chave é entender o loop de reconciliação — você declara o estado desejado, os controllers convergem. Domine primeiro Deployments, Services e Ingress; depois avance para StatefulSets, RBAC e HPA conforme a necessidade.
+
+---
+
+## Referencias e Fontes
+
+- **Kubernetes Official Documentation** — https://kubernetes.io/docs/ — referência oficial
+- **"Kubernetes in Action"** — Marko Lukša — o livro mais completo sobre K8s
+- **"Kubernetes Up & Running"** — Kelsey Hightower, Brendan Burns, Joe Beda — dos criadores do K8s
+- **"Production Kubernetes"** — Josh Rosso et al. — operação em produção
+- **Helm Documentation** — https://helm.sh/docs/ — package manager para K8s
+- **CNCF Landscape** — https://landscape.cncf.io/ — ecossistema cloud native

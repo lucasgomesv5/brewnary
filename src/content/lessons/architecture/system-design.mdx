@@ -1,0 +1,1058 @@
+---
+title: "System Design"
+description: "Escalabilidade, load balancing, CAP theorem, caching, sharding e fundamentos de arquitetura de sistemas distribuídos"
+track: "architecture"
+order: 4
+section: "Design e Arquitetura"
+priority: "medium"
+tags: ["system-design", "escalabilidade", "load-balancer", "CAP-theorem", "arquitetura"]
+prerequisites: ["redes-e-internet"]
+keyTakeaways:
+  - "Escalabilidade vertical (máquina maior) é simples mas limitada; horizontal (mais máquinas) é complexa mas sem limite teórico"
+  - "CAP Theorem: em sistemas distribuídos, escolha entre Consistência (CP) ou Disponibilidade (AP) — Partition Tolerance é obrigatório"
+  - "PACELC estende o CAP: mesmo sem partição, você troca Latência por Consistência (e vice-versa)"
+  - "Back-of-the-envelope: saber as latências de memória (L1: 0.5ns) até rede (150ms) é essencial para dimensionar sistemas"
+---
+
+# System Design Básico
+
+> **Ponto chave:** System design não é sobre decorar componentes. É sobre entender **trade-offs**. Cada decisão arquitetural sacrifica algo — seu trabalho é saber *o quê* e *por quê*.
+
+---
+
+## 1. Fundamentos: As 5 Métricas que Governam Tudo
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    MÉTRICAS FUNDAMENTAIS                        │
+├─────────────────┬───────────────────────────────────────────────┤
+│ Escalabilidade  │ Capacidade de lidar com crescimento de carga  │
+│ Disponibilidade │ % do tempo que o sistema responde (99.99%)    │
+│ Consistência    │ Todos os nós retornam o mesmo dado ao mesmo   │
+│                 │ tempo após uma escrita                        │
+│ Latência        │ Tempo de uma única operação (p50, p95, p99)   │
+│ Throughput      │ Operações por segundo que o sistema sustenta  │
+└─────────────────┴───────────────────────────────────────────────┘
+```
+
+**Disponibilidade em "noves":**
+```
+99%      → ~3.65 dias de downtime/ano    (dois noves)
+99.9%    → ~8.76 horas/ano               (três noves)
+99.99%   → ~52.6 minutos/ano             (quatro noves)
+99.999%  → ~5.26 minutos/ano             (cinco noves)
+99.9999% → ~31.5 segundos/ano            (seis noves)
+
+Cada "nove" adicional custa EXPONENCIALMENTE mais.
+Ir de 99.9% para 99.99% pode 10x o custo de infraestrutura.
+```
+
+**Latência — por que p99 importa mais que média:**
+```
+Se sua API tem p50=20ms e p99=2000ms:
+→ 1% dos seus usuários esperam 100x mais.
+→ Em 1M requests/dia, são 10.000 requests lentos.
+→ Usuários com mais dados (clientes premium) tendem a cair no p99.
+
+Regra: SEMPRE monitore p95 e p99, nunca apenas a média.
+A média esconde outliers que destroem a experiência do usuário.
+```
+
+---
+
+## 2. Teorema CAP — O Trilema dos Sistemas Distribuídos
+
+```
+                    Consistency (C)
+                        ╱╲
+                       ╱  ╲
+                      ╱    ╲
+                     ╱  CP  ╲
+                    ╱________╲
+                   ╱          ╲
+                  ╱   CA (*)   ╲
+                 ╱   impossível ╲
+                ╱   em rede real ╲
+               ╱__________________╲
+   Availability (A) ──────────── Partition Tolerance (P)
+                        AP
+
+   (*) CA só existe em sistema single-node (não distribuído).
+       Em rede real, partições ACONTECEM. P é obrigatório.
+```
+
+**Prova intuitiva de por que CA é impossível em rede:**
+
+```
+Cenário: 2 nós (A e B) com rede particionada (não se comunicam).
+
+1. Cliente escreve valor X=42 no Nó A.
+2. Nó A não consegue replicar para Nó B (rede caiu).
+3. Cliente lê X do Nó B.
+
+Duas opções:
+  → Nó B responde com valor antigo (X=0)    = DISPONÍVEL, mas INCONSISTENTE (AP)
+  → Nó B recusa a leitura (erro/timeout)     = CONSISTENTE, mas INDISPONÍVEL (CP)
+
+Não existe terceira opção. Isso é o teorema CAP.
+```
+
+**Classificação de sistemas reais:**
+```
+CP (Consistência + Tolerância a Partição):
+  → PostgreSQL (replicação síncrona), HBase, MongoDB (modo padrão)
+  → Zookeeper, etcd, Consul (coordenação distribuída)
+  → Durante partição: recusam escritas para manter consistência
+
+AP (Disponibilidade + Tolerância a Partição):
+  → Cassandra, DynamoDB, CouchDB, Riak
+  → DNS (propaga mudanças eventualmente)
+  → Durante partição: aceitam escritas, resolvem conflitos depois
+  → Usam: consistent hashing, vector clocks, CRDTs
+```
+
+---
+
+## 3. PACELC — A Extensão do CAP Para o Mundo Real
+
+O CAP só fala sobre o que acontece **durante partições**. Mas 99.99% do tempo, sua rede está funcionando. O PACELC pergunta: **e quando NÃO há partição?**
+
+```
+PACELC:
+  if (Partition) → escolha entre A (Availability) ou C (Consistency)
+  else           → escolha entre L (Latency) ou C (Consistency)
+
+┌──────────────┬──────────────────┬──────────────────────────────┐
+│   Sistema    │ Durante Partição │ Operação Normal              │
+├──────────────┼──────────────────┼──────────────────────────────┤
+│ DynamoDB     │ PA (disponível)  │ EL (baixa latência)          │
+│ Cassandra    │ PA (disponível)  │ EL (baixa latência)          │
+│ PostgreSQL   │ PC (consistente) │ EC (consistência forte)      │
+│ MongoDB      │ PA (disponível)  │ EC (consistência por padrão) │
+│ Cosmos DB    │ PA/PC (tunable)  │ EL/EC (tunable por request)  │
+└──────────────┴──────────────────┴──────────────────────────────┘
+
+DynamoDB = PA/EL → Sempre prioriza disponibilidade e latência.
+PostgreSQL = PC/EC → Sempre prioriza consistência.
+Cosmos DB = Tunável → Você escolhe POR OPERAÇÃO o nível de consistência.
+```
+
+**Por que isso importa na prática:** quando alguém diz "usamos eventual consistency", o que realmente significa é que no PACELC o sistema escolheu **EL** — sacrificar consistência por latência *mesmo quando a rede está saudável*, porque esperar replicação síncrona adiciona latência a cada escrita.
+
+---
+
+## 4. Escalabilidade: Vertical vs Horizontal
+
+```
+VERTICAL (Scale Up):                HORIZONTAL (Scale Out):
+┌─────────────────┐                 ┌──────┐ ┌──────┐ ┌──────┐
+│                 │                 │ App  │ │ App  │ │ App  │
+│   MEGA SERVER   │                 │  01  │ │  02  │ │  03  │
+│   128 CPU       │                 └──┬───┘ └──┬───┘ └──┬───┘
+│   512GB RAM     │                    │        │        │
+│   NVMe RAID     │                    └────┬───┘────────┘
+│                 │                         │
+└─────────────────┘                  ┌──────┴──────┐
+                                     │Load Balancer│
+Simples, mas:                        └─────────────┘
+→ Limite físico de hardware
+→ Single point of failure       Complexo, mas:
+→ Custo exponencial             → Sem limite teórico
+  (2x CPU ≠ 2x preço,          → Tolerante a falhas
+   geralmente é 4x+)           → Custo linear (commodity hardware)
+```
+
+**Regra de ouro para escalar horizontalmente:** seus serviços devem ser **stateless**.
+
+```
+STATEFUL (difícil de escalar):
+  → Sessão no servidor (server-side session)
+  → Cache local que outros nós não conhecem
+  → Arquivos salvos no disco local
+
+STATELESS (fácil de escalar):
+  → Sessão no cliente (JWT) ou em store externo (Redis)
+  → Cache centralizado (Redis/Memcached)
+  → Arquivos em object storage (S3)
+  → Qualquer instância pode atender qualquer request
+
+Se qualquer request pode ir para qualquer servidor,
+você pode adicionar/remover servidores sob demanda (auto-scaling).
+```
+
+---
+
+## 5. Load Balancing
+
+```
+                         Internet
+                            │
+                    ┌───────┴───────┐
+                    │ Load Balancer │
+                    │  (L4 ou L7)  │
+                    └──┬────┬────┬─┘
+                       │    │    │
+                  ┌────┘    │    └────┐
+                  ▼         ▼         ▼
+             ┌────────┐ ┌────────┐ ┌────────┐
+             │ App 01 │ │ App 02 │ │ App 03 │
+             │ :8080  │ │ :8080  │ │ :8080  │
+             └────────┘ └────────┘ └────────┘
+```
+
+**L4 (Transport Layer) vs L7 (Application Layer):**
+```
+L4 — Roteia com base em IP + porta (TCP/UDP):
+  → Não inspeciona conteúdo HTTP (headers, path, cookies)
+  → Mais rápido (menos processamento por pacote)
+  → Exemplo: AWS NLB, HAProxy (modo TCP)
+
+L7 — Roteia com base em conteúdo HTTP:
+  → Pode rotear por path (/api → backend, /static → CDN)
+  → Pode rotear por header (A/B testing, canary deploy)
+  → Pode fazer TLS termination (desencripta no LB)
+  → Mais lento, mais flexível
+  → Exemplo: AWS ALB, Nginx, HAProxy (modo HTTP), Envoy
+```
+
+**Algoritmos de balanceamento:**
+```
+Round Robin:
+  → Request 1 → App01, Request 2 → App02, Request 3 → App03, ...
+  → Simples, mas ignora carga real de cada servidor.
+  → Servidor lento recebe mesma quantidade que servidor rápido.
+
+Weighted Round Robin:
+  → App01 (peso 3), App02 (peso 1) → 3 de cada 4 requests vão para App01.
+  → Útil quando servidores têm capacidades diferentes.
+
+Least Connections:
+  → Envia para o servidor com MENOS conexões ativas.
+  → Melhor distribuição de carga real que Round Robin.
+  → Problema: não considera tempo de resposta (conexão pode ser idle).
+
+Least Response Time:
+  → Combina least connections + tempo de resposta.
+  → O mais inteligente para APIs com latência variável.
+
+IP Hash:
+  → hash(client_ip) % N → sempre vai para o mesmo servidor.
+  → Útil para sticky sessions (se não puder ser stateless).
+  → Problema: redistribui TUDO quando N muda (adiciona/remove servidor).
+
+Consistent Hashing:
+  → Resolve o problema de redistribuição do IP Hash.
+  → Detalhado na seção 11.
+```
+
+---
+
+## 6. Caching
+
+```
+Sem cache:                          Com cache:
+Cliente → App → DB (50ms)           Cliente → App → Cache (1ms) ✓
+Cliente → App → DB (50ms)           Cliente → App → Cache (1ms) ✓
+Cliente → App → DB (50ms)           Cliente → App → Cache MISS → DB (50ms)
+                                    Cliente → App → Cache (1ms) ✓
+
+50x redução de latência nos cache hits.
+Se hit rate = 95%, latência média cai de 50ms para ~3.5ms.
+```
+
+**Estratégias de cache:**
+```
+CACHE-ASIDE (Lazy Loading) — A MAIS COMUM:
+  1. App tenta ler do cache
+  2. Cache miss → App lê do DB
+  3. App escreve o resultado no cache
+  4. Próxima leitura → cache hit
+
+  ┌──────┐  miss   ┌──────┐
+  │ App  │───────→│ Cache│
+  │      │←───────│      │
+  │      │  hit    └──────┘
+  │      │
+  │      │  (miss) ┌──────┐
+  │      │───────→│  DB  │
+  │      │←───────│      │
+  └──────┘         └──────┘
+
+  + Só cacheia dados que são realmente acessados
+  + Cache pode falhar sem derrubar o sistema (graceful degradation)
+  - Dados podem ficar stale (desatualizados)
+  - Cache miss = latência extra (cache check + DB read + cache write)
+
+WRITE-THROUGH:
+  1. App escreve no cache E no DB (sincronamente)
+  2. Leituras sempre do cache
+
+  + Dados no cache sempre atualizados
+  - Latência de escrita maior (escreve em 2 lugares)
+  - Cacheia dados que podem nunca ser lidos
+
+WRITE-BACK (Write-Behind):
+  1. App escreve APENAS no cache
+  2. Cache propaga para DB de forma assíncrona (batch)
+
+  + Escrita ultra-rápida
+  + Pode agrupar escritas (batch de INSERTs)
+  - RISCO DE PERDA DE DADOS se cache crashar antes de persistir
+  - Complexidade operacional alta
+```
+
+**Invalidação de cache — o problema mais difícil de CS:**
+```
+"There are only two hard things in Computer Science:
+ cache invalidation and naming things." — Phil Karlton
+
+TTL (Time To Live):
+  → SET key value EX 300  (expira em 5 minutos)
+  → Simples, mas dados ficam stale por até TTL segundos
+  → Bom para: dados que mudam raramente (perfil de usuário, config)
+
+Event-Driven Invalidation:
+  → Quando dado muda no DB, emite evento para deletar cache
+  → user.updated → DELETE cache:user:{id}
+  → Dados quase sempre frescos
+  → Precisa de: message queue (Kafka, SQS) ou pub/sub (Redis)
+
+Versioning:
+  → Key do cache inclui versão: cache:user:123:v7
+  → Escrita incrementa versão, leituras antigas miss automaticamente
+  → Sem delete explícito, dados expiram naturalmente por TTL
+```
+
+---
+
+## 7. CDN (Content Delivery Network)
+
+```
+Sem CDN:                              Com CDN:
+                                          ┌─────────┐
+                                      ┌──→│Edge São │ ← Usuário BR
+                                      │   │ Paulo   │
+┌────────┐      ┌────────────┐       │   └─────────┘
+│Usuário │─────→│ Origin     │       │   ┌─────────┐
+│  BR    │ 150ms│ (us-east)  │       ├──→│Edge     │ ← Usuário EU
+└────────┘      └────────────┘       │   │Frankfurt│
+                                      │   └─────────┘
+                                      │   ┌─────────┐
+                              ┌──────┐├──→│Edge     │ ← Usuário US
+                              │Origin├┘   │Virginia │
+                              │Server│    └─────────┘
+                              └──────┘
+
+→ Conteúdo estático servido do edge mais próximo do usuário.
+→ Reduz latência de 150ms (cross-continent) para ~10-20ms.
+→ Reduz carga no origin server (CDN absorve 90%+ do tráfego estático).
+```
+
+**Headers HTTP que controlam cache no CDN e browser:**
+```
+Cache-Control: public, max-age=31536000, immutable
+  → public: CDN pode cachear
+  → max-age=31536000: cache por 1 ano (365 * 24 * 3600)
+  → immutable: browser não revalida nem em refresh
+
+Cache-Control: private, no-cache
+  → private: SÓ o browser cacheia (dados do usuário, não CDN)
+  → no-cache: SEMPRE revalida com o servidor antes de usar
+
+Cache-Control: no-store
+  → NÃO cacheia em lugar nenhum (dados sensíveis)
+
+ETag: "a1b2c3"
+  → Hash do conteúdo. Browser envia If-None-Match: "a1b2c3"
+  → Servidor responde 304 Not Modified (sem body) se não mudou
+  → Economiza bandwidth, não latência (round-trip continua)
+
+Last-Modified: Wed, 18 Feb 2026 10:00:00 GMT
+  → Browser envia If-Modified-Since: ...
+  → Mesmo mecanismo do ETag, baseado em data
+
+Estratégia ideal para assets estáticos (JS/CSS/imagens):
+  → Filename com hash: app.a1b2c3.js
+  → Cache-Control: public, max-age=31536000, immutable
+  → Quando código muda, hash muda, URL muda → cache break automático
+```
+
+---
+
+## 8. Database: SQL vs NoSQL e Estratégias de Replicação
+
+```
+SQL (Relacional):                   NoSQL (Não-Relacional):
+┌─────────────────────────┐         ┌─────────────────────────┐
+│ Schema rígido (tabelas) │         │ Schema flexível (docs)  │
+│ ACID (transações fortes)│         │ BASE (eventually cons.) │
+│ JOINs eficientes        │         │ JOINs ruins/inexistentes│
+│ Escala vertical (reads  │         │ Escala horizontal nativa│
+│  com réplicas)          │         │                         │
+│ PostgreSQL, MySQL       │         │ MongoDB, Cassandra,     │
+│                         │         │ DynamoDB, Redis         │
+└─────────────────────────┘         └─────────────────────────┘
+
+Quando usar SQL:
+  → Dados altamente relacionais (e-commerce: users, orders, products)
+  → Transações críticas (financeiro, inventário)
+  → Queries complexas com JOINs e agregações
+
+Quando usar NoSQL:
+  → Schema que muda frequentemente (startup iterando rápido)
+  → Volume massivo de dados (logs, métricas, IoT)
+  → Latência ultra-baixa com acesso por key (sessões, cache)
+  → Escrita massiva (time-series, event sourcing)
+```
+
+**Replicação:**
+```
+MASTER-SLAVE (Primary-Replica):
+  ┌────────┐    sync/async    ┌─────────┐
+  │ Master │────────────────→│ Replica │  ← READ
+  │(Write) │────────────────→│ Replica │  ← READ
+  └────────┘                  │ Replica │  ← READ
+      ↑                       └─────────┘
+    WRITE
+  → Todas escritas no master, leituras nas réplicas
+  → Replicação síncrona: consistência forte, latência de escrita maior
+  → Replicação assíncrona: latência menor, risco de ler dado stale
+  → Se master cai: failover para uma réplica (downtime possível)
+
+MULTI-MASTER:
+  ┌────────┐  ←→  ┌────────┐
+  │Master A│      │Master B│
+  │  R+W   │  ←→  │  R+W   │
+  └────────┘      └────────┘
+  → Ambos aceitam leitura e escrita
+  → Conflitos de escrita: último ganha (LWW), vector clocks, CRDTs
+  → Maior disponibilidade, maior complexidade
+  → Usado em: Cassandra, DynamoDB, CockroachDB
+```
+
+**Sharding (Particionamento Horizontal):**
+```
+Em vez de 1 banco com 1 bilhão de rows, divida em N shards:
+
+  ┌──────────┐  ┌──────────┐  ┌──────────┐
+  │ Shard 0  │  │ Shard 1  │  │ Shard 2  │
+  │ users    │  │ users    │  │ users    │
+  │ A-H      │  │ I-P      │  │ Q-Z      │
+  └──────────┘  └──────────┘  └──────────┘
+
+Estratégias de Shard Key:
+
+  Range-Based:
+    → user_id 1-1M → Shard 0, 1M-2M → Shard 1, ...
+    → Bom para range queries (SELECT WHERE id BETWEEN...)
+    → Problema: hotspots (shard com dados recentes recebe toda escrita)
+
+  Hash-Based:
+    → hash(user_id) % N → número do shard
+    → Distribuição uniforme (sem hotspots)
+    → Problema: range queries precisam ir em TODOS os shards (scatter-gather)
+    → Problema: adicionar shard redistribui tudo (resolvido com consistent hashing)
+
+  Directory-Based:
+    → Tabela de lookup: user_id → shard_number
+    → Flexível (pode mover usuários entre shards)
+    → Problema: lookup table é single point of failure e bottleneck
+    → Precisa cachear a tabela de lookup
+
+Regra: ADIE sharding o máximo possível.
+  → Primeiro: otimize queries (índices, EXPLAIN ANALYZE)
+  → Depois: réplicas de leitura
+  → Depois: cache (Redis)
+  → Depois: particionamento por tabela (orders separado de users)
+  → SÓ ENTÃO: sharding
+```
+
+---
+
+## 9. Message Queues e Arquitetura Event-Driven
+
+```
+ACOPLAMENTO DIRETO:                 DESACOPLAMENTO VIA FILA:
+┌──────┐  HTTP  ┌──────┐           ┌──────┐      ┌───────┐      ┌──────┐
+│ API  │──────→│Email │           │ API  │─────→│ Queue │─────→│Email │
+└──────┘       └──────┘           └──────┘      └───────┘      └──────┘
+                                       │             │
+Se Email cai, API falha.               │             └────────→┌──────┐
+API espera Email responder             │                       │ SMS  │
+(latência acumulada).                  │                       └──────┘
+                                   API retorna 200
+                                   imediatamente.
+                                   Se Email cai, mensagem
+                                   fica na fila e é processada
+                                   quando Email voltar.
+```
+
+**Garantias de entrega:**
+```
+AT-MOST-ONCE:
+  → Mensagem entregue 0 ou 1 vez. Pode perder.
+  → Implementação: fire and forget, sem ACK.
+  → Uso: métricas, logs não-críticos.
+
+AT-LEAST-ONCE (mais comum):
+  → Mensagem entregue 1 ou mais vezes. Pode duplicar.
+  → Implementação: consumer envia ACK após processar.
+  → Se ACK falha, broker reenvia → duplicata.
+  → Uso: processamento de pagamento (com idempotência).
+  → EXIGE que o consumer seja IDEMPOTENTE:
+    INSERT ... ON CONFLICT DO NOTHING
+    ou check de idempotency_key antes de processar.
+
+EXACTLY-ONCE (o santo graal):
+  → Mensagem entregue exatamente 1 vez. Teoricamente impossível
+    em rede distribuída, mas simulável com:
+  → Transactional outbox pattern (DB + queue na mesma transação)
+  → Kafka transactional producers + consumers com offset commit
+  → Na prática: at-least-once + idempotência do consumer = "effectively once"
+```
+
+**Quando usar queues:**
+```
+→ Processamento assíncrono (enviar email, gerar PDF, resize de imagem)
+→ Spike absorption (pico de 10K req/s → fila absorve, workers processam a 1K/s)
+→ Desacoplar serviços (API não precisa saber quem consome o evento)
+→ Event sourcing (armazenar todos os eventos, reprocessar estado)
+
+Ferramentas:
+  → RabbitMQ: filas tradicionais, roteamento flexível (exchanges)
+  → Apache Kafka: log distribuído, alta throughput, reprocessável
+  → AWS SQS: managed, simples, integra com Lambda
+  → Redis Streams: leve, bom para volumes menores
+```
+
+---
+
+## 10. Rate Limiting
+
+```
+Sem rate limiting:
+  → Bot envia 100K requests/segundo → servidor cai
+  → Abuso de API → custos explodem
+  → Ataque DDoS → indisponibilidade total
+
+Com rate limiting:
+  → Máximo 100 requests por minuto por IP/usuário
+  → Acima do limite → HTTP 429 Too Many Requests
+  → Headers: X-RateLimit-Limit, X-RateLimit-Remaining, Retry-After
+```
+
+**Algoritmos:**
+```
+TOKEN BUCKET:
+  → Balde com capacidade máxima de N tokens
+  → Tokens adicionados a taxa constante (ex: 10/segundo)
+  → Cada request consome 1 token
+  → Sem tokens → request rejeitado (429)
+  → Permite bursts (se balde estava cheio, pode enviar N de uma vez)
+  → Usado por: AWS API Gateway, Stripe
+
+  Tempo:  0s    0.1s   0.2s   0.3s  ...  1s
+  Tokens: [10]  [9]    [8]    [7]        [10] ← refill
+
+LEAKY BUCKET:
+  → Fila (bucket) com tamanho máximo
+  → Requests entram na fila
+  → Processados a taxa constante (ex: 10/segundo)
+  → Fila cheia → request rejeitado
+  → NÃO permite bursts (saída sempre constante)
+  → Suaviza tráfego irregular
+
+SLIDING WINDOW LOG:
+  → Armazena timestamp de cada request
+  → Conta requests na janela [agora - window_size, agora]
+  → Preciso, mas consome memória (armazena cada timestamp)
+
+SLIDING WINDOW COUNTER:
+  → Combina fixed window + peso proporcional
+  → Janela anterior: 42 requests, Janela atual (70% passada): 18 requests
+  → Estimativa: 42 * 0.30 + 18 = 30.6 requests
+  → Menos memória que log, boa aproximação
+```
+
+---
+
+## 11. Consistent Hashing
+
+**O problema do hash simples:**
+```
+4 servidores: hash(key) % 4 → servidor 0, 1, 2 ou 3
+
+  key "user:1" → hash = 1234 → 1234 % 4 = 2 → Servidor 2
+  key "user:2" → hash = 5678 → 5678 % 4 = 2 → Servidor 2
+  key "user:3" → hash = 9012 → 9012 % 4 = 0 → Servidor 0
+
+Adicionando 1 servidor (agora 5):
+  key "user:1" → 1234 % 5 = 4 → Servidor 4  ← MUDOU!
+  key "user:2" → 5678 % 5 = 3 → Servidor 3  ← MUDOU!
+  key "user:3" → 9012 % 5 = 2 → Servidor 2  ← MUDOU!
+
+→ ~80% das keys redistribuídas! Em um cluster com cache,
+  isso causa cache stampede (thundering herd) massivo.
+```
+
+**Consistent Hashing resolve isso:**
+```
+Anel de hash (0 a 2^32):
+
+            Servidor A (pos 100)
+               ◯
+              ╱ ╲
+             ╱   ╲
+   Serv D   ╱     ╲   Servidor B
+  (pos 800)◯       ◯  (pos 300)
+             ╲     ╱
+              ╲   ╱
+               ◯
+            Servidor C (pos 600)
+
+Key com hash 150 → percorre o anel no sentido horário → Servidor B (300)
+Key com hash 450 → percorre o anel → Servidor C (600)
+Key com hash 750 → percorre o anel → Servidor D (800)
+
+REMOVENDO Servidor C:
+  → Apenas keys entre B(300) e C(600) migram para D(800)
+  → Keys de A e B NÃO são afetadas!
+  → Apenas ~1/N das keys redistribuídas (não 80%).
+
+VIRTUAL NODES (vnodes):
+  → Problema: com poucos nós, a distribuição é desigual.
+  → Solução: cada servidor físico tem ~150 nós virtuais no anel.
+  → Servidor A → A-1(pos 50), A-2(pos 320), A-3(pos 710), ...
+  → Distribuição muito mais uniforme.
+  → Quando um nó sai, sua carga é distribuída entre TODOS os outros
+    (não apenas o próximo no anel).
+
+Usado por: Cassandra, DynamoDB, Memcached, CDNs, load balancers.
+```
+
+---
+
+## 12. Back-of-the-Envelope: Números Essenciais
+
+```
+┌───────────────────────────────────────────────────────────┐
+│           LATÊNCIA DE OPERAÇÕES (ORDEM DE GRANDEZA)       │
+├──────────────────────────────────────┬────────────────────┤
+│ L1 cache reference                   │            0.5 ns  │
+│ Branch mispredict                    │              5 ns  │
+│ L2 cache reference                   │              7 ns  │
+│ Mutex lock/unlock                    │             25 ns  │
+│ Main memory (RAM) reference          │            100 ns  │
+│ Compress 1KB with Snappy             │          3,000 ns  │
+│ Send 1KB over 1 Gbps network        │         10,000 ns  │
+│ Read 4KB randomly from SSD           │        150,000 ns  │
+│ Read 1MB sequentially from memory    │        250,000 ns  │
+│ Round trip within same datacenter    │        500,000 ns  │
+│ Read 1MB sequentially from SSD       │      1,000,000 ns  │
+│ HDD seek                            │     10,000,000 ns  │
+│ Read 1MB sequentially from HDD       │     20,000,000 ns  │
+│ Send packet CA → Netherlands → CA    │    150,000,000 ns  │
+├──────────────────────────────────────┼────────────────────┤
+│ REGRAS PRÁTICAS:                     │                    │
+│ RAM é ~1000x mais rápida que SSD     │                    │
+│ SSD é ~100x mais rápido que HDD      │                    │
+│ Rede inter-DC é ~300000x RAM         │                    │
+│ Compressão é barata (3μs/KB)         │                    │
+│ Leitura sequencial >>> random access  │                    │
+└──────────────────────────────────────┴────────────────────┘
+```
+
+**Estimativas de capacidade:**
+```
+POTÊNCIAS DE 2:
+  2^10 = 1 Mil (KB)        → 1 Thousand
+  2^20 = 1 Milhão (MB)     → 1 Million
+  2^30 = 1 Bilhão (GB)     → 1 Billion
+  2^40 = 1 Trilhão (TB)    → 1 Trillion
+
+REGRAS ÚTEIS:
+  → 1 char ASCII = 1 byte
+  → 1 char UTF-8 (pt-BR) = 1-4 bytes (média ~1.5)
+  → UUID = 36 chars = 36 bytes
+  → Timestamp (epoch ms) = 8 bytes (long)
+  → 1 tweet (~140 chars) ≈ 200 bytes (com metadata)
+  → 1 imagem (compressed JPEG) ≈ 200-500 KB
+  → 1 minuto de vídeo (720p) ≈ 50 MB
+
+QPS GUIDELINES (por máquina single-threaded):
+  → Web server (Node/Go): ~10K-50K requests/segundo (I/O bound)
+  → DB query (indexed): ~5K-10K queries/segundo
+  → DB query (full scan): ~100-500 queries/segundo
+  → Cache read (Redis): ~100K operations/segundo
+  → Disk write (HDD): ~100-200 IOPS
+  → Disk write (SSD): ~10K-100K IOPS
+```
+
+---
+
+## 13. Exemplo Prático: Design de um URL Shortener (TinyURL/bit.ly)
+
+### Passo 1: Requisitos e Estimativas
+
+```
+REQUISITOS FUNCIONAIS:
+  → Dado um URL longo, gerar um URL curto (ex: brw.na/abc123)
+  → Dado um URL curto, redirecionar para o URL original
+  → URLs expiram após X dias (opcional)
+  → Analytics: contagem de cliques por URL (opcional)
+
+REQUISITOS NÃO-FUNCIONAIS:
+  → Alta disponibilidade (se cair, links quebram em toda a internet)
+  → Baixa latência de redirecionamento (< 50ms p99)
+  → Leituras >>> Escritas (ratio ~100:1)
+
+ESTIMATIVAS (back-of-the-envelope):
+  → 100M URLs criados/mês
+  → 100M / (30 * 24 * 3600) ≈ ~40 URLs criados/segundo
+  → Leituras: 40 * 100 = 4.000 redirecionamentos/segundo
+  → Pico (10x): ~400 escritas/s, ~40K leituras/s
+
+STORAGE (5 anos):
+  → 100M * 12 meses * 5 anos = 6 bilhões de URLs
+  → Cada registro: short_url(7) + long_url(avg 200) + metadata(100) ≈ 300 bytes
+  → 6B * 300 bytes = 1.8 TB (cabe em um SSD moderno, mas sharding ajuda)
+
+TAMANHO DO SHORT CODE:
+  → Base62 (a-z, A-Z, 0-9): 62 caracteres
+  → 7 caracteres: 62^7 = 3.5 trilhões de combinações
+  → Mais que suficiente para 6 bilhões de URLs
+```
+
+### Passo 2: API Design
+
+```
+POST /api/shorten
+  Request:  { "url": "https://example.com/very/long/path", "ttl_days": 30 }
+  Response: { "short_url": "https://brw.na/abc123", "expires_at": "..." }
+  Status:   201 Created
+
+GET /{short_code}
+  Response: HTTP 301 Moved Permanently
+            Location: https://example.com/very/long/path
+  (301 = browser cacheia o redirect, reduz carga no servidor)
+  (302 = browser NÃO cacheia, melhor para analytics)
+
+GET /api/stats/{short_code}
+  Response: { "clicks": 42850, "created_at": "...", "top_referrers": [...] }
+```
+
+### Passo 3: Schema e Geração do Short Code
+
+```
+TABLE urls:
+  id          BIGINT PRIMARY KEY AUTO_INCREMENT
+  short_code  CHAR(7) UNIQUE INDEX    ← lookup principal
+  long_url    VARCHAR(2048) NOT NULL
+  user_id     BIGINT (nullable)
+  created_at  TIMESTAMP
+  expires_at  TIMESTAMP (nullable)
+  click_count BIGINT DEFAULT 0
+
+Geração do short_code (3 abordagens):
+
+  1. Hash + Truncate:
+     → MD5("https://example.com/...") = "a1b2c3d4e5f6..."
+     → Pega primeiros 7 chars: "a1b2c3d"
+     → Problema: colisão (resolver com retry + append char)
+
+  2. Counter-Based (Auto-Increment → Base62):
+     → ID 1000000 → Base62 = "4c92" (pad com zeros: "004c92x")
+     → Sem colisão, previsível (sequencial → pode ser problema de segurança)
+     → Solução: use distributed ID generator (Snowflake, ULID)
+
+  3. Pre-Generated Key Service:
+     → Serviço dedicado gera milhões de short_codes únicos antecipadamente
+     → App pede próximo código disponível (O(1), sem colisão)
+     → Melhor para alta throughput de escrita
+```
+
+### Passo 4: Arquitetura Completa
+
+```
+┌─────────┐     ┌──────────────┐     ┌──────────────┐
+│ Clients │────→│   CDN/Edge   │────→│ Load Balancer│
+└─────────┘     │ (cache 301s) │     │   (L7/Nginx) │
+                └──────────────┘     └──────┬───────┘
+                                            │
+                          ┌─────────────────┼──────────────────┐
+                          │                 │                  │
+                     ┌────▼────┐      ┌─────▼────┐      ┌─────▼────┐
+                     │  App 01 │      │  App 02  │      │  App 03  │
+                     │(stateless)     │(stateless)│     │(stateless)│
+                     └────┬────┘      └─────┬────┘      └─────┬────┘
+                          │                 │                  │
+                     ┌────▼─────────────────▼──────────────────▼────┐
+                     │              Redis Cluster                   │
+                     │      (cache de short_code → long_url)        │
+                     │      TTL=24h, LRU eviction                   │
+                     └──────────────────┬──────────────────────────┘
+                                        │ cache miss
+                     ┌──────────────────▼──────────────────────────┐
+                     │              PostgreSQL                      │
+                     │    Primary (write) + Replicas (read)         │
+                     │                                              │
+                     │  Shard by: hash(short_code) % N              │
+                     │  (se necessário, >1TB de dados)              │
+                     └──────────────────┬──────────────────────────┘
+                                        │
+                     ┌──────────────────▼──────────────────────────┐
+                     │           Kafka / SQS                        │
+                     │  (click events para analytics assíncrono)    │
+                     └──────────────────┬──────────────────────────┘
+                                        │
+                     ┌──────────────────▼──────────────────────────┐
+                     │     Analytics Service (ClickHouse/BigQuery)  │
+                     │  (processa click_count em batch, não inline) │
+                     └─────────────────────────────────────────────┘
+
+FLUXO DE LEITURA (99% do tráfego):
+  1. GET /abc123 → CDN verifica cache → se hit, retorna 301 direto
+  2. Cache miss → Load Balancer → App Server
+  3. App verifica Redis → se hit, retorna 301
+  4. Redis miss → query no PostgreSQL → popula Redis → retorna 301
+  5. Publica evento {short_code, timestamp, referrer, ip} no Kafka
+  6. Analytics consumer processa em batch
+
+FLUXO DE ESCRITA (~1% do tráfego):
+  1. POST /api/shorten → App Server
+  2. Gera short_code (Key Service ou hash)
+  3. INSERT no PostgreSQL
+  4. SET no Redis (cache warming)
+  5. Retorna 201 com short_url
+```
+
+### Passo 5: Otimizações para Scale
+
+```
+GARGALOS E SOLUÇÕES:
+
+1. Leitura de DB saturada?
+   → Read replicas do PostgreSQL
+   → Cache layer (Redis) com hit rate 95%+
+   → CDN para URLs populares (viral links)
+
+2. Escrita de DB saturada?
+   → Batch writes via buffer
+   → Pre-generated key service (evita contenção de sequence)
+   → Sharding por hash(short_code)
+
+3. Hot keys no cache (URL viral)?
+   → Redis Cluster com réplicas por shard
+   → Local cache (in-process) para top 100 URLs
+   → CDN absorve a maioria dos hits
+
+4. Cleanup de URLs expiradas?
+   → Background job: DELETE WHERE expires_at < NOW()
+   → Executar em off-peak hours
+   → Particionar tabela por mês (DROP PARTITION é O(1))
+
+5. Analytics sem impactar latência?
+   → Nunca INCREMENT click_count inline na request
+   → Publish evento no Kafka → consumer agrega em batch
+   → Eventual consistency é aceitável para analytics
+```
+
+---
+
+## Resumo: Checklist de System Design para Entrevistas
+
+```
+1. REQUISITOS (5 min)
+   □ Funcionais: o que o sistema FAZ?
+   □ Não-funcionais: latência, disponibilidade, consistência
+   □ Escala: quantos usuários, QPS, dados armazenados
+
+2. ESTIMATIVAS (5 min)
+   □ QPS (leitura e escrita separados)
+   □ Storage (5 anos)
+   □ Bandwidth
+
+3. API DESIGN (5 min)
+   □ Endpoints REST ou gRPC
+   □ Request/response schemas
+   □ Autenticação e rate limiting
+
+4. DATA MODEL (5 min)
+   □ SQL vs NoSQL (justifique)
+   □ Schema com índices
+   □ Sharding strategy (se necessário)
+
+5. HIGH-LEVEL DESIGN (10 min)
+   □ Diagrama com todos os componentes
+   □ Fluxo de dados para operações principais
+   □ Onde está o estado? (DB, cache, queue)
+
+6. DEEP DIVES (10 min)
+   □ Gargalos e como resolver
+   □ Falhas e como recuperar
+   □ Trade-offs das decisões tomadas
+```
+
+---
+
+## Design Prático: URL Shortener (bit.ly)
+
+### Requisitos
+- **Funcional**: criar short URL, redirecionar para URL original
+- **Escala**: 100M URLs criadas/mês, 10:1 read/write ratio → 1B redirects/mês
+- **Não-funcional**: latência de redirect abaixo de 100ms, 99.9% availability, URLs expiram em 5 anos
+
+### Estimativas
+```
+Write: 100M/mês ÷ 30 ÷ 86400 ≈ 40 writes/s
+Read:  1B/mês ÷ 30 ÷ 86400 ≈ 400 reads/s (peak: ~2000/s)
+Storage: 100M × 12 meses × 5 anos × 500 bytes ≈ 3 TB
+```
+
+### Geração do Short Code (7 chars: a-z, A-Z, 0-9 = 62^7 ≈ 3.5 trilhões)
+
+**Opção 1: Hash + truncate** — MD5/SHA256 do URL → pegar primeiros 7 chars base62. Problema: colisões.
+
+**Opção 2: Counter-based** — Counter global (Redis INCR ou range-based com Zookeeper) → base62 encode. Sem colisões, previsível.
+
+**Opção 3: Snowflake ID** — Timestamp + worker ID + sequence → base62. Sem coordenação central.
+
+### Arquitetura
+
+```
+                     ┌─────────────┐
+  User ────────────→ │ Load Balancer│
+                     └──────┬──────┘
+                            │
+              ┌─────────────┼─────────────┐
+              │             │             │
+        ┌─────▼────┐ ┌─────▼────┐ ┌─────▼────┐
+        │ API Srv 1│ │ API Srv 2│ │ API Srv 3│
+        └─────┬────┘ └─────┬────┘ └─────┬────┘
+              │             │             │
+              └──────┬──────┴──────┬──────┘
+                     │             │
+               ┌─────▼────┐ ┌─────▼────┐
+               │  Redis   │ │ Postgres │
+               │  Cache   │ │ (source  │
+               │ (hot URLs)│ │ of truth)│
+               └──────────┘ └──────────┘
+
+Write: API → generate code → INSERT → cache
+Read:  API → check cache → if miss: SELECT → cache → 301 redirect
+```
+
+### Deep Dives
+- **Analytics**: não contar inline. Publish click event → Kafka → batch aggregate
+- **Expiration**: TTL no cache + background job DELETE WHERE expires_at < NOW()
+- **Custom aliases**: check uniqueness constraint, reservar nomes ofensivos
+
+---
+
+## Design Prático: Chat System (WhatsApp/Slack)
+
+### Requisitos
+- **Funcional**: 1:1 messages, group chats (até 500 members), online status, message history
+- **Escala**: 50M DAU, média 40 msgs/dia → 2B msgs/dia
+- **Não-funcional**: latência de delivery abaixo de 200ms, ordered messages, message persistence
+
+### Estimativas
+```
+Messages: 2B/dia ÷ 86400 ≈ 23K msgs/s (peak: ~70K/s)
+Storage: 2B × 365 × 100 bytes ≈ 73 TB/ano
+Connections: 50M WebSocket connections simultâneas
+```
+
+### Arquitetura
+
+```
+┌────────┐  WebSocket  ┌─────────────┐     ┌──────────────┐
+│Client A│ ──────────→ │  Chat Server│────→│ Message Queue │
+└────────┘             │  (stateful) │     │ (Kafka)       │
+                       └──────┬──────┘     └──────┬───────┘
+                              │                    │
+┌────────┐  WebSocket  ┌──────▼──────┐     ┌──────▼───────┐
+│Client B│ ←────────── │  Chat Server│←────│ Message Queue │
+└────────┘             │  (stateful) │     │              │
+                       └──────┬──────┘     └──────────────┘
+                              │
+                       ┌──────▼──────┐
+                       │  Cassandra  │ (messages: partition by chat_id)
+                       │  (write-    │ (online status: partition by user_id)
+                       │  optimized) │
+                       └─────────────┘
+```
+
+### Fluxo de Mensagem 1:1
+1. Client A envia msg via WebSocket para Chat Server 1
+2. Chat Server 1 publica no Kafka (topic: chat_ID)
+3. Chat Server 2 (onde Client B está conectado) consome do Kafka
+4. Chat Server 2 envia msg para Client B via WebSocket
+5. Se Client B está offline: Push notification service + store for later delivery
+
+### Decisões-chave
+- **WebSocket**: bidirecional, persistent connection (não HTTP polling)
+- **Cassandra**: write-optimized (LSM-tree), partição por chat_id, clustering key por timestamp
+- **Message ordering**: timestamp + Lamport clock por chat, sequence number per-message
+- **Group messages**: fan-out on write (gravar mensagem uma vez, enviar para N members) vs fan-out on read
+- **Online status**: heartbeat a cada 5s, Redis com TTL para "last seen"
+
+---
+
+## Design Prático: Notification System
+
+### Requisitos
+- **Funcional**: push notifications (iOS/Android), SMS, email. Priority levels. Opt-in/opt-out per channel.
+- **Escala**: 10M notificações/dia, 3 channels
+- **Não-funcional**: no duplicate delivery, latência end-to-end abaixo de 30s, rate limiting per user
+
+### Arquitetura
+
+```
+                          ┌──────────────┐
+  Microservices ────────→ │ Notification │
+  (order, payment, etc)   │   API        │
+                          └──────┬───────┘
+                                 │
+                          ┌──────▼───────┐
+                          │   Kafka      │ ← priority topics (high/medium/low)
+                          │   Topics     │
+                          └──────┬───────┘
+                                 │
+                    ┌────────────┼────────────┐
+                    │            │            │
+             ┌──────▼─────┐ ┌───▼──────┐ ┌──▼───────┐
+             │ Push Worker│ │SMS Worker│ │Email     │
+             │ (APNs/FCM) │ │(Twilio)  │ │Worker    │
+             │            │ │          │ │(SendGrid)│
+             └──────┬─────┘ └────┬─────┘ └────┬─────┘
+                    │            │             │
+             ┌──────▼────────────▼─────────────▼──────┐
+             │          Notification Log (DB)          │
+             │  (idempotency, audit, delivery status)  │
+             └─────────────────────────────────────────┘
+```
+
+### Componentes-chave
+
+**Preference Service**: armazena opt-in/opt-out por user × channel. Consultado antes de enviar.
+
+**Rate Limiter**: max N notificações por user por hora (evita spam). Token bucket per user no Redis.
+
+**Deduplication**: Idempotency key por notificação. Antes de enviar, verificar se já foi processada.
+
+**Template Engine**: notificações são templates com variáveis (como `{user_name}`, `{order_id}`). Suporte a i18n.
+
+**Priority Queue**: Kafka topics por prioridade. Workers consomem high-priority primeiro.
+
+**Retry com DLQ**: se APNs/Twilio/SendGrid falha → retry com exponential backoff → após N retries → Dead Letter Queue para investigação manual.
+
+**Delivery tracking**: status per notification (queued → sent → delivered → read). Webhooks de APNs/FCM para confirm delivery.
+
+---
+
+**Referências essenciais:**
+- "Designing Data-Intensive Applications" — Martin Kleppmann (a bíblia de system design)
+- https://github.com/donnemartin/system-design-primer
+- https://www.youtube.com/@SystemDesignInterview (Alex Xu)
+- "System Design Interview" Vol. 1 e 2 — Alex Xu

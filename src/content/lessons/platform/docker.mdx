@@ -1,0 +1,793 @@
+---
+title: "Docker e Containers"
+description: "Containers vs VMs, internals (namespaces, cgroups), Dockerfile, layers, BuildKit, multi-stage builds, Compose, networking, volumes e segurança"
+track: "platform"
+order: 2
+section: "Containers e Orquestração"
+priority: "high"
+tags: ["docker", "containers", "dockerfile", "compose", "devops"]
+prerequisites: []
+keyTakeaways:
+  - "Containers usam namespaces e cgroups do kernel Linux para isolamento — não são VMs"
+  - "Multi-stage builds reduzem imagem final removendo dependências de build"
+  - "Docker Compose orquestra múltiplos containers com networking e volumes declarativos"
+---
+
+## Containerização vs Máquinas Virtuais
+
+A diferença fundamental é **arquitetural**: VMs virtualizam hardware, containers virtualizam o sistema operacional.
+
+```
+VM (Virtualização de Hardware):
+┌─────────┐ ┌─────────┐ ┌─────────┐
+│   App   │ │   App   │ │   App   │
+│  Libs   │ │  Libs   │ │  Libs   │
+│Guest OS │ │Guest OS │ │Guest OS │  <- Cada VM tem um kernel completo
+└────┬────┘ └────┬────┘ └────┬────┘
+     └───────────┼───────────┘
+          ┌──────┴──────┐
+          │ Hypervisor  │  <- KVM, Xen, VMware ESXi
+          │   Host OS   │
+          │  Hardware   │
+          └─────────────┘
+  Overhead: GBs de RAM, minutos para boot, kernel duplicado
+
+Container (Virtualização de OS):
+┌─────────┐ ┌─────────┐ ┌─────────┐
+│   App   │ │   App   │ │   App   │
+│  Libs   │ │  Libs   │ │  Libs   │
+└────┬────┘ └────┬────┘ └────┬────┘
+     └───────────┼───────────┘
+          ┌──────┴──────┐
+          │Container RT │  <- containerd + runc
+          │  Host OS    │  <- Kernel compartilhado
+          │  Hardware   │
+          └─────────────┘
+  Overhead: MBs de RAM, milissegundos para start, kernel unico
+```
+
+## Primitivas Linux: Namespaces, Cgroups e OverlayFS
+
+Containers sao construidos sobre tres primitivas do kernel Linux. Sem entende-las, Docker eh apenas uma caixa-preta.
+
+### Namespaces -- Isolamento
+
+```bash
+# Namespaces isolam a visao que o processo tem do sistema:
+#   PID  -- processos isolados (PID 1 dentro do container)
+#   NET  -- stack de rede proprio (interfaces, rotas, iptables)
+#   MNT  -- filesystem mount points isolados
+#   UTS  -- hostname e domainname proprios
+#   IPC  -- filas de mensagens e semaforos isolados
+#   USER -- mapeamento de UIDs/GIDs (root no container != root no host)
+#   CGROUP -- visao isolada da hierarquia de cgroups
+
+# Ver namespaces de um container:
+docker inspect --format '{{.State.Pid}}' meu-container
+# Retorna o PID no host, ex: 12345
+ls -la /proc/12345/ns/
+
+# Criar namespace manualmente (o que o container runtime faz):
+sudo unshare --pid --mount --net --fork /bin/bash
+```
+
+### Cgroups -- Limitacao de Recursos
+
+```bash
+# Control Groups controlam CPU, memoria, I/O por grupo de processos
+
+# Definir limites ao rodar um container:
+docker run --memory=512m --cpus=1.5 --memory-swap=1g nginx
+
+# Cgroups v2 (padrao em kernels modernos):
+cat /sys/fs/cgroup/system.slice/docker-<id>.scope/memory.max
+cat /sys/fs/cgroup/system.slice/docker-<id>.scope/cpu.max
+
+# CPU throttling -- CFS da 50ms a cada 100ms com --cpus=0.5
+# Se o processo tenta usar mais: throttled (nao killed)
+# Verificar throttling:
+cat /sys/fs/cgroup/docker/<id>/cpu.stat
+# throttled_periods: 1523
+# throttled_time: 892345678  (nanosegundos)
+# Dica: monitore cpu.stat para detectar throttling excessivo (causa latencia em p99)
+
+# OOM killer -- se exceder --memory: SIGKILL
+docker run --memory 256m --memory-swap 256m app
+# memory-swap = memory significa: zero swap permitido
+```
+
+### OverlayFS -- Sistema de Arquivos em Camadas
+
+```bash
+# Cada instrucao do Dockerfile cria uma camada read-only
+# O container adiciona uma camada read-write no topo
+
+docker image inspect nginx:alpine --format '{{.RootFS.Layers}}'
+docker history nginx:alpine
+
+# Estrutura no disco (overlay2):
+# /var/lib/docker/overlay2/
+# ├── <layer-hash>/
+# │   ├── diff/       conteudo real desta layer
+# │   ├── lower       referencia para layers inferiores
+# │   ├── merged/     ponto de mount unificado (container ativo)
+# │   └── work/       diretorio de trabalho do overlayfs
+# └── l/              links simbolicos curtos
+
+# Ver o mount de um container ativo:
+cat /proc/$(docker inspect -f '{{.State.Pid}}' container_id)/mountinfo | grep overlay
+```
+
+## Arquitetura do Docker Engine
+
+O Docker nao eh um monolito -- eh uma composicao de componentes com responsabilidades distintas.
+
+```
+docker CLI --(REST API)--> dockerd (daemon)
+                              |
+                              |---> containerd (gerenciamento de lifecycle)
+                              |       |
+                              |       |---> containerd-shim-runc-v2
+                              |       |       |
+                              |       |       └---> runc (cria o container)
+                              |       |
+                              |       └---> snapshotter (gerenciamento de layers)
+                              |
+                              └---> BuildKit (construcao de imagens)
+```
+
+**dockerd**: daemon que expoe a API REST (`/var/run/docker.sock`). Orquestra builds, networking, volumes.
+
+**containerd**: runtime de alto nivel (CNCF graduated). Gerencia imagens, snapshots, execucao. Kubernetes o utiliza diretamente, sem dockerd.
+
+**runc**: runtime de baixo nivel (referencia OCI). Cria namespaces, configura cgroups, executa `pivot_root`. Apos criar o container, o runc sai.
+
+**containerd-shim**: processo intermediario que permite reiniciar containerd sem matar containers em execucao.
+
+```bash
+# Ver arvore de processos:
+pstree -p $(pgrep dockerd)
+# dockerd(1234)---containerd(1235)---containerd-shim(5678)---nginx(5680)
+
+# Usar containerd diretamente (sem Docker):
+ctr --namespace moby containers list
+ctr images pull docker.io/library/nginx:alpine
+
+# Alternativas ao runc:
+# - crun: implementacao em C (mais rapido)
+# - gVisor (runsc): sandbox com kernel userspace
+# - Kata Containers: containers em micro-VMs
+
+# Podman -- alternativa ao Docker sem daemon:
+podman run -d --name api -p 3000:3000 minha-api
+# Daemonless, rootless por padrao, compativel com Dockerfile e OCI images
+```
+
+## Dockerfile: Boas Praticas e Multi-stage Builds
+
+### Ordem de Instrucoes e Cache de Layers
+
+```dockerfile
+# INEFICIENTE: qualquer mudanca no codigo invalida TODO o cache
+FROM node:20-alpine
+WORKDIR /app
+COPY . .                    # Layer invalidada a cada commit
+RUN npm ci                  # Reinstala tudo
+RUN npm run build
+
+# OTIMIZADO: dependencias cacheadas separadamente do codigo
+FROM node:20-alpine
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci                  # So roda se package*.json mudar
+COPY tsconfig.json ./
+COPY src/ ./src/
+RUN npm run build           # Roda se codigo mudar, mas npm ci esta cacheado
+```
+
+### Multi-stage Build Completo
+
+```dockerfile
+# syntax=docker/dockerfile:1
+
+# Stage base: compartilhado entre todos os stages
+FROM node:20-alpine AS base
+WORKDIR /app
+COPY package*.json ./
+
+# Stage deps: apenas dependencias de producao
+FROM base AS prod-deps
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci --omit=dev
+
+# Stage build: todas as deps + compilacao
+FROM base AS deps
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci
+
+FROM deps AS build
+COPY tsconfig.json ./
+COPY src/ ./src/
+RUN npm run build
+
+# Stage test: pode ser executado isoladamente
+FROM deps AS test
+COPY tsconfig.json jest.config.ts ./
+COPY src/ ./src/
+COPY tests/ ./tests/
+CMD ["npm", "test"]
+
+# Stage producao: imagem final minima
+FROM node:20-alpine AS production
+RUN apk add --no-cache dumb-init
+# dumb-init: init system que trata sinais (SIGTERM) corretamente
+# Sem ele, node roda como PID 1 e nao repassa sinais
+
+WORKDIR /app
+ENV NODE_ENV=production
+
+RUN addgroup -S app && adduser -S app -G app
+
+COPY --from=prod-deps --chown=app:app /app/node_modules ./node_modules
+COPY --from=build --chown=app:app /app/dist ./dist
+COPY --from=base --chown=app:app /app/package.json ./
+
+USER app
+
+HEALTHCHECK --interval=30s --timeout=5s --start-period=10s --retries=3 \
+  CMD wget -qO- http://localhost:3000/health || exit 1
+
+EXPOSE 3000
+ENTRYPOINT ["dumb-init", "--"]
+CMD ["node", "dist/server.js"]
+```
+
+```bash
+# Build apenas do stage de teste:
+docker build --target test -t app:test .
+docker run --rm app:test
+
+# Build de producao:
+docker build --target production -t app:prod .
+```
+
+### Otimizacao de Imagens e Base Images
+
+```dockerfile
+# COMPARACAO DE BASE IMAGES:
+# node:20          ~1.1GB  (Debian full -- NAO use em producao)
+# node:20-slim     ~200MB  (Debian sem extras)
+# node:20-alpine   ~130MB  (Alpine Linux, musl libc)
+# gcr.io/distroless/nodejs20  ~130MB  (Sem shell, sem package manager)
+# scratch          ~0MB    (Imagem vazia -- para binarios estaticos)
+
+# DISTROLESS -- imagem sem shell, sem package manager:
+FROM gcr.io/distroless/nodejs20-debian12
+COPY --from=builder /app/dist /app/dist
+COPY --from=deps /app/node_modules /app/node_modules
+WORKDIR /app
+CMD ["dist/server.js"]
+# Vantagem: superficie de ataque minima
+# Desvantagem: nao da para fazer debug com docker exec
+
+# SCRATCH -- para binarios compilados estaticamente (Go, Rust):
+FROM golang:1.22-alpine AS builder
+WORKDIR /app
+COPY . .
+RUN CGO_ENABLED=0 GOOS=linux go build -ldflags="-s -w" -o /server
+
+FROM scratch
+COPY --from=builder /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/
+COPY --from=builder /server /server
+ENTRYPOINT ["/server"]
+# Imagem final: ~10-15MB (apenas o binario + certificados TLS)
+```
+
+```bash
+# Dicas gerais:
+# 1. Combinar comandos RUN para reduzir camadas:
+#    RUN apt-get update && apt-get install -y curl && rm -rf /var/lib/apt/lists/*
+# 2. Usar .dockerignore (node_modules, .git, .env, coverage/, dist/)
+# 3. Analisar layers: docker history <imagem>
+# 4. Usar dive para analise visual: dive <imagem>
+```
+
+## BuildKit Avancado
+
+BuildKit eh o builder moderno do Docker (padrao desde Docker 23.0). Paraleliza estagios, tem cache inteligente e suporta builds multi-plataforma.
+
+### Cache Mounts
+
+Cache mounts persistem diretorios entre builds sem que o conteudo entre na imagem final.
+
+```dockerfile
+# syntax=docker/dockerfile:1
+
+# Node.js:
+RUN --mount=type=cache,target=/root/.npm \
+    npm ci --prefer-offline
+
+# Go:
+RUN --mount=type=cache,target=/go/pkg/mod \
+    --mount=type=cache,target=/root/.cache/go-build \
+    go mod download
+
+# Python:
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --user -r requirements.txt
+```
+
+### Secret Mounts
+
+Permitem usar segredos durante o build sem que fiquem persistidos em nenhuma layer.
+
+```dockerfile
+# Usar chave SSH para clonar repositorio privado:
+RUN --mount=type=secret,id=ssh_key,target=/root/.ssh/id_rsa \
+    git clone git@github.com:empresa/lib-privada.git
+
+# Usar .npmrc privado:
+RUN --mount=type=secret,id=npmrc,target=/root/.npmrc npm ci
+```
+
+```bash
+# No build:
+docker build --secret id=ssh_key,src=$HOME/.ssh/id_rsa .
+docker build --secret id=npmrc,src=$HOME/.npmrc .
+```
+
+### Builds Multi-Plataforma
+
+```bash
+# Criar builder com suporte multi-plataforma:
+docker buildx create --name multiarch --driver docker-container --use
+docker buildx inspect --bootstrap
+
+# Build para multiplas arquiteturas:
+docker buildx build \
+  --platform linux/amd64,linux/arm64 \
+  --tag registry.io/app:v1.0.0 \
+  --push .
+
+# Internamente, BuildKit usa QEMU para emulacao ou builders nativos
+# O manifest list resultante aponta para a imagem correta por arch
+
+# Cache de build no CI/CD:
+docker buildx build \
+  --cache-from type=registry,ref=registry.io/app:cache \
+  --cache-to type=registry,ref=registry.io/app:cache,mode=max \
+  -t registry.io/app:v1.0.0 \
+  --push .
+```
+
+## Networking no Docker
+
+### Bridge, Host, None e Overlay
+
+```bash
+# BRIDGE (padrao) -- rede isolada com NAT para o host:
+docker network create --driver bridge minha-rede
+docker run --network minha-rede --name api minha-api
+docker run --network minha-rede --name db postgres:16
+# Containers na mesma bridge se comunicam por nome (DNS interno)
+
+# Docker cria a bridge docker0 e veth pairs para cada container:
+# - veth pair: vethXXXX no host <-> eth0 no container
+# - IP da subnet da bridge (172.17.0.x por padrao)
+# - iptables MASQUERADE para saida, DNAT para entrada
+
+# HOST -- container usa a stack de rede do host:
+docker run --network host nginx
+# Sem isolamento de rede. Linux only.
+
+# OVERLAY -- rede entre multiplos Docker hosts (Swarm):
+docker network create --driver overlay --attachable minha-overlay
+
+# NONE -- sem rede:
+docker run --network none alpine
+
+# MACVLAN -- container recebe IP da rede fisica:
+docker network create -d macvlan \
+  --subnet=192.168.1.0/24 \
+  --gateway=192.168.1.1 \
+  -o parent=eth0 macvlan-net
+```
+
+### DNS Interno e Service Discovery
+
+```bash
+# Em redes user-defined, Docker embute um DNS server em 127.0.0.11
+# Containers se resolvem por nome automaticamente
+
+docker network create app-net
+docker run -d --name db --network app-net postgres:16
+docker run -d --name api --network app-net -e DATABASE_HOST=db minha-api
+
+# Dentro do container:
+cat /etc/resolv.conf
+# nameserver 127.0.0.11
+
+# IMPORTANTE: rede bridge default NAO tem resolucao DNS por nome
+# Sempre use redes user-defined
+
+# DNS aliases para round-robin:
+docker run --network app-net --network-alias db-primary postgres:16
+docker run --network app-net --network-alias db-primary postgres:16
+# Dois containers respondendo pelo mesmo alias = round-robin DNS
+
+# Publicar portas com controle:
+docker run -p 127.0.0.1:3000:3000 api  # Apenas localhost
+docker run -p 3000:3000 api             # Todas as interfaces (0.0.0.0)
+```
+
+## Volumes e Persistencia
+
+```bash
+# 1. NAMED VOLUMES -- gerenciados pelo Docker, ideais para dados persistentes:
+docker volume create pgdata
+docker run -v pgdata:/var/lib/postgresql/data postgres:16
+# Dados persistem entre recriacoes do container
+
+# 2. BIND MOUNTS -- diretorio do host mapeado no container:
+docker run -v $(pwd)/src:/app/src:ro minha-api
+# :ro = read-only. Ideal para desenvolvimento (hot-reload)
+# CUIDADO: permissoes de arquivo podem conflitar (UID host != UID container)
+
+# 3. TMPFS -- armazenamento em memoria (nao persiste):
+docker run --tmpfs /tmp:rw,size=100m,noexec minha-api
+# Ideal para dados sensiveis temporarios. Nunca gravado em disco.
+
+# Backup de volume:
+docker run --rm -v pgdata:/source:ro -v $(pwd):/backup alpine \
+  tar czf /backup/pgdata-$(date +%Y%m%d).tar.gz -C /source .
+
+# Restore:
+docker run --rm -v pgdata:/target -v $(pwd):/backup alpine \
+  tar xzf /backup/pgdata-backup.tar.gz -C /target
+```
+
+## Docker Compose
+
+### Compose v2 e Configuracao Completa
+
+O Compose v2 (reescrita em Go) substituiu a versao original em Python. Principais diferencas:
+
+```
+Compose v1 (Python):              Compose v2 (Go):
+docker-compose (binario separado) docker compose (subcomando do CLI)
+version: campo obrigatorio        version: campo ignorado
+Nao tem profiles                  Profiles para ativacao condicional
+Nao tem watch                     Watch mode para hot reload
+Nao tem include                   Include para composicao modular
+```
+
+### Exemplo Completo de Producao
+
+```yaml
+# compose.yaml (v2 -- sem version key)
+name: minha-aplicacao
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: production
+      args:
+        NODE_VERSION: "20"
+      cache_from:
+        - type=registry,ref=registry.io/app:cache
+    image: registry.io/api:${TAG:-latest}
+    ports:
+      - "3000:3000"
+    environment:
+      DATABASE_URL: postgres://app:secret@db:5432/myapp
+      REDIS_URL: redis://cache:6379
+      NODE_ENV: production
+    env_file:
+      - .env
+    depends_on:
+      db:
+        condition: service_healthy
+      cache:
+        condition: service_started
+      migrations:
+        condition: service_completed_successfully
+    deploy:
+      resources:
+        limits:
+          cpus: "2.0"
+          memory: 512M
+        reservations:
+          cpus: "0.5"
+          memory: 256M
+    restart: unless-stopped
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO- http://localhost:3000/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    cap_add:
+      - NET_BIND_SERVICE
+    read_only: true
+    tmpfs:
+      - /tmp:size=100M
+    networks:
+      - frontend
+      - backend
+
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: myapp
+      POSTGRES_USER: app
+      POSTGRES_PASSWORD: secret
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    ports:
+      - "127.0.0.1:5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U app -d myapp"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    shm_size: 256mb
+    networks:
+      - backend
+
+  cache:
+    image: redis:7-alpine
+    command: redis-server --maxmemory 128mb --maxmemory-policy allkeys-lru
+    volumes:
+      - redis-data:/data
+    ports:
+      - "127.0.0.1:6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - backend
+
+  migrations:
+    build:
+      context: .
+      target: builder
+    command: npx prisma migrate deploy
+    environment:
+      DATABASE_URL: postgres://app:secret@db:5432/myapp
+    depends_on:
+      db:
+        condition: service_healthy
+    profiles:
+      - setup
+
+volumes:
+  pgdata:
+    driver: local
+  redis-data:
+    driver: local
+
+networks:
+  frontend:
+    driver: bridge
+  backend:
+    driver: bridge
+    internal: true    # SEM acesso a internet (isolamento total)
+```
+
+### Profiles, Secrets e Networking
+
+```yaml
+# PROFILES -- servicos condicionais ativados sob demanda:
+services:
+  api:
+    build: .         # Sem profile -> sempre ativo
+  pgadmin:
+    image: dpage/pgadmin4
+    profiles: ["debug"]              # So sobe com --profile debug
+  test-runner:
+    profiles: ["test"]
+    command: npm run test:integration
+```
+
+```bash
+docker compose up -d                           # Apenas servicos core
+docker compose --profile debug up -d           # + ferramentas de debug
+docker compose --profile test run --rm test-runner
+```
+
+```yaml
+# SECRETS -- montados em /run/secrets/<nome> como arquivos:
+services:
+  api:
+    secrets: [db_password, api_key]
+secrets:
+  db_password:
+    file: ./secrets/db_password.txt
+  api_key:
+    environment: "API_KEY"
+
+# NETWORKING COM ISOLAMENTO (ja demonstrado no compose completo acima):
+# Use networks com internal: true para isolar backend da internet
+```
+
+### Watch Mode e Desenvolvimento
+
+```yaml
+services:
+  api:
+    build:
+      context: .
+      target: development
+    develop:
+      watch:
+        - action: sync              # Copia arquivos para o container
+          path: ./src
+          target: /app/src
+        - action: sync+restart      # Reinicia o processo
+          path: ./config
+          target: /app/config
+        - action: rebuild           # Reconstroi a imagem
+          path: package.json
+```
+
+```bash
+docker compose watch
+# Ao salvar um arquivo em ./src: sync -> hot reload
+# Sem necessidade de bind mounts (funciona melhor em macOS/Windows)
+```
+
+### Gestao de Ambientes e Override
+
+```bash
+# compose.override.yaml eh carregado AUTOMATICAMENTE em dev
+# compose.production.yaml eh usado explicitamente:
+docker compose -f compose.yaml -f compose.production.yaml up -d
+
+# Validar configuracao final (merge de arquivos):
+docker compose -f compose.yaml -f compose.production.yaml config
+
+# Comandos essenciais:
+docker compose up -d                      # Iniciar todos os servicos
+docker compose up -d --build              # Rebuild + iniciar
+docker compose logs -f api                # Seguir logs da API
+docker compose exec api sh                # Shell interativo
+docker compose down                       # Parar e remover containers
+docker compose down -v                    # Parar + remover volumes (DADOS!)
+docker compose up -d --scale api=3        # Escalar servico
+docker compose up -d --no-deps --build api  # Atualizar apenas um servico
+```
+
+## Seguranca de Containers
+
+### Principios Fundamentais
+
+```bash
+# 1. NAO RODAR COMO ROOT:
+# No Dockerfile: USER 1001
+# Verificar: docker exec container whoami
+
+# 2. READ-ONLY FILESYSTEM:
+docker run --read-only --tmpfs /tmp nginx
+# Container nao pode escrever exceto em /tmp
+
+# 3. CAPABILITIES -- remover capacidades desnecessarias do kernel:
+docker run --cap-drop=ALL --cap-add=NET_BIND_SERVICE nginx
+# Capabilities perigosas a NUNCA usar em producao:
+# SYS_ADMIN (equivalente a root), SYS_PTRACE (container escape possivel),
+# NET_ADMIN (manipula rede do host), SYS_RAWIO (acesso direto a hardware)
+
+# 4. NO NEW PRIVILEGES:
+docker run --security-opt no-new-privileges nginx
+# Impede escalacao de privilegios dentro do container
+
+# 5. LIMITAR RECURSOS (prevenir DoS):
+docker run --memory=512m --cpus=1.0 --pids-limit=100 api
+# --pids-limit: previne fork bombs
+```
+
+### Seccomp, AppArmor e User Namespaces
+
+```bash
+# SECCOMP -- filtrar syscalls no nivel do kernel:
+docker run --security-opt seccomp=custom-seccomp.json minha-app
+# Perfil padrao do Docker ja bloqueia ~44 syscalls perigosas
+
+# APPARMOR:
+docker run --security-opt apparmor=docker-default nginx
+
+# USER NAMESPACES (remapeamento de UIDs):
+# /etc/docker/daemon.json:
+# { "userns-remap": "default" }
+# Root (UID 0) no container -> UID 100000 no host
+# Se o container escapar, o processo eh um UID sem privilegios
+
+# Rootless containers:
+dockerd-rootless-setuptool.sh install
+# Usa user namespaces para mapear UID 0 para UID nao-root
+```
+
+### Scanning e Assinatura de Imagens
+
+```bash
+# Scanning de vulnerabilidades:
+docker scout cves minha-imagem:latest
+trivy image minha-imagem:latest
+# Integrar no CI/CD para bloquear imagens com CVEs criticas
+
+# Docker Content Trust (assinatura de imagens):
+export DOCKER_CONTENT_TRUST=1
+docker trust sign registry.io/app:v1.0.0
+docker trust inspect registry.io/app:v1.0.0
+# Garante que a imagem nao foi modificada apos o push
+```
+
+## Debugging em Producao
+
+```bash
+# nsenter -- entrar nos namespaces quando o container nao tem shell:
+PID=$(docker inspect -f '{{.State.Pid}}' container_name)
+nsenter -t $PID -n ss -tlnp       # Portas em escuta
+nsenter -t $PID -m ls /app/        # Arquivos no mount namespace
+
+# Ephemeral debug container (Docker 24+):
+docker debug container_name
+
+# Monitorar recursos:
+docker stats --format "table {{.Name}}\t{{.CPUPerc}}\t{{.MemUsage}}\t{{.NetIO}}"
+```
+
+## Checklist de Producao
+
+```
+Imagem:
+- [ ] Multi-stage build, imagem final < 100MB
+- [ ] Base image sem vulnerabilidades (trivy scan)
+- [ ] Sem segredos em qualquer layer (docker history --no-trunc)
+- [ ] Tag especifica, nunca :latest em producao
+
+Runtime:
+- [ ] Usuario nao-root (USER directive)
+- [ ] Read-only root filesystem (--read-only)
+- [ ] Capabilities minimas (--cap-drop ALL + add especifico)
+- [ ] Limites de recursos (--memory, --cpus, --pids-limit)
+- [ ] Healthcheck configurado
+
+Rede:
+- [ ] Redes user-defined (nunca bridge default)
+- [ ] Sem exposicao desnecessaria de portas
+- [ ] TLS para comunicacao entre servicos
+
+Storage:
+- [ ] Volumes para dados persistentes
+- [ ] tmpfs para dados temporarios/sensiveis
+- [ ] Log driver configurado
+
+Compose:
+- [ ] depends_on com condition: service_healthy
+- [ ] Secrets para credenciais (nunca env vars)
+- [ ] Rede backend com internal: true
+```
+
+## Referencias e Fontes
+
+- **Docker Official Documentation**: [https://docs.docker.com/](https://docs.docker.com/) -- referencia completa para Dockerfile, Compose, networking, volumes e BuildKit
+- **Docker Deep Dive** por Nigel Poulton -- livro referencia para entender a arquitetura interna do Docker, desde namespaces/cgroups ate container runtimes e orquestracao
+- **Compose Specification**: [https://compose-spec.io/](https://compose-spec.io/) -- especificacao aberta mantida em compose-spec/compose-spec
+- **OCI Runtime Specification**: [https://opencontainers.org/](https://opencontainers.org/) -- padrao aberto para container runtimes (runc, crun, kata)
+- **Docker Security Best Practices**: [https://docs.docker.com/engine/security/](https://docs.docker.com/engine/security/) -- guia oficial de seguranca incluindo seccomp, AppArmor e rootless mode
+- **Dive** (analise de layers): [https://github.com/wagoodman/dive](https://github.com/wagoodman/dive)
+- **Trivy** (scanning de vulnerabilidades): [https://github.com/aquasecurity/trivy](https://github.com/aquasecurity/trivy)

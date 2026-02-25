@@ -1,0 +1,1365 @@
+---
+title: "PostgreSQL Internals"
+description: "Arquitetura do PostgreSQL, page layout, MVCC (xmin/xmax), vacuum e autovacuum, TOAST, partitioning, extensions (pgvector, pg_stat_statements), performance tuning e upgrade strategies"
+track: "backend"
+order: 26
+section: "Banco de Dados"
+priority: "high"
+tags: ["postgresql", "MVCC", "vacuum", "pgvector", "partitioning", "performance-tuning", "TOAST", "pg_stat_statements"]
+prerequisites: ["sql-modelagem", "transacoes", "indices-e-performance"]
+keyTakeaways:
+  - "PostgreSQL usa arquitetura process-per-connection: cada cliente recebe um backend process dedicado que compartilha shared memory (shared_buffers, WAL buffers, lock table)"
+  - "O MVCC do PostgreSQL marca tuples com xmin/xmax em vez de usar undo logs — isso simplifica crash recovery mas cria dead tuples que precisam de vacuum"
+  - "pgvector transforma PostgreSQL em vector database com suporte a IVFFlat (rápido para build) e HNSW (rápido para query) — eliminando a necessidade de Pinecone/Weaviate para muitos use cases"
+  - "Performance tuning efetivo começa com pg_stat_statements para encontrar queries lentas, EXPLAIN ANALYZE para entender o plano, e ajuste de shared_buffers/work_mem baseado em workload"
+---
+
+## PostgreSQL Internals — O Que Acontece Debaixo do Capô
+
+PostgreSQL não é apenas "mais um banco relacional". É um sistema de storage com mais de 30 anos de engenharia
+que implementa MVCC de uma forma fundamentalmente diferente do MySQL/InnoDB, gerencia memória compartilhada
+entre processos, e oferece um ecossistema de extensões que o transforma em vector database, time-series store
+ou geospatial engine. Entender seus internals é o que separa quem configura `shared_buffers = 256MB` copiando
+do Stack Overflow de quem sabe **por que** aquele valor faz sentido para o workload específico.
+
+---
+
+## 1. Arquitetura do PostgreSQL
+
+### Postmaster — O Processo Principal
+
+Quando você inicia o PostgreSQL, o primeiro processo que sobe é o **postmaster**. Ele é responsável por:
+
+1. Escutar conexões TCP na porta configurada (default 5432)
+2. Autenticar clientes (pg_hba.conf)
+3. Fazer `fork()` de um **backend process** dedicado para cada conexão aceita
+4. Supervisionar todos os processos filhos e reiniciá-los em caso de crash
+
+O postmaster **nunca** executa queries. Ele é exclusivamente um gerenciador de processos e conexões.
+
+### Backend Processes — Um Por Conexão
+
+Cada conexão de cliente recebe um processo dedicado (não uma thread — PostgreSQL usa o modelo
+**process-per-connection**). Esse backend process:
+
+- Faz parsing da query SQL
+- Gera o query plan via optimizer
+- Executa o plano acessando shared memory e disco
+- Retorna resultados ao cliente
+
+Isso significa que 200 conexões = 200 processos no sistema operacional. Cada processo consome
+memória própria (work_mem, temp_buffers) **além** da shared memory. Por isso `max_connections = 500`
+é quase sempre um erro — você quer um **connection pooler** (PgBouncer) na frente.
+
+### Background Workers
+
+PostgreSQL roda vários processos auxiliares permanentemente:
+
+| Processo | Função |
+|---|---|
+| **autovacuum launcher** | Dispara workers de vacuum conforme thresholds |
+| **autovacuum workers** | Executam VACUUM em tabelas individuais |
+| **WAL writer** | Flush do WAL buffer para disco periodicamente |
+| **checkpointer** | Escreve dirty pages de shared_buffers para disco |
+| **background writer** | Escreve dirty pages gradualmente (reduz picos no checkpoint) |
+| **stats collector** | Coleta estatísticas de tabelas, índices, queries |
+| **logical replication launcher** | Gerencia workers de replicação lógica |
+| **WAL sender / receiver** | Streaming replication para replicas |
+
+### Shared Memory — O Coração do PostgreSQL
+
+Todos os backend processes compartilham uma região de memória gerenciada pelo PostgreSQL:
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                        SHARED MEMORY                                │
+│                                                                     │
+│  ┌───────────────────────────────┐  ┌────────────────────────────┐  │
+│  │       shared_buffers          │  │       WAL Buffers          │  │
+│  │   (cache de páginas 8KB)      │  │   (buffer do Write-Ahead   │  │
+│  │                               │  │    Log antes do flush)     │  │
+│  │   Páginas de dados e índices  │  │                            │  │
+│  │   lidas do disco ficam aqui   │  │   Default: 16MB            │  │
+│  │                               │  │   (wal_buffers)            │  │
+│  │   Default: 128MB              │  │                            │  │
+│  └───────────────────────────────┘  └────────────────────────────┘  │
+│                                                                     │
+│  ┌───────────────────────────────┐  ┌────────────────────────────┐  │
+│  │     CLOG (Commit Log)         │  │       Lock Table           │  │
+│  │                               │  │                            │  │
+│  │   Status de cada transaction: │  │   Tabela de locks ativos:  │  │
+│  │   IN_PROGRESS | COMMITTED     │  │   row locks, table locks,  │  │
+│  │   ABORTED | SUB_COMMITTED     │  │   advisory locks           │  │
+│  │                               │  │                            │  │
+│  │   Armazenado em pg_xact/      │  │   Deadlock detection       │  │
+│  └───────────────────────────────┘  └────────────────────────────┘  │
+│                                                                     │
+│  ┌───────────────────────────────┐  ┌────────────────────────────┐  │
+│  │    Proc Array                 │  │   SUBTRANS / MULTIXACT     │  │
+│  │                               │  │                            │  │
+│  │   Array de todas as           │  │   Mapeamento de            │  │
+│  │   transações ativas           │  │   sub-transactions e       │  │
+│  │   (usado por snapshots MVCC)  │  │   multi-transaction IDs    │  │
+│  └───────────────────────────────┘  └────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### Arquitetura Completa — Diagrama
+
+```
+                          Clientes (app, psql, pgAdmin)
+                            │     │     │     │
+                            ▼     ▼     ▼     ▼
+                     ┌──────────────────────────────┐
+                     │      POSTMASTER (pid 1)       │
+                     │   Escuta porta 5432           │
+                     │   fork() por conexão          │
+                     └──────┬───┬───┬───┬───────────┘
+                            │   │   │   │
+                  ┌─────────┘   │   │   └─────────┐
+                  ▼             ▼   ▼             ▼
+            ┌──────────┐ ┌──────────┐ ┌──────────┐ ┌──────────┐
+            │ Backend 1│ │ Backend 2│ │ Backend 3│ │ Backend N│
+            │ (conn 1) │ │ (conn 2) │ │ (conn 3) │ │ (conn N) │
+            └────┬─────┘ └────┬─────┘ └────┬─────┘ └────┬─────┘
+                 │             │             │             │
+                 ▼             ▼             ▼             ▼
+          ┌──────────────────────────────────────────────────────┐
+          │               SHARED MEMORY                          │
+          │  shared_buffers │ WAL buf │ CLOG │ Lock │ Proc Array │
+          └──────────────────────┬───────────────────────────────┘
+                                 │
+                 ┌───────────────┼───────────────┐
+                 ▼               ▼               ▼
+          ┌────────────┐ ┌────────────┐ ┌──────────────┐
+          │  Data Files │ │  WAL Files │ │  pg_xact/    │
+          │  base/      │ │  pg_wal/   │ │  (CLOG disk) │
+          └────────────┘ └────────────┘ └──────────────┘
+
+     Background Workers (sempre rodando):
+     ┌──────────────┬──────────────┬───────────────┬──────────────┐
+     │  autovacuum   │  WAL writer  │  checkpointer │  bg writer   │
+     │  launcher     │              │               │              │
+     └──────────────┴──────────────┴───────────────┴──────────────┘
+```
+
+---
+
+## 2. Page Layout e Tuple Structure
+
+### A Página de 8KB — Unidade Fundamental de I/O
+
+PostgreSQL lê e escreve dados em **pages** (blocos) de 8KB. Uma tabela é uma sequência de pages no disco.
+Cada page tem uma estrutura interna fixa:
+
+```
+┌─────────────────────────────────────────────────────────┐
+│                    PAGE HEADER (24 bytes)                │
+│  pd_lsn │ pd_checksum │ pd_lower │ pd_upper │ pd_special│
+├─────────────────────────────────────────────────────────┤
+│  Item Pointer 1 (4 bytes) → offset para Tuple 1        │
+│  Item Pointer 2 (4 bytes) → offset para Tuple 2        │
+│  Item Pointer 3 (4 bytes) → offset para Tuple 3        │
+│  ...                                                    │
+│  Item Pointer N (4 bytes) → offset para Tuple N         │
+├─────────────────────────────────────────────────────────┤
+│                                                         │
+│                   FREE SPACE                            │
+│            (espaço disponível para novas tuples)         │
+│                                                         │
+├─────────────────────────────────────────────────────────┤
+│  Tuple N (dados + header)                               │
+│  ...                                                    │
+│  Tuple 3 (dados + header)                               │
+│  Tuple 2 (dados + header)                               │
+│  Tuple 1 (dados + header)                               │
+├─────────────────────────────────────────────────────────┤
+│                 SPECIAL SPACE                            │
+│           (usado por índices, vazio em heap pages)       │
+└─────────────────────────────────────────────────────────┘
+```
+
+Observe que **item pointers crescem para baixo** e **tuples crescem para cima**. O `pd_lower` marca
+o fim dos item pointers e o `pd_upper` marca o início das tuples. O free space fica entre os dois.
+
+Você pode inspecionar uma page diretamente:
+
+```sql
+-- Extension para inspecionar pages
+CREATE EXTENSION pageinspect;
+
+-- Ver o header de uma page (page 0 da tabela users)
+SELECT * FROM page_header(get_raw_page('users', 0));
+--  lsn    | checksum | flags | lower | upper | special | pagesize | version | prune_xid
+-- 0/1A3E8 |        0 |     0 |    48 |  7904 |    8192 |     8192 |       4 |         0
+
+-- Ver os item pointers (line pointers)
+SELECT * FROM heap_page_item_attrs(get_raw_page('users', 0), 'users'::regclass);
+```
+
+### Tuple Header — Os Metadados de Cada Linha
+
+Cada tuple armazenada na page tem um header de ~23 bytes antes dos dados do usuário:
+
+| Campo | Tamanho | Descrição |
+|---|---|---|
+| `t_xmin` | 4 bytes | Transaction ID que inseriu esta tuple |
+| `t_xmax` | 4 bytes | Transaction ID que deletou/atualizou (0 se viva) |
+| `t_cid` | 4 bytes | Command ID dentro da transação |
+| `t_ctid` | 6 bytes | Current Tuple ID: (page, offset) — aponta para si mesma ou para versão mais nova |
+| `t_infomask` | 2 bytes | Flags de status (committed, aborted, has null, etc.) |
+| `t_infomask2` | 2 bytes | Número de atributos + flags adicionais |
+| `t_hoff` | 1 byte | Offset para o início dos dados do usuário |
+
+```sql
+-- Inspecionar tuple headers diretamente
+SELECT t_xmin, t_xmax, t_ctid, t_infomask, t_attrs
+FROM heap_page_items(get_raw_page('users', 0));
+```
+
+### CTID — Current Tuple ID
+
+O CTID é o endereço físico de uma tuple no formato `(page_number, offset_within_page)`.
+
+```sql
+-- Ver o CTID de cada row
+SELECT ctid, id, name FROM users LIMIT 5;
+--  ctid  | id |   name
+-- -------+----+----------
+--  (0,1) |  1 | Alice
+--  (0,2) |  2 | Bob
+--  (0,3) |  3 | Charlie
+--  (1,1) |  4 | Diana       ← page 1, primeiro item
+--  (1,2) |  5 | Eve
+```
+
+O CTID **muda** quando uma tuple é movida (por VACUUM FULL, CLUSTER, ou UPDATE que não seja HOT).
+Nunca use CTID como identificador estável.
+
+### HOT Chains (Heap-Only Tuples)
+
+Quando um UPDATE modifica apenas colunas **não indexadas** e a nova versão cabe na **mesma page**,
+PostgreSQL cria um **HOT update**:
+
+1. A nova tuple é inserida na mesma page (Heap-Only — sem entrada no índice)
+2. O `t_ctid` da tuple antiga aponta para a nova tuple
+3. O item pointer da tuple antiga é marcado como redirect
+
+```
+Antes do UPDATE (coluna 'name' não tem índice):
+
+  Page 0:
+  ┌────────────────────────────────────────────┐
+  │ Item Pointer 1 → Tuple 1 (xmin=100, xmax=0, ctid=(0,1))  │
+  └────────────────────────────────────────────┘
+
+Depois do UPDATE users SET name = 'Alicia' WHERE id = 1:
+
+  Page 0:
+  ┌────────────────────────────────────────────┐
+  │ Item Pointer 1 → Tuple 1 (xmin=100, xmax=200, ctid=(0,2)) │  ← aponta para nova
+  │ Item Pointer 2 → Tuple 2 (xmin=200, xmax=0, ctid=(0,2))   │  ← HOT tuple
+  └────────────────────────────────────────────┘
+```
+
+A vantagem do HOT é **evitar criar novas entradas nos índices**. O índice continua apontando para
+o item pointer 1, que funciona como redirect. Isso reduz drasticamente o bloat em tabelas com muitos
+updates em colunas não indexadas.
+
+```sql
+-- Verificar se HOT updates estão acontecendo
+SELECT n_tup_upd, n_tup_hot_upd,
+       CASE WHEN n_tup_upd > 0
+            THEN round(100.0 * n_tup_hot_upd / n_tup_upd, 1)
+            ELSE 0 END AS hot_update_pct
+FROM pg_stat_user_tables
+WHERE relname = 'users';
+```
+
+Se a porcentagem de HOT updates é baixa, pode ser que você tem índices demais ou que a
+`fillfactor` da tabela está muito alta (default 100%). Reduzir para 90% reserva 10% da page
+para HOT updates:
+
+```sql
+ALTER TABLE users SET (fillfactor = 90);
+```
+
+---
+
+## 3. MVCC Implementation
+
+### O Modelo PostgreSQL: Append-Only com xmin/xmax
+
+Diferente do InnoDB (que usa undo logs para reconstruir versões antigas), o PostgreSQL armazena
+**todas as versões de uma tuple diretamente no heap**. Cada versão carrega:
+
+- **xmin**: o transaction ID que **criou** esta versão
+- **xmax**: o transaction ID que **invalidou** esta versão (0 se ainda é a versão corrente)
+
+```sql
+-- Transação 100: INSERT
+BEGIN;  -- tx_id = 100
+INSERT INTO products (id, name, price) VALUES (1, 'Widget', 29.90);
+COMMIT;
+
+-- Estado no heap:
+-- Tuple: (xmin=100, xmax=0, data=('Widget', 29.90))
+-- Significado: criada pela tx 100, ainda viva
+
+-- Transação 200: UPDATE
+BEGIN;  -- tx_id = 200
+UPDATE products SET price = 34.90 WHERE id = 1;
+COMMIT;
+
+-- Estado no heap (DUAS tuples para o mesmo row):
+-- Tuple v1: (xmin=100, xmax=200, data=('Widget', 29.90))  ← dead tuple
+-- Tuple v2: (xmin=200, xmax=0, data=('Widget', 34.90))    ← live tuple
+
+-- Transação 300: DELETE
+BEGIN;  -- tx_id = 300
+DELETE FROM products WHERE id = 1;
+COMMIT;
+
+-- Estado no heap:
+-- Tuple v1: (xmin=100, xmax=200, data=('Widget', 29.90))  ← dead
+-- Tuple v2: (xmin=200, xmax=300, data=('Widget', 34.90))  ← dead
+```
+
+### Visibility Rules — Quando Uma Tuple é Visível?
+
+Uma tuple com `(xmin, xmax)` é visível para uma transação `T` se:
+
+1. `xmin` está **committed** (verificado no CLOG) **E** `xmin` < snapshot de `T`
+2. `xmax` é 0 **OU** `xmax` está **aborted** **OU** `xmax` >= snapshot de `T` (ainda não tinha commitado quando T tirou o snapshot)
+
+Em pseudocódigo:
+
+```
+function is_visible(tuple, snapshot):
+    -- A tuple precisa ter sido criada por uma transação committed e visível
+    if tuple.xmin NOT IN snapshot.active_transactions
+       AND tuple.xmin < snapshot.xmax
+       AND is_committed(tuple.xmin):  -- consulta CLOG
+
+        -- Se ninguém invalidou, é visível
+        if tuple.xmax == 0:
+            return true
+
+        -- Se quem invalidou ainda não commitou ou é uma transação futura, é visível
+        if tuple.xmax IN snapshot.active_transactions
+           OR tuple.xmax >= snapshot.xmax
+           OR is_aborted(tuple.xmax):
+            return true
+
+    return false
+```
+
+### Transaction Snapshots
+
+Quando uma transação começa (ou a cada statement, dependendo do isolation level), ela tira um **snapshot**
+do estado do sistema:
+
+```
+Snapshot = {
+    xmin: 150,        -- oldest active transaction ID (tudo < 150 já terminou)
+    xmax: 205,        -- next transaction ID a ser atribuído
+    xip_list: [152, 198, 203]  -- transaction IDs atualmente em progresso
+}
+```
+
+- Tuples com `xmin < 150` e committed: definitivamente visíveis (se não deletadas)
+- Tuples com `xmin >= 205`: definitivamente invisíveis (futuras)
+- Tuples com `xmin` em `xip_list`: invisíveis (transação ainda em progresso)
+
+### CLOG (Commit Log)
+
+O CLOG é uma estrutura em shared memory (com backing em disco em `pg_xact/`) que armazena
+o status de cada transaction ID usando 2 bits:
+
+| Status | Bits | Significado |
+|---|---|---|
+| `IN_PROGRESS` | 00 | Transação ainda rodando |
+| `COMMITTED` | 01 | Transação fez commit |
+| `ABORTED` | 10 | Transação fez rollback |
+| `SUB_COMMITTED` | 11 | Sub-transação committed (pai pode não ter) |
+
+Verificar o CLOG a cada tuple lida seria caro. Por isso, após a primeira verificação,
+o PostgreSQL **seta hint bits** no `t_infomask` da tuple (HEAP_XMIN_COMMITTED, HEAP_XMIN_INVALID),
+evitando consultas futuras ao CLOG.
+
+### Visibility Map
+
+A **visibility map** é um bitmap com 1 bit por page. Se o bit está setado, **todas as tuples
+naquela page são visíveis para todas as transações**. Isso permite:
+
+1. **Index-only scans**: se a page está marcada como all-visible, o executor não precisa
+   acessar o heap para verificar visibilidade
+2. **Vacuum otimizado**: o VACUUM pula pages marcadas como all-visible
+
+```sql
+-- Ver o estado da visibility map
+CREATE EXTENSION pg_visibility;
+
+SELECT blkno, all_visible, all_frozen
+FROM pg_visibility('users')
+LIMIT 10;
+```
+
+### Exemplo Detalhado: Duas Transações Concorrentes
+
+```
+Tempo  │  Transação A (tx_id=100)          │  Transação B (tx_id=101)
+───────┼───────────────────────────────────┼───────────────────────────────
+  t1   │  BEGIN (snapshot: xmin=100,       │
+       │    xmax=102, xip=[])              │
+  t2   │  SELECT price FROM products       │  BEGIN (snapshot: xmin=100,
+       │    WHERE id=1;                    │    xmax=102, xip=[100])
+       │  → vê 29.90 (xmin=99, committed) │
+  t3   │  UPDATE products SET price=34.90  │
+       │    WHERE id=1;                    │
+       │  -- cria tuple (xmin=100, xmax=0) │
+       │  -- old tuple: xmax=100           │
+  t4   │  COMMIT;                          │  SELECT price FROM products
+       │                                   │    WHERE id=1;
+       │                                   │  → AINDA vê 29.90!
+       │                                   │  (tx 100 está no xip_list do
+       │                                   │   snapshot de B em READ COMMITTED,
+       │                                   │   MAS em RC novo snapshot é tirado
+       │                                   │   por statement — então vê 34.90)
+  t5   │                                   │  -- Em REPEATABLE READ: vê 29.90
+       │                                   │  -- Em READ COMMITTED: vê 34.90
+       │                                   │  COMMIT;
+```
+
+### Fluxo de UPDATE com MVCC — Diagrama
+
+```
+UPDATE users SET name = 'Alicia' WHERE id = 1;  (tx_id = 200)
+
+  1. Backend localiza a tuple corrente via index scan
+     Index entry → ctid (0,1) → Page 0, Item 1
+
+  2. Verifica se a tuple é visível (visibility check)
+     Tuple: (xmin=100, xmax=0) → xmin committed, xmax=0 → VISÍVEL
+
+  3. Tenta obter row lock (xmax = 200, sem commit ainda)
+     Se outra tx já tem xmax setado e está IN_PROGRESS → WAIT
+
+  4. Cria nova versão da tuple na mesma page (se couber) ou outra page
+     Nova tuple: (xmin=200, xmax=0, data='Alicia')
+
+  5. Marca a tuple antiga:
+     Old tuple: (xmin=100, xmax=200, ctid → nova tuple)
+
+  6. Se HOT é possível (sem indexed columns alteradas, mesma page):
+     - Não cria nova index entry
+     - Old item pointer vira redirect
+
+  7. COMMIT → marca tx 200 como COMMITTED no CLOG
+     - Write WAL record
+     - Hint bits serão setados na próxima leitura
+```
+
+---
+
+## 4. Vacuum e Bloat
+
+### Por Que Dead Tuples Existem
+
+O modelo append-only do MVCC significa que cada UPDATE e DELETE **não remove** a tuple antiga.
+Ela continua ocupando espaço no heap. Após o COMMIT, a tuple antiga é uma **dead tuple** — invisível
+para todas as transações futuras, mas ainda fisicamente presente na page.
+
+Sem limpeza, a tabela cresce indefinidamente. Uma tabela com 1 milhão de rows que sofre 10 milhões
+de updates terá ~11 milhões de tuples no disco (1M live + 10M dead).
+
+### VACUUM — Reciclando Espaço
+
+O comando `VACUUM` percorre a tabela e:
+
+1. Identifica dead tuples (invisíveis para todas as transações ativas)
+2. Marca o espaço delas como **reutilizável** (atualiza o Free Space Map)
+3. Atualiza a visibility map
+4. **Não retorna espaço ao sistema operacional** — o arquivo da tabela mantém o mesmo tamanho
+
+```sql
+-- VACUUM manual em uma tabela
+VACUUM users;
+
+-- VACUUM com estatísticas atualizadas (o mais comum)
+VACUUM ANALYZE users;
+
+-- VACUUM VERBOSE: mostra o que está fazendo
+VACUUM VERBOSE users;
+-- INFO: vacuuming "public.users"
+-- INFO: table "users": found 15000 removable, 50000 nonremovable row versions
+--   in 8123 pages out of 8500 total pages
+-- INFO: table "users": removed 15000 dead tuples in 1200 pages
+```
+
+### VACUUM FULL — A Opção Nuclear
+
+`VACUUM FULL` reescreve a tabela inteira em um novo arquivo, eliminando todo o espaço desperdiçado.
+Mas tem um custo brutal:
+
+- Adquire **ACCESS EXCLUSIVE lock** (nenhuma leitura ou escrita durante a operação)
+- Precisa de espaço em disco equivalente ao tamanho da tabela
+- Reescreve todos os índices
+
+```sql
+-- CUIDADO: bloqueia completamente a tabela
+VACUUM FULL users;  -- NÃO USE em produção sem planejamento
+```
+
+### Autovacuum — O Coletor de Lixo Automático
+
+O **autovacuum** é o processo que roda VACUUM automaticamente. Ele decide quando executar baseado
+em thresholds configuráveis:
+
+```
+Trigger condition:
+  dead_tuples > autovacuum_vacuum_threshold + autovacuum_vacuum_scale_factor × n_live_tup
+
+Default:
+  dead_tuples > 50 + 0.2 × n_live_tup
+
+Exemplo: tabela com 100.000 live tuples
+  Trigger quando dead_tuples > 50 + 0.2 × 100000 = 20.050
+```
+
+Para tabelas grandes (100M+ rows), o default de 20% é excessivo. Uma tabela com 100 milhões
+de rows só seria vacuumed após acumular 20 milhões de dead tuples. Ajuste por tabela:
+
+```sql
+-- Para tabelas grandes e com muitos updates: vacuum com 1% de dead tuples
+ALTER TABLE orders SET (
+    autovacuum_vacuum_scale_factor = 0.01,
+    autovacuum_vacuum_threshold = 1000
+);
+
+-- Para tabelas de log/append-only: vacuum menos frequente
+ALTER TABLE audit_log SET (
+    autovacuum_vacuum_scale_factor = 0.05,
+    autovacuum_vacuum_threshold = 10000
+);
+```
+
+Parâmetros globais do autovacuum:
+
+| Parâmetro | Default | Descrição |
+|---|---|---|
+| `autovacuum_naptime` | 1min | Intervalo entre checagens do launcher |
+| `autovacuum_max_workers` | 3 | Máximo de workers simultâneos |
+| `autovacuum_vacuum_threshold` | 50 | Mínimo de dead tuples para trigger |
+| `autovacuum_vacuum_scale_factor` | 0.2 | Fração de live tuples como threshold |
+| `autovacuum_vacuum_cost_delay` | 2ms | Pausa entre batches de I/O (cost-based) |
+| `autovacuum_vacuum_cost_limit` | -1 | Limite de custo antes da pausa (usa vacuum_cost_limit) |
+
+O **cost-based vacuum delay** é crucial: ele faz o autovacuum pausar periodicamente para não
+sobrecarregar o I/O. Se o autovacuum está "lento demais", aumente o `autovacuum_vacuum_cost_limit`
+ou reduza o `autovacuum_vacuum_cost_delay`:
+
+```sql
+-- Autovacuum mais agressivo globalmente
+ALTER SYSTEM SET autovacuum_vacuum_cost_delay = '0';  -- sem pausa
+ALTER SYSTEM SET autovacuum_vacuum_cost_limit = 2000;  -- mais trabalho por ciclo
+SELECT pg_reload_conf();
+```
+
+### Detectando Bloat
+
+```sql
+-- Instalar a extension pgstattuple
+CREATE EXTENSION pgstattuple;
+
+-- Análise detalhada de bloat em uma tabela
+SELECT
+    table_len,
+    tuple_count,
+    tuple_len,
+    dead_tuple_count,
+    dead_tuple_len,
+    free_space,
+    round(100.0 * dead_tuple_len / NULLIF(table_len, 0), 2) AS dead_pct,
+    round(100.0 * free_space / NULLIF(table_len, 0), 2) AS free_pct
+FROM pgstattuple('users');
+
+-- Se dead_pct + free_pct > 30-40%, você tem bloat significativo
+```
+
+### pg_repack — Rebuild Online
+
+Para resolver bloat sem downtime, use **pg_repack** (extension externa):
+
+```bash
+# Instalar pg_repack
+sudo apt install postgresql-16-repack
+
+# Repack uma tabela (sem lock exclusivo prolongado)
+pg_repack -d mydb -t users
+
+# Repack apenas índices
+pg_repack -d mydb -t users --only-indexes
+```
+
+O pg_repack cria uma cópia da tabela em background, replica mudanças via trigger,
+e no final faz um swap atômico (breve exclusive lock de milissegundos).
+
+### Transaction ID Wraparound — O Terror Silencioso
+
+Transaction IDs no PostgreSQL são inteiros de 32 bits, mas usam aritmética modular:
+apenas 2^31 (~2.1 bilhões) de transações podem existir "no passado" de qualquer transação corrente.
+
+Se uma tabela não recebe VACUUM há tempo suficiente e as transaction IDs "dão a volta",
+tuples que deveriam ser visíveis se tornam "do futuro" e **desaparecem**. Para prevenir isso,
+o PostgreSQL:
+
+1. Emite WARNINGs quando uma tabela se aproxima do limite
+2. Entra em **modo de emergência** (recusa novas transações) se o wraparound é iminente
+3. O autovacuum roda um **anti-wraparound vacuum** forçado quando `age(datfrozenxid)` se aproxima
+   de `autovacuum_freeze_max_age` (default: 200 milhões)
+
+```sql
+-- Verificar quão perto do wraparound estão seus databases
+SELECT datname,
+       age(datfrozenxid) AS xid_age,
+       current_setting('autovacuum_freeze_max_age') AS freeze_max
+FROM pg_database
+ORDER BY xid_age DESC;
+
+-- Verificar tabelas individuais
+SELECT schemaname, relname,
+       age(relfrozenxid) AS xid_age,
+       n_dead_tup,
+       last_autovacuum
+FROM pg_stat_user_tables
+ORDER BY xid_age DESC
+LIMIT 20;
+```
+
+---
+
+## 5. TOAST (The Oversized-Attribute Storage Technique)
+
+### O Problema: Dados Maiores que uma Page
+
+Uma page tem 8KB. Um tuple não pode ultrapassar uma page. Mas um campo `TEXT` ou `JSONB`
+pode facilmente ter centenas de KB. Como o PostgreSQL resolve isso?
+
+**TOAST** — quando um atributo individual excede ~2KB, ele é comprimido e/ou movido para
+uma **TOAST table** separada, deixando apenas um ponteiro no tuple original.
+
+### Estratégias TOAST
+
+Cada coluna tem uma estratégia TOAST configurável:
+
+| Estratégia | Compressão | Out-of-line | Quando usar |
+|---|---|---|---|
+| `PLAIN` | Não | Não | Tipos de tamanho fixo (integer, boolean) |
+| `EXTENDED` | Sim | Sim | Default para TEXT, JSONB — comprime primeiro, move se necessário |
+| `EXTERNAL` | Não | Sim | Dados que não comprimem bem (dados já comprimidos, encrypted) |
+| `MAIN` | Sim | Último recurso | Tenta manter in-line com compressão, move apenas se não couber |
+
+```sql
+-- Ver a estratégia TOAST de cada coluna
+SELECT attname, atttypid::regtype, attstorage
+FROM pg_attribute
+WHERE attrelid = 'users'::regclass AND attnum > 0;
+-- attstorage: p=PLAIN, x=EXTENDED, e=EXTERNAL, m=MAIN
+
+-- Alterar a estratégia TOAST de uma coluna
+ALTER TABLE articles ALTER COLUMN body SET STORAGE EXTERNAL;
+```
+
+### TOAST Table
+
+Cada tabela que tem colunas TOASTable ganha uma **TOAST table** associada no schema `pg_toast`:
+
+```sql
+-- Encontrar a TOAST table de uma tabela
+SELECT relname, reltoastrelid::regclass
+FROM pg_class
+WHERE relname = 'articles';
+-- reltoastrelid: pg_toast.pg_toast_16384
+
+-- Tamanho da TOAST table
+SELECT pg_size_pretty(pg_total_relation_size('pg_toast.pg_toast_16384'));
+```
+
+### Impacto em Performance
+
+Acessar dados em TOAST requer I/O extra: o PostgreSQL lê a tuple principal, encontra o ponteiro TOAST,
+e faz leituras adicionais na TOAST table. Em queries que acessam colunas grandes com frequência:
+
+```sql
+-- RUIM: SELECT * traz todas as colunas TOAST desnecessariamente
+SELECT * FROM articles WHERE category = 'tech';
+
+-- BOM: selecione apenas as colunas que precisa
+SELECT id, title, created_at FROM articles WHERE category = 'tech';
+-- Colunas TOAST (body) não são sequer descomprimidas se não selecionadas
+```
+
+---
+
+## 6. Partitioning
+
+### Declarative Partitioning (PostgreSQL 10+)
+
+Partitioning divide uma tabela lógica em múltiplas tabelas físicas (partitions).
+O PostgreSQL suporta três estratégias:
+
+### RANGE Partitioning — O Mais Comum
+
+```sql
+-- Tabela de eventos particionada por mês
+CREATE TABLE events (
+    id          BIGSERIAL,
+    event_type  TEXT NOT NULL,
+    payload     JSONB,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (id, created_at)  -- partition key DEVE estar na PK
+) PARTITION BY RANGE (created_at);
+
+-- Criar partitions para cada mês
+CREATE TABLE events_2025_01 PARTITION OF events
+    FOR VALUES FROM ('2025-01-01') TO ('2025-02-01');
+
+CREATE TABLE events_2025_02 PARTITION OF events
+    FOR VALUES FROM ('2025-02-01') TO ('2025-03-01');
+
+CREATE TABLE events_2025_03 PARTITION OF events
+    FOR VALUES FROM ('2025-03-01') TO ('2025-04-01');
+
+-- Default partition: captura tudo que não cai em nenhuma partition
+CREATE TABLE events_default PARTITION OF events DEFAULT;
+```
+
+### LIST Partitioning
+
+```sql
+-- Particionar por região
+CREATE TABLE customers (
+    id      SERIAL,
+    name    TEXT NOT NULL,
+    region  TEXT NOT NULL,
+    PRIMARY KEY (id, region)
+) PARTITION BY LIST (region);
+
+CREATE TABLE customers_br PARTITION OF customers FOR VALUES IN ('BR');
+CREATE TABLE customers_us PARTITION OF customers FOR VALUES IN ('US');
+CREATE TABLE customers_eu PARTITION OF customers FOR VALUES IN ('EU', 'UK');
+CREATE TABLE customers_other PARTITION OF customers DEFAULT;
+```
+
+### HASH Partitioning
+
+```sql
+-- Distribuir uniformemente por hash do user_id (4 partitions)
+CREATE TABLE user_actions (
+    id      BIGSERIAL,
+    user_id INT NOT NULL,
+    action  TEXT,
+    PRIMARY KEY (id, user_id)
+) PARTITION BY HASH (user_id);
+
+CREATE TABLE user_actions_0 PARTITION OF user_actions FOR VALUES WITH (MODULUS 4, REMAINDER 0);
+CREATE TABLE user_actions_1 PARTITION OF user_actions FOR VALUES WITH (MODULUS 4, REMAINDER 1);
+CREATE TABLE user_actions_2 PARTITION OF user_actions FOR VALUES WITH (MODULUS 4, REMAINDER 2);
+CREATE TABLE user_actions_3 PARTITION OF user_actions FOR VALUES WITH (MODULUS 4, REMAINDER 3);
+```
+
+### Partition Pruning
+
+O query planner elimina automaticamente partitions que não podem conter dados relevantes:
+
+```sql
+EXPLAIN SELECT * FROM events WHERE created_at BETWEEN '2025-02-01' AND '2025-02-28';
+--  Append
+--    ->  Seq Scan on events_2025_02  ← SOMENTE esta partition é scaneada
+--          Filter: (created_at >= '2025-02-01' AND created_at <= '2025-02-28')
+
+-- Sem partition pruning (ex: cast que impede pruning):
+EXPLAIN SELECT * FROM events WHERE created_at::date = '2025-02-15';
+--  Append
+--    ->  Seq Scan on events_2025_01   ← TODAS as partitions são scaneadas
+--    ->  Seq Scan on events_2025_02
+--    ->  Seq Scan on events_2025_03
+--    ->  Seq Scan on events_default
+```
+
+### Attach/Detach — Manutenção sem Downtime
+
+```sql
+-- Criar a nova partition como tabela independente
+CREATE TABLE events_2025_04 (LIKE events INCLUDING ALL);
+
+-- Adicionar constraint CHECK que valida os dados
+ALTER TABLE events_2025_04
+    ADD CONSTRAINT events_2025_04_check
+    CHECK (created_at >= '2025-04-01' AND created_at < '2025-05-01');
+
+-- Popular com dados se necessário
+-- INSERT INTO events_2025_04 SELECT ... FROM staging;
+
+-- Attach sem validação (a CHECK constraint já garante):
+ALTER TABLE events ATTACH PARTITION events_2025_04
+    FOR VALUES FROM ('2025-04-01') TO ('2025-05-01');
+
+-- Detach uma partition antiga (CONCURRENTLY evita bloqueio):
+ALTER TABLE events DETACH PARTITION events_2024_01 CONCURRENTLY;
+
+-- Agora events_2024_01 é uma tabela independente — pode ser arquivada ou dropada
+DROP TABLE events_2024_01;
+```
+
+### Sub-partitioning
+
+Partitions podem ser particionadas recursivamente. Use com cautela — cada nível multiplica
+o número de tabelas físicas:
+
+```sql
+-- Primeiro nível: por ano
+CREATE TABLE logs (
+    id BIGSERIAL, severity TEXT, message TEXT, created_at TIMESTAMPTZ,
+    PRIMARY KEY (id, created_at, severity)
+) PARTITION BY RANGE (created_at);
+
+-- Segundo nível: por severidade
+CREATE TABLE logs_2025 PARTITION OF logs
+    FOR VALUES FROM ('2025-01-01') TO ('2026-01-01')
+    PARTITION BY LIST (severity);
+
+CREATE TABLE logs_2025_error PARTITION OF logs_2025 FOR VALUES IN ('ERROR', 'FATAL');
+CREATE TABLE logs_2025_warn  PARTITION OF logs_2025 FOR VALUES IN ('WARN');
+CREATE TABLE logs_2025_info  PARTITION OF logs_2025 FOR VALUES IN ('INFO', 'DEBUG');
+```
+
+---
+
+## 7. Extensions Essenciais
+
+### pgvector — PostgreSQL como Vector Database
+
+O **pgvector** transforma o PostgreSQL em um banco de vetores com suporte a Approximate Nearest
+Neighbor (ANN) search — o mesmo tipo de busca que Pinecone, Weaviate e Qdrant oferecem,
+mas dentro do banco que você já opera.
+
+```sql
+-- Instalar a extension
+CREATE EXTENSION vector;
+
+-- Criar tabela com coluna de embeddings (1536 dimensões = OpenAI ada-002)
+CREATE TABLE documents (
+    id          SERIAL PRIMARY KEY,
+    title       TEXT NOT NULL,
+    content     TEXT NOT NULL,
+    embedding   vector(1536)  -- tipo vector com dimensionalidade fixa
+);
+
+-- Inserir um documento com embedding (gerado pela API do OpenAI/Cohere/etc)
+INSERT INTO documents (title, content, embedding)
+VALUES (
+    'PostgreSQL MVCC',
+    'PostgreSQL implementa MVCC usando xmin e xmax...',
+    '[0.021, -0.003, 0.187, ...]'::vector  -- 1536 floats
+);
+```
+
+#### Distance Functions
+
+| Operador | Distância | Uso |
+|---|---|---|
+| `<->` | L2 (Euclidean) | Default, bom para a maioria dos embeddings |
+| `<#>` | Inner product (negativo) | Quando embeddings já são normalizados |
+| `<=>` | Cosine distance | Similar ao inner product mas normaliza automaticamente |
+
+```sql
+-- Busca semântica: 5 documentos mais similares a um embedding de query
+SELECT id, title,
+       embedding <=> $1::vector AS distance  -- cosine distance
+FROM documents
+ORDER BY embedding <=> $1::vector
+LIMIT 5;
+```
+
+#### Índices para Busca Vetorial
+
+Sem índice, a busca é **exact KNN** (compara com todos os vetores). Com milhões de rows, isso é
+proibitivamente lento. pgvector oferece dois tipos de índice ANN:
+
+**IVFFlat (Inverted File Index)**:
+
+```sql
+-- IVFFlat: divide vetores em 'lists' clusters, busca apenas 'probes' clusters
+CREATE INDEX idx_docs_embedding_ivfflat ON documents
+USING ivfflat (embedding vector_cosine_ops)
+WITH (lists = 100);  -- sqrt(n_rows) é uma boa heurística
+
+-- Ajustar probes para trade-off recall vs speed (default: 1)
+SET ivfflat.probes = 10;  -- busca nos 10 clusters mais próximos
+```
+
+- Build rápido (treina com K-means)
+- Query mais lenta que HNSW
+- Recall depende fortemente de `probes`
+
+**HNSW (Hierarchical Navigable Small World)**:
+
+```sql
+-- HNSW: grafo multi-camada de vizinhos
+CREATE INDEX idx_docs_embedding_hnsw ON documents
+USING hnsw (embedding vector_cosine_ops)
+WITH (m = 16, ef_construction = 64);
+
+-- Ajustar ef_search para trade-off recall vs speed (default: 40)
+SET hnsw.ef_search = 100;
+```
+
+- Build lento (constrói grafo camada por camada)
+- Query rápida (navega o grafo)
+- Melhor recall com menos tuning
+- Usa mais memória
+
+#### pgvector vs Banco Vetorial Dedicado
+
+| Cenário | pgvector | Pinecone/Weaviate |
+|---|---|---|
+| < 5M vetores | Suficiente | Overkill |
+| JOINs com dados relacionais | Nativo | Precisa de sync |
+| > 50M vetores, alta QPS | Pode sofrer | Projetado para isso |
+| Equipe já opera PostgreSQL | Zero overhead ops | Novo sistema para operar |
+| Filtering complexo (metadata) | SQL nativo | DSL proprietária |
+
+Para a maioria dos use cases de RAG e semantic search com até alguns milhões de documentos,
+pgvector é a escolha pragmática.
+
+### pg_stat_statements — O Raio-X das Queries
+
+A extension mais importante para performance tuning. Rastreia estatísticas de execução
+de **toda query** que passa pelo PostgreSQL.
+
+```sql
+-- Instalar (requer configuração no postgresql.conf)
+-- shared_preload_libraries = 'pg_stat_statements'
+CREATE EXTENSION pg_stat_statements;
+
+-- Top 10 queries por tempo total acumulado
+SELECT
+    round(total_exec_time::numeric, 2) AS total_time_ms,
+    calls,
+    round(mean_exec_time::numeric, 2) AS mean_time_ms,
+    round(stddev_exec_time::numeric, 2) AS stddev_ms,
+    rows,
+    query
+FROM pg_stat_statements
+ORDER BY total_exec_time DESC
+LIMIT 10;
+
+-- Queries com pior tempo médio (outliers)
+SELECT
+    round(mean_exec_time::numeric, 2) AS mean_ms,
+    calls,
+    query
+FROM pg_stat_statements
+WHERE calls > 100  -- ignorar queries raras
+ORDER BY mean_exec_time DESC
+LIMIT 10;
+
+-- Resetar estatísticas (após deploy, por exemplo)
+SELECT pg_stat_statements_reset();
+```
+
+### Outras Extensions Importantes
+
+**pg_trgm** — busca por similaridade com trigramas:
+
+```sql
+CREATE EXTENSION pg_trgm;
+
+-- Índice GIN para busca por similaridade
+CREATE INDEX idx_products_name_trgm ON products USING gin (name gin_trgm_ops);
+
+-- Busca fuzzy
+SELECT name, similarity(name, 'Postgre') AS sim
+FROM products
+WHERE name % 'Postgre'  -- threshold default: 0.3
+ORDER BY sim DESC;
+
+-- LIKE/ILIKE acelerado pelo índice trgm
+SELECT * FROM products WHERE name ILIKE '%postgres%';
+```
+
+**pg_cron** — agendamento de jobs dentro do PostgreSQL:
+
+```sql
+CREATE EXTENSION pg_cron;
+
+-- Vacuum analyze toda noite às 3AM
+SELECT cron.schedule('nightly-vacuum', '0 3 * * *',
+    $$VACUUM ANALYZE large_table$$);
+
+-- Deletar dados antigos todo domingo
+SELECT cron.schedule('weekly-cleanup', '0 4 * * 0',
+    $$DELETE FROM logs WHERE created_at < now() - interval '90 days'$$);
+
+-- Listar jobs
+SELECT * FROM cron.job;
+
+-- Remover um job
+SELECT cron.unschedule('nightly-vacuum');
+```
+
+**PostGIS** — geospatial: transforma PostgreSQL em banco geoespacial com suporte a geometrias,
+geography, spatial indexes (R-Tree/GiST) e milhares de funções espaciais.
+
+**TimescaleDB** — time-series: hypertables com compressão automática, continuous aggregates
+e retention policies. Ideal para IoT, métricas e observabilidade.
+
+---
+
+## 8. Performance Tuning
+
+### Parâmetros de Memória
+
+Os quatro parâmetros de memória mais impactantes:
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│                     RAM do Servidor (ex: 64GB)               │
+│                                                              │
+│  ┌─────────────────────────────────────┐                     │
+│  │     shared_buffers = 16GB           │  25% da RAM         │
+│  │     (cache de pages do PostgreSQL)  │                     │
+│  └─────────────────────────────────────┘                     │
+│                                                              │
+│  ┌──────────────────────┐  ← per-operation (não per-conn!)   │
+│  │  work_mem = 256MB    │  Memória para sorts e hash joins   │
+│  │  (cuidado: se uma    │  Uma query com 5 sorts usa         │
+│  │   query usa 5 sorts, │  5 × 256MB = 1.28GB               │
+│  │   usa 5 × work_mem)  │                                    │
+│  └──────────────────────┘                                    │
+│                                                              │
+│  ┌─────────────────────────────────────┐                     │
+│  │  maintenance_work_mem = 2GB         │  Para VACUUM,       │
+│  │                                     │  CREATE INDEX,      │
+│  │                                     │  ALTER TABLE        │
+│  └─────────────────────────────────────┘                     │
+│                                                              │
+│  ┌─────────────────────────────────────┐                     │
+│  │  effective_cache_size = 48GB        │  NÃO aloca memória! │
+│  │  (hint para o planner: quanto de    │  Apenas informa o   │
+│  │   cache total está disponível =     │  planner sobre o    │
+│  │   shared_buffers + OS page cache)   │  cache disponível   │
+│  └─────────────────────────────────────┘                     │
+└──────────────────────────────────────────────────────────────┘
+```
+
+```sql
+-- Configurar em postgresql.conf ou via ALTER SYSTEM
+ALTER SYSTEM SET shared_buffers = '16GB';
+ALTER SYSTEM SET work_mem = '256MB';
+ALTER SYSTEM SET maintenance_work_mem = '2GB';
+ALTER SYSTEM SET effective_cache_size = '48GB';
+-- Requer restart para shared_buffers; reload para os demais
+```
+
+**Regras gerais** (ajuste conforme workload):
+
+| Parâmetro | OLTP (web apps) | OLAP (analytics) |
+|---|---|---|
+| `shared_buffers` | 25% RAM | 25% RAM |
+| `work_mem` | 16-64MB | 256MB-1GB |
+| `maintenance_work_mem` | 512MB-2GB | 2-4GB |
+| `effective_cache_size` | 75% RAM | 75% RAM |
+
+### JIT Compilation (PostgreSQL 11+)
+
+O JIT usa LLVM para compilar expressões, tupla deforming e qualificação em código nativo.
+
+```sql
+-- Verificar se JIT está ativo
+SHOW jit;
+
+-- Controlar thresholds
+SET jit_above_cost = 100000;         -- ativa JIT acima deste custo
+SET jit_inline_above_cost = 500000;  -- inline de funções
+SET jit_optimize_above_cost = 500000; -- otimizações agressivas
+```
+
+- **Ajuda**: queries analíticas pesadas com muitas expressões
+- **Não ajuda** (ou atrapalha): queries OLTP simples e rápidas — o custo de compilação JIT
+  pode exceder o tempo da query
+
+### Checkpoint Tuning
+
+Checkpoints escrevem todas as dirty pages de shared_buffers para disco. Se são muito frequentes,
+causam picos de I/O:
+
+```sql
+-- max_wal_size controla quando forçar um checkpoint
+ALTER SYSTEM SET max_wal_size = '4GB';     -- default: 1GB
+ALTER SYSTEM SET min_wal_size = '1GB';
+
+-- Espalhar o checkpoint ao longo do intervalo (0.9 = usa 90% do tempo entre checkpoints)
+ALTER SYSTEM SET checkpoint_completion_target = 0.9;  -- default: 0.9 (já bom)
+
+-- Verificar frequência de checkpoints
+SELECT * FROM pg_stat_bgwriter;
+-- checkpoints_timed: checkpoints agendados (bom)
+-- checkpoints_req: checkpoints forçados por WAL (ruim se muito alto)
+```
+
+### Connection Tuning
+
+```sql
+-- ERRADO: max_connections alto = muitos processos = context switching + memória
+ALTER SYSTEM SET max_connections = 500;  -- NÃO FAÇA ISSO
+
+-- CERTO: max_connections baixo + PgBouncer na frente
+ALTER SYSTEM SET max_connections = 100;
+```
+
+PgBouncer opera como connection pool entre a aplicação e o PostgreSQL:
+
+```ini
+# pgbouncer.ini
+[databases]
+mydb = host=localhost port=5432 dbname=mydb
+
+[pgbouncer]
+listen_port = 6432
+max_client_conn = 1000     # aceita 1000 conexões de clientes
+default_pool_size = 50     # mantém 50 conexões reais com o PostgreSQL
+pool_mode = transaction    # libera conexão ao fim de cada transação
+```
+
+### pg_stat_* Views — Diagnóstico em Tempo Real
+
+```sql
+-- Tabelas com mais sequential scans (candidatas a índices)
+SELECT schemaname, relname,
+       seq_scan, seq_tup_read,
+       idx_scan, idx_tup_fetch,
+       n_live_tup, n_dead_tup,
+       last_vacuum, last_autovacuum
+FROM pg_stat_user_tables
+ORDER BY seq_scan DESC
+LIMIT 10;
+
+-- Índices não utilizados (candidatos a remoção)
+SELECT schemaname, relname, indexrelname,
+       idx_scan, idx_tup_read, idx_tup_fetch,
+       pg_size_pretty(pg_relation_size(indexrelid)) AS index_size
+FROM pg_stat_user_indexes
+WHERE idx_scan = 0
+ORDER BY pg_relation_size(indexrelid) DESC;
+
+-- Queries ativas e locks
+SELECT pid, state, wait_event_type, wait_event,
+       query_start, now() - query_start AS duration,
+       left(query, 100) AS query_preview
+FROM pg_stat_activity
+WHERE state != 'idle'
+  AND backend_type = 'client backend'
+ORDER BY duration DESC;
+
+-- Detectar bloqueios (quem bloqueia quem)
+SELECT
+    blocked.pid AS blocked_pid,
+    blocked.query AS blocked_query,
+    blocking.pid AS blocking_pid,
+    blocking.query AS blocking_query
+FROM pg_stat_activity blocked
+JOIN pg_locks bl ON bl.pid = blocked.pid
+JOIN pg_locks lo ON lo.locktype = bl.locktype
+    AND lo.database IS NOT DISTINCT FROM bl.database
+    AND lo.relation IS NOT DISTINCT FROM bl.relation
+    AND lo.page IS NOT DISTINCT FROM bl.page
+    AND lo.tuple IS NOT DISTINCT FROM bl.tuple
+    AND lo.virtualxid IS NOT DISTINCT FROM bl.virtualxid
+    AND lo.transactionid IS NOT DISTINCT FROM bl.transactionid
+    AND lo.pid != bl.pid
+JOIN pg_stat_activity blocking ON blocking.pid = lo.pid
+WHERE NOT bl.granted;
+```
+
+---
+
+## 9. Upgrade Strategies
+
+### pg_upgrade — In-Place Upgrade
+
+O `pg_upgrade` converte os data files de uma versão major para outra sem dump/restore:
+
+```bash
+# Parar o cluster antigo
+pg_ctlcluster 15 main stop
+
+# Rodar pg_upgrade (modo link para velocidade: usa hard links em vez de copiar)
+/usr/lib/postgresql/16/bin/pg_upgrade \
+    --old-datadir=/var/lib/postgresql/15/main \
+    --new-datadir=/var/lib/postgresql/16/main \
+    --old-bindir=/usr/lib/postgresql/15/bin \
+    --new-bindir=/usr/lib/postgresql/16/bin \
+    --link    # hard links: muito mais rápido, mas não pode reverter
+
+# Após o upgrade: atualizar estatísticas
+/usr/lib/postgresql/16/bin/vacuumdb --all --analyze-in-stages
+```
+
+- `--link` mode: minutos em vez de horas (usa hard links), mas o cluster antigo fica inutilizável
+- `--clone` mode (PostgreSQL 17+): usa reflinks em filesystems que suportam (btrfs, XFS), mantém ambos
+
+### Logical Replication Migration — Zero-Downtime
+
+Para upgrades sem downtime, use logical replication:
+
+```sql
+-- 1. No cluster ANTIGO (PostgreSQL 15): criar publication
+ALTER SYSTEM SET wal_level = 'logical';
+-- Restart necessário
+
+CREATE PUBLICATION full_migration FOR ALL TABLES;
+
+-- 2. No cluster NOVO (PostgreSQL 16): criar subscription
+CREATE SUBSCRIPTION migration_sub
+    CONNECTION 'host=old-server port=5432 dbname=mydb user=replicator'
+    PUBLICATION full_migration;
+
+-- 3. Monitorar o lag da replicação
+SELECT
+    slot_name,
+    confirmed_flush_lsn,
+    pg_current_wal_lsn(),
+    pg_wal_lsn_diff(pg_current_wal_lsn(), confirmed_flush_lsn) AS lag_bytes
+FROM pg_replication_slots;
+
+-- 4. Quando o lag está próximo de zero:
+--    a. Parar writes na aplicação (ou ponto o DNS para maintenance page)
+--    b. Verificar que lag = 0
+--    c. Mudar a conexão da aplicação para o novo cluster
+--    d. Dropar a subscription e publication
+
+-- No novo cluster:
+DROP SUBSCRIPTION migration_sub;
+
+-- No antigo cluster:
+DROP PUBLICATION full_migration;
+```
+
+### pg_dump/pg_restore
+
+Para mudanças mais radicais (ex: migrar entre provedores cloud, mudar encoding, reorganizar schemas):
+
+```bash
+# Dump no formato custom (comprimido, permite restore seletivo)
+pg_dump -Fc -j 4 -d mydb -f mydb.dump
+#  -Fc: formato custom
+#  -j 4: 4 workers paralelos
+
+# Restore no novo cluster
+pg_restore -j 4 -d mydb_new mydb.dump
+#  -j 4: 4 workers paralelos
+
+# Para tabelas específicas:
+pg_dump -Fc -t 'public.users' -t 'public.orders' -d mydb -f partial.dump
+```
+
+### Versioning Policy
+
+PostgreSQL lança uma **major version por ano** (ex: 15 em 2022, 16 em 2023, 17 em 2024) com **5 anos
+de suporte** para cada. Minor releases (ex: 16.1, 16.2) contêm apenas bug fixes e security patches.
+
+Recomendação: **atualize minor versions sempre** (sem risco) e **planeje major upgrades a cada 1-2 anos**.
+
+---
+
+## 10. Exercícios
+
+### Exercício 1: Diagnosticar Dead Tuples e Vacuum
+
+```sql
+-- 1. Crie uma tabela e popule com 100k rows
+CREATE TABLE vacuum_lab (
+    id SERIAL PRIMARY KEY,
+    value TEXT,
+    updated_at TIMESTAMPTZ DEFAULT now()
+);
+INSERT INTO vacuum_lab (value)
+SELECT md5(random()::text) FROM generate_series(1, 100000);
+
+-- 2. Faça um UPDATE massivo e observe dead tuples:
+UPDATE vacuum_lab SET value = md5(random()::text), updated_at = now();
+
+-- Consulte pg_stat_user_tables: quantas dead tuples existem?
+-- O autovacuum já rodou? Se não, rode VACUUM manualmente e compare.
+-- Use pgstattuple para medir o bloat antes e depois do VACUUM.
+```
+
+### Exercício 2: Analisar Visibility com pageinspect
+
+```sql
+-- 1. Crie uma tabela simples e insira 1 row dentro de uma transação:
+BEGIN;
+INSERT INTO vis_lab (data) VALUES ('original');
+-- Antes do COMMIT, em outra sessão, verifique: a row é visível?
+-- Use pageinspect para ver xmin e xmax do tuple.
+COMMIT;
+
+-- 2. Faça um UPDATE e antes do COMMIT, inspecione a page:
+--    Quantas tuples existem? Quais são os valores de xmin/xmax de cada?
+```
+
+### Exercício 3: Partitioning com Pruning
+
+```sql
+-- 1. Crie a tabela particionada 'metrics' por RANGE(created_at) com 12 partitions (uma por mês de 2025)
+-- 2. Insira 1 milhão de rows distribuídas uniformemente
+-- 3. Execute EXPLAIN ANALYZE em queries filtrando por um mês, três meses, e sem filtro
+-- 4. Compare o número de partitions scaneadas e o tempo de execução
+-- 5. Adicione um índice em (metric_name, created_at) e veja como o plano muda
+```
+
+### Exercício 4: pgvector Semantic Search
+
+```sql
+-- 1. Instale pgvector e crie uma tabela 'kb_articles' com coluna vector(384)
+-- 2. Gere embeddings fake com:
+INSERT INTO kb_articles (title, embedding)
+SELECT 'Article ' || i,
+       (SELECT array_agg(random())::vector(384) FROM generate_series(1,384))
+FROM generate_series(1, 10000) AS i;
+
+-- 3. Compare o tempo de busca SEM índice vs COM índice IVFFlat vs HNSW
+-- 4. Varie os parâmetros: lists, probes, m, ef_construction, ef_search
+-- 5. Meça recall comparando resultados ANN com exact KNN (ORDER BY <-> sem índice)
+```
+
+### Exercício 5: Performance Tuning com pg_stat_statements
+
+```sql
+-- 1. Ative pg_stat_statements e rode um workload misto (SELECTs, UPDATEs, INSERTs)
+-- 2. Identifique as top 5 queries por tempo total
+-- 3. Para cada query, rode EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT)
+-- 4. Proponha otimizações (índices, rewrite de query, ajuste de work_mem)
+-- 5. Implemente as otimizações e compare as estatísticas antes/depois
+--    (use pg_stat_statements_reset() entre as medições)
+```
+
+---
+
+## 11. Referências
+
+- **"PostgreSQL 14 Internals"** — Egor Rogov. O livro mais completo sobre os internals do PostgreSQL.
+  Disponível gratuitamente em: https://postgrespro.com/community/books/internals
+- **PostgreSQL Official Documentation** — https://www.postgresql.org/docs/current/
+  Particularmente os capítulos sobre [Storage](https://www.postgresql.org/docs/current/storage.html),
+  [MVCC](https://www.postgresql.org/docs/current/mvcc.html) e
+  [Routine Vacuuming](https://www.postgresql.org/docs/current/routine-vacuuming.html)
+- **pgvector GitHub** — https://github.com/pgvector/pgvector — documentação oficial com benchmarks
+- **The Internals of PostgreSQL** — Hironobu Suzuki — http://www.interdb.jp/pg/
+  Excelente recurso gratuito sobre buffer manager, WAL, query processing e MVCC
+- **pg_stat_statements docs** — https://www.postgresql.org/docs/current/pgstatstatements.html
+- **pgstattuple docs** — https://www.postgresql.org/docs/current/pgstattuple.html
+- **pg_repack** — https://github.com/reorg/pg_repack — rebuild de tabelas sem lock exclusivo

@@ -1,0 +1,1142 @@
+---
+title: "CSS Completo"
+description: "Box model, Flexbox, Grid, especificidade, cascade layers, custom properties, container queries, has() selector e técnicas modernas de layout e estilização"
+track: "frontend"
+order: 3
+section: "Fundamentos Web"
+priority: "high"
+tags: ["css", "box-model", "flexbox", "grid", "especificidade", "cascade-layers", "custom-properties", "container-queries"]
+prerequisites: ["html-semantico"]
+keyTakeaways:
+  - "Box model (content → padding → border → margin) é a base de todo layout CSS"
+  - "Flexbox para layouts 1D (linha ou coluna), Grid para layouts 2D (linhas e colunas)"
+  - "Especificidade segue a hierarquia: inline > #id > .class > element, com !important como override"
+  - "Container Queries permitem componentes responsivos independentes do viewport"
+  - "CSS Custom Properties (variáveis) cascateiam e permitem temas dinâmicos sem JavaScript"
+  - "Cascade Layers (@layer) dão controle explícito sobre a ordem de prioridade"
+---
+
+## Box Model — A Base de Todo Layout CSS
+
+Cada elemento no DOM gera uma caixa retangular composta por quatro camadas. Entender essas
+camadas é fundamental para controlar dimensionamento e espaçamento com precisão.
+
+```
+┌──────────────────────────────────────────────────────────┐
+│                      margin                              │
+│    ┌────────────────────────────────────────────────┐    │
+│    │                   border                       │    │
+│    │    ┌──────────────────────────────────────┐    │    │
+│    │    │              padding                  │    │    │
+│    │    │    ┌────────────────────────────┐     │    │    │
+│    │    │    │          content            │     │    │    │
+│    │    │    │   (width × height aqui)     │     │    │    │
+│    │    │    └────────────────────────────┘     │    │    │
+│    │    └──────────────────────────────────────┘    │    │
+│    └────────────────────────────────────────────────┘    │
+└──────────────────────────────────────────────────────────┘
+
+content  → O conteúdo real do elemento (texto, imagem, filhos)
+padding  → Espaço INTERNO entre o conteúdo e a borda
+border   → Borda visível (pode ter largura, estilo e cor)
+margin   → Espaço EXTERNO entre este elemento e os vizinhos
+```
+
+### box-sizing: content-box vs border-box
+
+A propriedade `box-sizing` define **o que `width` e `height` controlam**. Essa distinção
+é a fonte de incontáveis bugs em layouts CSS.
+
+```css
+/*
+  content-box (padrão do browser):
+  width/height = SOMENTE o conteúdo
+  Padding e border são adicionados POR FORA.
+
+  Conta:
+    width: 200px
+    padding: 20px (esquerda + direita = 40px)
+    border: 2px solid (esquerda + direita = 4px)
+    ────────────────────────────────────────
+    Largura renderizada = 200 + 40 + 4 = 244px  ← surpresa!
+*/
+.content-box-example {
+  box-sizing: content-box;
+  width: 200px;
+  padding: 20px;
+  border: 2px solid #333;
+  /* Largura total renderizada: 244px */
+}
+
+/*
+  border-box:
+  width/height = conteúdo + padding + border INCLUSOS
+  O browser reduz o conteúdo para que tudo caiba na width definida.
+
+  Conta:
+    width: 200px (total fixo)
+    padding: 20px (esquerda + direita = 40px)
+    border: 2px solid (esquerda + direita = 4px)
+    ────────────────────────────────────────
+    Espaço real para conteúdo = 200 - 40 - 4 = 156px
+    Largura renderizada = 200px  ← previsível!
+*/
+.border-box-example {
+  box-sizing: border-box;
+  width: 200px;
+  padding: 20px;
+  border: 2px solid #333;
+  /* Largura total renderizada: 200px */
+}
+```
+
+**Reset universal obrigatório** — todo projeto sério usa isto:
+
+```css
+*, *::before, *::after {
+  box-sizing: border-box;
+}
+```
+
+Sem este reset, componentes de terceiros e pseudo-elementos herdam `content-box`, causando
+inconsistências difíceis de rastrear.
+
+---
+
+## Block vs Inline vs Inline-block
+
+Esses três valores de `display` controlam como o elemento participa no **formatting context**.
+
+```
+┌─ Block (display: block) ─────────────────────────────────┐
+│ • Ocupa 100% da largura do pai por padrão                │
+│ • Sempre começa em nova linha                            │
+│ • Respeita width, height, margin, padding em TODOS lados │
+│ • Ex: div, p, h1-h6, section, article                    │
+└──────────────────────────────────────────────────────────┘
+
+┌─ Inline (display: inline) ──────────────────────────────┐
+│ • Ocupa apenas o espaço do conteúdo                     │
+│ • NÃO respeita width nem height                         │
+│ • Margin/padding vertical NÃO empurram vizinhos         │
+│ • Ex: span, a, strong, em                               │
+└─────────────────────────────────────────────────────────┘
+
+┌─ Inline-block (display: inline-block) ──────────────────┐
+│ • Flui como inline (lado a lado)                        │
+│ • MAS respeita width, height, margin, padding           │
+│ • Útil para botões, badges, chips                       │
+│ • Ex: comportamento de <button>, <input>                │
+└─────────────────────────────────────────────────────────┘
+```
+
+---
+
+## Block Formatting Context (BFC) e Margin Collapsing
+
+### BFC — Região Independente de Layout
+
+Um **BFC** é uma região independente de layout. Elementos dentro de um BFC não afetam
+o layout externo e vice-versa. Criar um BFC resolve diversos problemas clássicos.
+
+```css
+/* Situações que criam um NOVO BFC: */
+.bfc-overflow   { overflow: hidden; }  /* ou auto, scroll */
+.bfc-display    { display: flow-root; } /* forma moderna e semântica */
+.bfc-float      { float: left; }       /* qualquer valor exceto none */
+.bfc-flex       { display: flex; }     /* flex/grid containers */
+.bfc-position   { position: absolute; } /* ou fixed */
+
+/* Problema clássico: pai colapsa quando filhos flutuam */
+.parent {
+  /* Sem BFC, a altura do pai = 0 se todos filhos flutuam */
+}
+.parent-fixed {
+  display: flow-root; /* Cria BFC → pai envolve os filhos flutuantes */
+}
+```
+
+### Margin Collapsing
+
+Margens verticais de elementos **block-level adjacentes** se fundem (colapsam) em uma
+única margem. Esse comportamento **só acontece no eixo vertical** em fluxo normal.
+
+```
+Sem colapso (o que você espera):
+
+  ┌──────────┐
+  │ Bloco A  │
+  └──────────┘
+       ↕ 20px (margin-bottom de A)
+       ↕ 30px (margin-top de B)
+       = 50px total
+  ┌──────────┐
+  │ Bloco B  │
+  └──────────┘
+
+Com colapso (o que realmente acontece):
+
+  ┌──────────┐
+  │ Bloco A  │
+  └──────────┘
+       ↕ 30px (max(20, 30) = 30px)
+  ┌──────────┐
+  │ Bloco B  │
+  └──────────┘
+```
+
+```css
+/*
+  QUANDO ACONTECE:
+  1. Irmãos adjacentes → margin-bottom + margin-top colapsam
+  2. Pai e primeiro filho → margin-top do pai + margin-top do filho
+  3. Pai e último filho  → margin-bottom do pai + margin-bottom do filho
+  4. Elemento vazio      → margin-top + margin-bottom do mesmo elemento
+
+  QUANDO NÃO ACONTECE (maneiras de evitar):
+  • Elementos com float ou position: absolute
+  • Flex items ou Grid items (nunca colapsam!)
+  • Elementos com overflow ≠ visible (criam BFC)
+  • display: flow-root no pai (cria BFC)
+  • Padding ou border entre as margens (quebra adjacência)
+  • Elementos inline-block
+*/
+
+/* Solução 1: padding no pai */
+.parent-fixed-1 {
+  padding-top: 1px; /* Qualquer padding quebra a adjacência */
+}
+
+/* Solução 2: BFC no pai */
+.parent-fixed-2 {
+  display: flow-root; /* BFC impede colapso com filhos */
+}
+
+/* Solução 3: Flex (flex items não colapsam) */
+.parent-fixed-3 {
+  display: flex;
+  flex-direction: column;
+}
+```
+
+---
+
+## Flexbox — O Motor de Layout 1D
+
+Flexbox trabalha em **um eixo por vez**: o eixo principal (main axis) e o eixo cruzado
+(cross axis). Entender essa dualidade é a chave para dominar Flexbox.
+
+```
+flex-direction: row (padrão)
+═══════════════════════════════════════
+Main Axis →  (horizontal)
+Cross Axis ↓ (vertical)
+
+┌─────────────────────────────────────┐
+│ ┌───────┐ ┌───────┐ ┌───────┐      │
+│ │ Item1 │ │ Item2 │ │ Item3 │  ←→  │ ← espaço disponível
+│ └───────┘ └───────┘ └───────┘      │
+└─────────────────────────────────────┘
+
+flex-direction: column
+═══════════════════════════════════════
+Main Axis ↓  (vertical)
+Cross Axis → (horizontal)
+
+┌──────────────────┐
+│ ┌──────────────┐ │
+│ │    Item 1    │ │
+│ └──────────────┘ │
+│ ┌──────────────┐ │
+│ │    Item 2    │ │
+│ └──────────────┘ │
+│        ↕         │
+│   espaço livre   │
+└──────────────────┘
+```
+
+### Propriedades do Flex Container
+
+```css
+.flex-container {
+  display: flex; /* ou inline-flex para container inline */
+
+  /* ═══ Eixo Principal ═══ */
+  flex-direction: row;        /* row | row-reverse | column | column-reverse */
+  flex-wrap: nowrap;          /* nowrap | wrap | wrap-reverse */
+  /* shorthand: flex-flow: row wrap; */
+
+  /* ═══ Alinhamento no Eixo Principal ═══ */
+  justify-content: flex-start;
+  /*
+    flex-start   → |||________
+    flex-end     → ________|||
+    center       → ____|||____
+    space-between→ |_____|_____|
+    space-around → _|___|___|_  (metade nas pontas)
+    space-evenly → __|__|__|__  (espaço igual em tudo)
+  */
+
+  /* ═══ Alinhamento no Eixo Cruzado (linha única) ═══ */
+  align-items: stretch;
+  /*
+    stretch    → items esticam para preencher o container
+    flex-start → items alinhados ao topo
+    flex-end   → items alinhados ao fundo
+    center     → items centralizados verticalmente
+    baseline   → items alinhados pela baseline do texto
+  */
+
+  /* ═══ Alinhamento no Eixo Cruzado (múltiplas linhas) ═══ */
+  align-content: stretch;
+  /* Mesmo valores de justify-content, mas para as LINHAS no cross axis */
+  /* Só funciona com flex-wrap: wrap e múltiplas linhas */
+
+  /* ═══ Espaçamento ═══ */
+  gap: 16px;          /* row-gap e column-gap iguais */
+  gap: 16px 24px;     /* row-gap: 16px, column-gap: 24px */
+}
+```
+
+### Propriedades dos Flex Items — O Algoritmo de Distribuição
+
+Os flex items controlam como o espaço **disponível** (ou **faltante**) é distribuído
+entre eles.
+
+```css
+.flex-item {
+  flex-basis: auto;  /* Tamanho INICIAL antes de crescer/encolher */
+  flex-grow: 0;      /* Proporção de espaço SOBRANDO que o item recebe */
+  flex-shrink: 1;    /* Proporção de espaço FALTANDO que o item cede */
+  align-self: center; /* Override do align-items para um item específico */
+  order: 0;          /* Altera a ordem visual (não a do DOM!) */
+}
+```
+
+### O Algoritmo de Distribuição — Como o Browser Calcula
+
+```
+Passo 1: Determinar o espaço disponível
+─────────────────────────────────────────
+  container_width = 900px
+  sum_flex_basis  = 200 + 100 + 300 = 600px
+  gap_total       = 2 × 16px = 32px
+  available_space = 900 - 600 - 32 = 268px (sobrando!)
+
+Passo 2: Distribuir espaço sobrando via flex-grow
+─────────────────────────────────────────
+  Item A: flex-grow: 2  → recebe 2/4 de 268 = 134px → 200 + 134 = 334px
+  Item B: flex-grow: 1  → recebe 1/4 de 268 =  67px → 100 +  67 = 167px
+  Item C: flex-grow: 1  → recebe 1/4 de 268 =  67px → 300 +  67 = 367px
+
+Passo 3 (se espaço negativo): flex-shrink é PONDERADO pelo flex-basis
+─────────────────────────────────────────
+  shrink_factor_i = flex-shrink_i × flex-basis_i
+  ratio_i = shrink_factor_i / sum(shrink_factors)
+  Items com basis maior encolhem MAIS proporcionalmente.
+```
+
+### flex Shorthand — As Três Formas Essenciais
+
+```css
+/*
+  flex: <grow> <shrink> <basis>
+  ─────────────────────────────────────────────────────
+  flex: 1      →  flex: 1 1 0%    → distribui espaço igualmente
+  flex: auto   →  flex: 1 1 auto  → conteúdo influencia proporção
+  flex: none   →  flex: 0 0 auto  → tamanho fixo natural
+  flex: 0 0 250px → tamanho fixo de 250px
+*/
+
+/* Exemplo: header com logo fixo e nav que cresce */
+.header { display: flex; align-items: center; gap: 16px; }
+.logo   { flex: none; }
+.nav    { flex: 1; }
+.cta    { flex: none; }
+```
+
+### min-width: auto — A Pegadinha Clássica
+
+```css
+/*
+  Flex items têm min-width: auto por padrão (não 0!).
+  Um item NUNCA encolhe menor que seu conteúdo.
+  Sintoma: texto longo causa overflow horizontal.
+*/
+.item-fixed {
+  flex: 1;
+  min-width: 0; /* Permite encolher abaixo do conteúdo */
+}
+
+.item-truncate {
+  flex: 1;
+  min-width: 0;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+```
+
+---
+
+## Padrões Comuns com Flexbox
+
+### Centralização perfeita
+
+```css
+.center-absolute {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  min-height: 100vh;
+}
+
+/* Alternativa com margin auto */
+.center-margin { display: flex; }
+.center-margin > .child {
+  margin: auto; /* margin auto em flex absorve espaço livre */
+}
+```
+
+### Holy Grail Layout
+
+```css
+.holy-grail {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+.holy-grail-body {
+  display: flex;
+  flex: 1;
+}
+.holy-grail-nav   { flex: 0 0 200px; order: -1; }
+.holy-grail-main  { flex: 1; }
+.holy-grail-aside { flex: 0 0 200px; }
+```
+
+### Sticky Footer
+
+```css
+.page {
+  display: flex;
+  flex-direction: column;
+  min-height: 100vh;
+}
+.page-content { flex: 1; }
+```
+
+### Espaçar items com margin auto
+
+```css
+.toolbar { display: flex; align-items: center; gap: 8px; }
+.toolbar-action {
+  margin-left: auto;
+  /* margin auto em flex items "absorve" todo espaço livre */
+}
+```
+
+---
+
+## CSS Grid — O Sistema de Layout 2D
+
+Grid opera em **duas dimensões simultaneamente** — colunas e linhas.
+
+```
+┌─── Grid Container ──────────────────────────────────────┐
+│  column 1      column 2      column 3                    │
+│  ┌───────────┬─────────────┬───────────┐  ← row 1       │
+│  │  cell     │  cell       │  cell     │                 │
+│  │  (1,1)    │  (1,2)      │  (1,3)    │                 │
+│  ├───────────┼─────────────┼───────────┤  ← row 2       │
+│  │  cell     │  cell       │  cell     │                 │
+│  │  (2,1)    │  (2,2)      │  (2,3)    │                 │
+│  └───────────┴─────────────┴───────────┘                 │
+│  ↑ grid lines: 1    2      3          4                  │
+│    (linhas numeram as DIVISÓRIAS, não as colunas)        │
+└──────────────────────────────────────────────────────────┘
+```
+
+### Grid Lines — O Conceito Fundamental
+
+```
+  Grid lines são INVISÍVEIS — são as linhas entre as tracks.
+  Uma grid de 3 colunas tem 4 column lines (1, 2, 3, 4).
+  Linhas negativas contam do final: -1 = última, -2 = penúltima.
+
+  col lines:  1       2       3       4
+              ↓       ↓       ↓       ↓
+              ┌───────┬───────┬───────┐ ← row line 1
+              │       │       │       │
+              ├───────┼───────┼───────┤ ← row line 2
+              │       │       │       │
+              └───────┴───────┴───────┘ ← row line 3
+```
+
+### Propriedades do Grid Container
+
+```css
+.grid-container {
+  display: grid;
+
+  grid-template-columns: 200px 1fr 200px;
+  grid-template-rows: auto 1fr auto;
+  /*
+    fr distribui o espaço RESTANTE após elementos fixos e gaps.
+    Cálculo: container = 1000px, fixo = 400px, 1fr = 600px
+  */
+
+  /* repeat() — Evitar Repetição */
+  grid-template-columns: repeat(3, 1fr);
+
+  /* Espaçamento */
+  gap: 24px;
+}
+```
+
+### A Unidade fr — Frações do Espaço Disponível
+
+```css
+/*
+  fr distribui o espaço RESTANTE após elementos fixos e gaps.
+
+  Exemplo: container de 1200px, gap de 20px
+  grid-template-columns: 200px 2fr 1fr;
+
+  Cálculo:
+    Disponível = 1200 - 200 - 40 = 960px
+    1fr = 960 / 3 = 320px
+    2fr = 640px
+*/
+
+/* minmax garante tamanho mínimo */
+.grid-fr-vs-minmax {
+  grid-template-columns: repeat(3, minmax(200px, 1fr));
+}
+```
+
+### minmax(), auto-fill e auto-fit
+
+```css
+/*
+  auto-fill vs auto-fit — a diferença CRUCIAL
+
+  auto-fill: cria colunas VAZIAS para preencher o espaço
+  auto-fit:  COLAPSA colunas vazias → items esticam
+
+  REGRA PRÁTICA:
+  auto-fill → espaçamento consistente (card grids)
+  auto-fit  → poucos items preencham a largura
+*/
+.grid-auto-fill {
+  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+}
+
+.grid-auto-fit {
+  grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+}
+```
+
+### Posicionamento de Items na Grid
+
+```css
+.item-positioned {
+  grid-column: 1 / 3;     /* Da line 1 até a line 3 (2 colunas) */
+  grid-row: 1 / 2;
+  grid-column: span 2;     /* Ocupa 2 colunas */
+  grid-column: 1 / -1;    /* Full width */
+}
+```
+
+### Named Grid Lines
+
+```css
+.grid-named-lines {
+  grid-template-columns:
+    [sidebar-start] 250px
+    [sidebar-end content-start] 1fr
+    [content-end aside-start] 250px
+    [aside-end];
+}
+
+.sidebar { grid-column: sidebar-start / sidebar-end; }
+.content { grid-column: content-start / content-end; }
+```
+
+### Grid Template Areas — Layout Visual
+
+```css
+.page-layout {
+  display: grid;
+  grid-template-areas:
+    "header  header  header"
+    "sidebar main   aside"
+    "footer  footer  footer";
+  grid-template-columns: 220px 1fr 220px;
+  grid-template-rows: auto 1fr auto;
+  min-height: 100vh;
+}
+
+.header  { grid-area: header; }
+.sidebar { grid-area: sidebar; }
+.main    { grid-area: main; }
+.footer  { grid-area: footer; }
+
+@media (max-width: 768px) {
+  .page-layout {
+    grid-template-areas:
+      "header"
+      "main"
+      "sidebar"
+      "footer";
+    grid-template-columns: 1fr;
+  }
+}
+```
+
+### Grid Implícito vs Explícito
+
+```css
+.grid-implicit {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  grid-template-rows: 100px 100px;
+
+  /* Controlar tamanho das tracks implícitas: */
+  grid-auto-rows: minmax(100px, auto);
+
+  /* grid-auto-flow: dense preenche BURACOS com items menores */
+  grid-auto-flow: row dense;
+  /* CUIDADO: dense ALTERA a ordem visual! */
+}
+```
+
+### Subgrid — Alinhamento de Grids Aninhados
+
+```css
+.card-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  grid-template-rows: auto auto;
+  gap: 24px;
+}
+
+.card {
+  display: grid;
+  grid-row: span 2;
+  grid-template-rows: subgrid; /* HERDA as rows do pai */
+  gap: 8px;
+}
+```
+
+### Alinhamento no Grid — place-items e place-content
+
+```css
+.grid-alignment {
+  display: grid;
+  grid-template-columns: repeat(3, 200px);
+
+  /* Alinhamento dos ITEMS dentro de suas células */
+  place-items: center center; /* align-items / justify-items */
+
+  /* Alinhamento do GRID inteiro dentro do container */
+  place-content: center center;
+}
+
+/* Centralizar perfeitamente com grid */
+.perfect-center {
+  display: grid;
+  place-items: center;
+  min-height: 100vh;
+}
+```
+
+### Padrões Responsivos Sem Media Queries
+
+```css
+/* Cards que se reorganizam automaticamente */
+.responsive-cards {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(300px, 100%), 1fr));
+  gap: 24px;
+  /* min(300px, 100%) resolve o bug em containers pequenos */
+}
+
+/* Sizing fluido com clamp() */
+.fluid-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(clamp(200px, 25vw, 400px), 1fr));
+  gap: clamp(12px, 2vw, 32px);
+}
+```
+
+### Grid vs Flexbox — Quando Usar Cada Um
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    FLEXBOX vs GRID                           │
+├────────────────────────────┬────────────────────────────────┤
+│         FLEXBOX            │           GRID                 │
+├────────────────────────────┼────────────────────────────────┤
+│ Layout 1D (row OU column)  │ Layout 2D (rows E columns)    │
+│ Conteúdo determina layout  │ Layout determina conteúdo     │
+│ Items decidem seu tamanho  │ Container decide o tamanho    │
+├────────────────────────────┼────────────────────────────────┤
+│ USE PARA:                  │ USE PARA:                      │
+│ • Nav bars, toolbars       │ • Page layouts                 │
+│ • Centralização            │ • Card grids uniformes         │
+│ • Distribuição linear      │ • Dashboards                   │
+│ • Componentes internos     │ • Alinhamento 2D               │
+└────────────────────────────┴────────────────────────────────┘
+
+COMBINANDO AMBOS (o mais comum na prática):
+  Grid → estrutura macro da página
+  Flexbox → componentes internos
+```
+
+---
+
+## A Cascade — Como o Browser Resolve Conflitos
+
+Quando múltiplas regras CSS apontam para o mesmo elemento e propriedade, o browser
+segue um algoritmo preciso para decidir qual regra vence. Essa é **a cascade**.
+
+```
+ORDEM DE RESOLUÇÃO DA CASCADE (da mais fraca à mais forte):
+═══════════════════════════════════════════════════════════
+
+  1. ORIGIN & IMPORTANCE (de onde vem a regra)
+     ① User-agent stylesheet       (estilos padrão do browser)
+     ② User stylesheet             (estilos do usuário, ex: extensões)
+     ③ Author stylesheet           (seu CSS)
+     ④ Author !important
+     ⑤ User !important
+     ⑥ User-agent !important
+     ⑦ Transitions
+     ⑧ Animations
+
+     Nota: !important INVERTE a ordem de prioridade!
+
+  2. CASCADE LAYERS (@layer)
+
+  3. SPECIFICITY (peso do seletor)
+
+  4. SOURCE ORDER (ordem no código)
+```
+
+---
+
+## Cálculo de Especificidade — NÃO É Base 10!
+
+A especificidade é uma **tupla de três categorias** (A, B, C). Cada categoria é
+independente — 11 classes **nunca** vencem 1 ID.
+
+```
+Especificidade = (A, B, C)
+
+  A = número de seletores de ID              (#menu, #nav)
+  B = número de classes, atributos e         (.active, [type="text"],
+      pseudo-classes                          :hover, :nth-child(2))
+  C = número de elementos e                  (div, h1, ::before,
+      pseudo-elementos                        ::after, ::placeholder)
+
+  Combinadores NÃO contam:  >, +, ~, espaço, ||
+  Seletor universal NÃO conta:  *
+  :not() e :is() → contam o seletor INTERNO mais específico
+  :where() → SEMPRE especificidade zero
+
+EXEMPLOS:
+  Seletor                            (A, B, C)
+  *                                  (0, 0, 0)
+  h1                                 (0, 0, 1)
+  .nav .link:hover                   (0, 3, 0)
+  #menu a                            (1, 0, 1)
+  #menu .link                        (1, 1, 0)
+  div#menu .link[href]               (1, 2, 1)
+
+  .a.b.c.d.e.f.g.h.i.j.k   (0, 11, 0)
+  #single                   (1,  0, 0)   ← 11 classes PERDEM para 1 ID!
+```
+
+### !important — Ultimo Recurso
+
+```css
+/*
+  Legítimo usar quando:
+  • Override de estilos de terceiros que você não controla
+  • Utility classes (.hidden { display: none !important; })
+  • Estilos de acessibilidade que DEVEM prevalecer
+
+  NUNCA use para "vencer" outro seletor seu — refatore!
+*/
+
+/* Se dois !important conflitam, especificidade NORMAL decide */
+.nav .link { color: blue !important; }   /* (0, 2, 0) */
+#menu a    { color: red !important; }     /* (1, 0, 1) ← vence */
+```
+
+---
+
+## Cascade Layers (@layer) — Controle Explícito de Prioridade
+
+Layers adicionam uma **nova camada** na cascade, entre origin e especificidade.
+
+```css
+/* Declarar ordem — primeira layer tem MENOR prioridade */
+@layer reset, base, components, utilities;
+
+@layer reset {
+  *, *::before, *::after {
+    margin: 0; padding: 0; box-sizing: border-box;
+  }
+}
+
+@layer base {
+  body { font-family: system-ui, sans-serif; line-height: 1.6; }
+  a { color: oklch(55% 0.2 250); }
+}
+
+@layer components {
+  .btn { padding: 8px 16px; border-radius: 4px; }
+  .card { border: 1px solid #e0e0e0; border-radius: 8px; }
+}
+
+@layer utilities {
+  .hidden { display: none; }
+  .sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; }
+}
+
+/*
+  Prioridade: reset < base < components < utilities < unlayered
+
+  !important INVERTE a ordem das layers:
+  Unlayered !important < utilities !important < ... < reset !important
+*/
+```
+
+---
+
+## :where() vs :is() vs :has()
+
+```css
+/* :where() — Especificidade ZERO */
+/* Ideal para resets e defaults fáceis de sobrescrever */
+:where(.nav, .footer, .sidebar) a {
+  color: blue;
+  text-decoration: none;
+}
+
+/* :is() — Especificidade do MAIOR seletor na lista */
+:is(.nav, #menu, footer) a {
+  color: blue; /* Especificidade de: #menu a → (1, 0, 1) */
+}
+
+/* :has() — Seletor Relacional (Parent Selector) */
+.card:has(img) {
+  grid-template-rows: 200px auto;
+}
+
+.card:not(:has(img)) {
+  padding-top: 24px;
+}
+
+.form-group:has(input:focus) label {
+  color: oklch(55% 0.2 250);
+  transform: translateY(-4px);
+}
+
+body:has(.sidebar.open) .main-content {
+  margin-left: 260px;
+}
+
+/* Validação visual */
+.field:has(input:invalid) {
+  border-color: oklch(55% 0.25 25);
+}
+
+/*
+  PERFORMANCE de :has():
+  - Evite :has() com seletores universais: *:has(> .child) é LENTO
+  - Prefira seletores específicos: .parent:has(> .child)
+*/
+```
+
+---
+
+## Custom Properties (Variáveis CSS)
+
+Custom properties participam da cascade e herdam como qualquer propriedade CSS.
+
+```css
+:root {
+  --color-primary: oklch(55% 0.2 250);
+  --color-surface: oklch(98% 0.005 250);
+  --spacing-base: 8px;
+  --spacing-md: calc(var(--spacing-base) * 2);
+  --spacing-lg: calc(var(--spacing-base) * 3);
+  --radius: 4px;
+  --font-sans: system-ui, -apple-system, sans-serif;
+  --shadow-sm: 0 1px 3px oklch(0% 0 0 / 0.12);
+}
+
+/* Herança: filhos herdam custom properties do pai */
+.dark-theme {
+  --color-primary: oklch(75% 0.15 250);
+  --color-surface: oklch(20% 0.01 250);
+}
+
+/* Fallback encadeado */
+.element {
+  color: var(--color-accent, var(--color-primary, blue));
+}
+
+/* Responsividade via multiplicador */
+.responsive-padding {
+  --multiplier: 1;
+  padding: calc(var(--spacing-base) * var(--multiplier));
+}
+@media (min-width: 768px) {
+  .responsive-padding { --multiplier: 2; }
+}
+@media (min-width: 1200px) {
+  .responsive-padding { --multiplier: 3; }
+}
+
+/* @property — tipar custom properties para animação */
+@property --hue {
+  syntax: "<number>";
+  initial-value: 250;
+  inherits: false;
+}
+
+.animated-box {
+  --hue: 250;
+  background: oklch(55% 0.2 var(--hue));
+  transition: --hue 0.3s;
+}
+.animated-box:hover { --hue: 330; }
+```
+
+---
+
+## Container Queries — Responsividade Baseada no Componente
+
+Diferente de media queries (baseadas na **viewport**), container queries respondem
+ao tamanho do **container pai**. Isso permite componentes verdadeiramente modulares.
+
+```css
+/* 1. Definir o containment context */
+.card-wrapper {
+  container-type: inline-size;
+  container-name: card;
+}
+
+/* 2. Estilizar baseado no tamanho do CONTAINER */
+@container card (min-width: 400px) {
+  .card {
+    display: grid;
+    grid-template-columns: 150px 1fr;
+    gap: 16px;
+  }
+}
+
+@container card (min-width: 600px) {
+  .card {
+    grid-template-columns: 200px 1fr auto;
+  }
+}
+
+/*
+  Container query units:
+    cqw → 1% da largura do container
+    cqi → 1% do inline size
+    cqb → 1% do block size
+*/
+.card-title {
+  font-size: clamp(1rem, 3cqi, 1.5rem);
+}
+```
+
+---
+
+## CSS Moderno — Features Essenciais
+
+### Nesting Nativo
+
+```css
+.nav {
+  display: flex;
+  gap: 16px;
+
+  .link {
+    color: var(--color-primary);
+    text-decoration: none;
+
+    &:hover {
+      text-decoration: underline;
+    }
+  }
+
+  &:has(.link:focus-visible) {
+    outline: 2px solid var(--color-primary);
+  }
+}
+```
+
+### color-mix() e oklch()
+
+```css
+:root {
+  --primary: oklch(55% 0.2 250);
+  --primary-hover: color-mix(in oklch, var(--primary), black 20%);
+  --primary-light: color-mix(in oklch, var(--primary), white 40%);
+  --primary-subtle: color-mix(in oklch, var(--primary), transparent 80%);
+}
+```
+
+### @scope — Escopo de Estilos
+
+```css
+@scope (.card) to (.card-footer) {
+  p { margin-bottom: 1rem; }
+  a { color: var(--color-primary); }
+}
+```
+
+### View Transitions
+
+```css
+@view-transition {
+  navigation: auto;
+}
+
+.hero-image {
+  view-transition-name: hero;
+}
+
+::view-transition-old(hero) {
+  animation: fade-out 0.3s ease-out;
+}
+::view-transition-new(hero) {
+  animation: fade-in 0.3s ease-in;
+}
+```
+
+---
+
+## Metodologias — Escalando CSS em Projetos Grandes
+
+### BEM (Block Element Modifier)
+
+```css
+.card { }
+.card__header { }
+.card__title { }
+.card--featured { }
+/* Especificidade: sempre (0, 1, 0) ou (0, 2, 0) — previsível */
+```
+
+### ITCSS + @layer
+
+```css
+/*
+  Settings → Tools → Generic → Elements → Objects → Components → Utilities
+  Funciona perfeitamente com @layer:
+*/
+@layer settings, tools, generic, elements, objects, components, utilities;
+```
+
+### CUBE CSS (Composition, Utility, Block, Exception)
+
+```css
+/* Composition */
+.cluster { display: flex; flex-wrap: wrap; gap: var(--space, 1rem); }
+.stack > * + * { margin-top: var(--space, 1rem); }
+
+/* Utility */
+.text-center { text-align: center; }
+
+/* Block */
+.card { /* estilos visuais */ }
+
+/* Exception */
+.card[data-variant="featured"] { /* variação */ }
+```
+
+### CSS-in-JS vs Utility-first vs Vanilla — Trade-offs
+
+```
+┌──────────────────┬───────────────┬─────────────────┬───────────────┐
+│                  │ CSS-in-JS     │ Utility-first   │ Vanilla CSS   │
+│                  │ (styled, etc) │ (Tailwind)      │ (modules/BEM) │
+├──────────────────┼───────────────┼─────────────────┼───────────────┤
+│ Bundle size      │ Maior (runtime│ Pequeno (purge) │ Depende       │
+│ Runtime cost     │ Alto          │ Zero            │ Zero          │
+│ DX               │ Boa (co-loc)  │ Boa (inline)    │ Boa (separada)│
+│ SSR              │ Complexo      │ Simples         │ Simples       │
+└──────────────────┴───────────────┴─────────────────┴───────────────┘
+
+Tendência: CSS-in-JS com ZERO RUNTIME (Panda CSS, Vanilla Extract, StyleX)
+```
+
+---
+
+## Debugging CSS — DevTools
+
+### Flexbox
+
+```
+1. Inspecione o flex container → veja o badge "flex" no painel Elements
+2. Clique no badge para ativar o OVERLAY
+3. No painel Styles → editor visual de justify-content e align-items
+
+Pitfalls Comuns:
+  • min-width: auto (padrão) impede items de encolher → use min-width: 0
+  • Imagem distorcida → use align-items: flex-start + img { max-width: 100%; height: auto; }
+  • flex-basis SEMPRE vence width no main axis
+  • gap não funciona em Safari < 14.1 → fallback com margin
+```
+
+### Grid
+
+```
+1. Inspecione o grid container → badge "grid" no painel Elements
+2. Clique para ativar overlay com números das lines e nomes das áreas
+3. Painel Layout → seção Grid: toggle overlays por container
+```
+
+---
+
+## Resumo — Prioridade de Resolução Completa
+
+```
+Quando duas regras conflitam, o browser resolve nesta ordem:
+═══════════════════════════════════════════════════════════
+
+  1. ORIGIN + IMPORTANCE
+  2. @scope (proximity)
+  3. @layer (cascade layer)
+  4. SPECIFICITY — (A, B, C) — inline > ID > class > type
+  5. SOURCE ORDER — último declarado vence
+
+DICAS PARA PROJETOS REAIS:
+  • Use @layer para organizar reset < base < components < utilities
+  • Use :where() em resets para especificidade zero
+  • Use custom properties para valores reutilizáveis
+  • Reserve !important para utilities e overrides de terceiros
+  • Use container queries para componentes responsivos
+  • Use nesting nativo em vez de preprocessadores
+  • Use oklch() para cores perceptualmente uniformes
+```
+
+---
+
+## Referencias e Fontes
+
+- **MDN CSS Reference** — referencia completa de todas as propriedades CSS, incluindo Flexbox, Grid, Cascade Layers e Container Queries
+- **CSS Specification (W3C)** — especificacao oficial de CSS Grid, Flexbox, Cascade Layers e Container Queries
+- **"CSS: The Definitive Guide"** (Eric Meyer, Estelle Weyl) — cobertura profunda de especificidade, cascade e layout
+- **web.dev: Learn CSS** — curso interativo do Google sobre CSS moderno
+- **Every Layout** (Andy Bell, Heydon Pickering) — patterns de layout com CSS intrinseco
+- **"You Don't Know JS"** (Kyle Simpson) — serie sobre fundamentos do JavaScript (contexto para CSS-in-JS)
+- **React official documentation** — guia sobre estilos e CSS em componentes React

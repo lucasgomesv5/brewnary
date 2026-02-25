@@ -1,0 +1,834 @@
+---
+title: "Database Internals"
+description: "Como bancos de dados funcionam por dentro: storage engines (B-tree vs LSM-tree), buffer pool, WAL, MVCC, vacuum, query optimizer, index internals, lock manager e replication"
+track: "cs"
+order: 17
+section: "Sistemas"
+priority: "high"
+tags: ["database-internals", "B-tree", "LSM-tree", "MVCC", "WAL", "query-optimizer", "índices", "replicação", "storage-engine"]
+prerequisites: ["trees", "sistemas-operacionais"]
+keyTakeaways:
+  - "B-trees otimizam para leitura com O(log n) seeks em disco; LSM-trees otimizam para escrita com sequential I/O — a escolha do storage engine define o perfil de performance do banco"
+  - "O WAL (Write-Ahead Log) é a base de crash recovery: toda modificação é primeiro escrita sequencialmente no log antes de ser aplicada às data pages"
+  - "MVCC permite leitores e escritores não bloquearem uns aos outros mantendo múltiplas versões de cada row — PostgreSQL usa xmin/xmax para controle de visibilidade"
+  - "O query optimizer transforma SQL declarativo em plano de execução eficiente usando estatísticas de tabela, estimativa de cardinalidade e cost model"
+---
+
+# Database Internals
+
+## 1. Visão Geral: Anatomia de um RDBMS
+
+Quando você executa `SELECT * FROM users WHERE id = 42`, dezenas de subsistemas cooperam para produzir o resultado. Entender esses subsistemas separa quem *usa* banco de dados de quem *entende* banco de dados.
+
+### Arquitetura de alto nível
+
+```
+┌───────────────────────────────────────────────────────────┐
+│                    CLIENT CONNECTIONS                       │
+│  ┌────────┐  ┌────────┐  ┌────────┐                       │
+│  │Client 1│  │Client 2│  │Client N│                       │
+│  └───┬────┘  └───┬────┘  └───┬────┘                       │
+│      └───────────┼───────────┘                             │
+│                  ▼                                          │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │              QUERY PROCESSOR                         │   │
+│  │  ┌────────┐ ┌─────────┐ ┌──────────┐ ┌──────────┐  │   │
+│  │  │ Parser ├→│Rewriter ├→│Optimizer ├→│ Executor │  │   │
+│  │  │(SQL→AST│ │(views,  │ │(cost-    │ │(volcano  │  │   │
+│  │  │)       │ │ rules)  │ │ based)   │ │ model)   │  │   │
+│  │  └────────┘ └─────────┘ └──────────┘ └────┬─────┘  │   │
+│  └────────────────────────────────────────────┼────────┘   │
+│                                               ▼            │
+│  ┌──────────────── SHARED MEMORY ─────────────────────┐   │
+│  │ ┌─────────────┐ ┌──────────┐ ┌──────────────────┐  │   │
+│  │ │ Buffer Pool │ │ WAL Buf  │ │   Lock Table     │  │   │
+│  │ │ (8KB pages) │ │ (ring)   │ │   (hash table)   │  │   │
+│  │ └──────┬──────┘ └────┬─────┘ └──────────────────┘  │   │
+│  └────────┼─────────────┼─────────────────────────────┘   │
+│           ▼             ▼                                  │
+│  ┌─────────────────────────────────────────────────────┐   │
+│  │                STORAGE ENGINE                        │   │
+│  │ ┌──────────┐ ┌───────────┐ ┌─────────────────────┐  │   │
+│  │ │Data Files│ │ WAL Files │ │  Index Files        │  │   │
+│  │ └──────────┘ └───────────┘ └─────────────────────┘  │   │
+│  └─────────────────────┬───────────────────────────────┘   │
+│                        ▼                                   │
+│              ┌──────────────────┐                          │
+│              │   DISK (SSD/HDD) │                          │
+│              └──────────────────┘                          │
+└───────────────────────────────────────────────────────────┘
+```
+
+O pipeline: **Parser** (SQL -> AST) -> **Rewriter** (expande views, aplica rules) -> **Optimizer** (plano de menor custo via estatísticas) -> **Executor** (modelo Volcano: cada nó implementa `Open()`, `Next()`, `Close()`).
+
+| Componente | Tamanho típico | Função |
+|---|---|---|
+| **Buffer Pool** (`shared_buffers`) | 25% da RAM | Cache de páginas de 8 KB lidas do disco |
+| **WAL Buffers** (`wal_buffers`) | ~64 MB | Buffer circular para WAL records antes do flush |
+| **Lock Table** | Dinâmico | Hash table com todos os locks ativos |
+| **CLOG** (Commit Log) | Pequeno | Bitmap de status de transações |
+| **Proc Array** | Proporcional a `max_connections` | Transações ativas (para snapshots MVCC) |
+
+---
+
+## 2. Storage Engines
+
+### 2.1 B-tree (PostgreSQL, MySQL InnoDB)
+
+A B+tree minimiza **seeks em disco** organizando dados em uma árvore onde cada nó é uma **página** (8 KB ou 16 KB).
+
+```
+                ┌──────────────────┐
+                │ [30]  [60]  [90] │   ← internal node (keys + child pointers)
+                └──┬──────┬─────┬──┘
+          ┌────────┘      │     └────────┐
+          ▼               ▼              ▼
+  ┌──────────────┐ ┌─────────────┐ ┌──────────────┐
+  │[10] [20] [25]│ │[35][42][55] │ │[65] [78] [88]│   ← internal nodes
+  └─┬──┬──┬──┬──┘ └─┬──┬──┬──┬─┘ └─┬──┬──┬──┬───┘
+    ▼  ▼  ▼  ▼      ▼  ▼  ▼  ▼      ▼  ▼  ▼  ▼
+  ┌──┬──┬──┬──┐  ┌──┬──┬──┬──┐  ┌──┬──┬──┬──┐
+  │5 │10│20│25├→ │30│35│42│55├→ │60│65│78│88│   ← leaf nodes (dados/TIDs)
+  └──┴──┴──┴──┘  └──┴──┴──┴──┘  └──┴──┴──┴──┘
+       ←── linked list entre leaf nodes ──→
+```
+
+Dados **somente nas folhas**; nós internos contêm apenas chaves e ponteiros. Folhas ligadas em linked list para range scans eficientes.
+
+#### Page layout (PostgreSQL, 8 KB)
+
+```
+┌──────────────────────────── 8 KB page ─────────────────────────────┐
+│ Page Header (24 bytes)                                             │
+│   pd_lsn | pd_checksum | pd_flags | pd_lower | pd_upper           │
+├────────────────────────────────────────────────────────────────────┤
+│ Item Pointers (4 bytes cada) — crescem para baixo                  │
+│   lp1 → offset tuple 1 | lp2 → offset tuple 2 | ...               │
+│                                          pd_lower ↓               │
+├────────────────────────────────────────────────────────────────────┤
+│                          FREE SPACE                                │
+├────────────────────────────────────────────────────────────────────┤
+│ Tuples (crescem para cima)               pd_upper ↑               │
+│   ┌─────────────┐ ┌─────────────┐ ┌─────────────┐                │
+│   │  Tuple N    │ │  Tuple 2    │ │  Tuple 1    │                │
+│   └─────────────┘ └─────────────┘ └─────────────┘                │
+├────────────────────────────────────────────────────────────────────┤
+│ Special Space (B-tree: ponteiros left/right sibling)               │
+└────────────────────────────────────────────────────────────────────┘
+```
+
+Item pointers crescem do topo; tuples crescem de baixo. Quando `pd_lower` encontra `pd_upper`, a página está cheia.
+
+| Operação | Complexidade | Detalhes |
+|---|---|---|
+| **Search** | `O(log_B n)` | B ~500 para 8 KB pages. 1 bilhão de rows: ~3-4 I/Os |
+| **Insert** | `O(log_B n)` amortizado | Page split se página cheia |
+| **Delete** | `O(log_B n)` amortizado | Merge/redistribuição se página < 50% |
+| **Range scan** | `O(log_B n + k)` | k = resultados; segue linked list das folhas |
+
+**Page split**: quando um insert cai em página cheia, a página divide ao meio, a chave mediana sobe para o pai. Pode propagar recursivamente até a raiz.
+
+```
+ANTES (página cheia):               DEPOIS (split):
+┌─────────────────────────┐                 ┌─────┐
+│ [10] [20] [30] [40] [50]│                 │ [30]│  ← mediana sobe
+└─────────────────────────┘                 └──┬──┘
+  inserir 35 aqui                      ┌──────┴──────┐
+                                       ▼             ▼
+                               ┌───────────┐ ┌─────────────────┐
+                               │ [10] [20] │ │[30][35][40][50] │
+                               └───────────┘ └─────────────────┘
+```
+
+```sql
+-- Fill factor: reservar espaço para updates futuros
+CREATE INDEX idx_users_email ON users(email) WITH (fillfactor = 90);
+-- 10% livre por página → menos page splits em tabelas com muitas escritas
+```
+
+### 2.2 LSM-tree (RocksDB, Cassandra, LevelDB)
+
+Inverte o trade-off: sacrifica leitura para maximizar **throughput de escrita** com sequential I/O.
+
+```
+  MEMÓRIA                              DISCO
+┌───────────────────┐     ┌──────────────────────────────────┐
+│ Active Memtable   │     │ Level 0: [SST-1][SST-2][SST-3]  │
+│ (skip list)       │     │          (podem ter overlap)     │
+│       │           │     │          │ compaction             │
+│       ▼           │     │ Level 1: [SST-A][SST-B][SST-C]  │
+│ Immutable Memtable│──→  │          (sem overlap)           │
+│ (aguarda flush)   │flush│          │ compaction             │
+└───────────────────┘     │ Level 2: [SST-X][SST-Y]...(10x) │
+                          └──────────────────────────────────┘
+```
+
+**Write path**: WAL (durabilidade) -> memtable -> quando cheia, flush como SSTable imutável -> compaction merge níveis.
+
+**Read path**: memtable -> immutable memtable -> L0 SSTables (Bloom filter check) -> L1 -> L2+. O **Bloom filter** (~10 bits/key, ~1% falso positivo) evita leituras desnecessárias em disco.
+
+| Estratégia | Comportamento | Trade-off |
+|---|---|---|
+| **Size-tiered** | Merge SSTables de tamanho similar | Melhor write; mais space amplification |
+| **Leveled** | Cada nível 10x maior; sem overlap por nível | Menor space amplification; mais write amplification (10-30x) |
+
+### 2.3 Comparação B-tree vs LSM-tree
+
+| Característica | B-tree | LSM-tree |
+|---|---|---|
+| **Read latency** | Excelente (O(log_B n) seeks) | Pior (múltiplos níveis) |
+| **Write throughput** | Moderado (random I/O) | Excelente (sequential I/O) |
+| **Write amplification** | Baixa (~2-4x) | Alta (~10-30x leveled) |
+| **Predictable latency** | Sim | Não (compaction spikes) |
+| **Use cases** | OLTP (PostgreSQL, MySQL) | Write-heavy (Cassandra, time-series) |
+
+---
+
+## 3. Buffer Pool / Page Cache
+
+O banco gerencia seu próprio cache (não depende apenas do OS page cache) porque precisa de: **eviction policy** inteligente, **pin pages** durante modificação, **dirty page tracking** para checkpoint, e **prefetching** para sequential scans.
+
+### Clock-sweep algorithm (PostgreSQL)
+
+```
+Buffer Pool como anel circular:
+                ┌─── clock hand
+                ▼
+     ┌───┐ ┌───┐ ┌───┐ ┌───┐ ┌───┐ ┌───┐
+     │ 3 │ │ 0 │ │ 2 │ │ 1 │ │ 0 │ │ 5 │  ← usage_count
+     │pg1│ │pg2│ │pg3│ │pg4│ │pg5│ │pg6│
+     └───┘ └───┘ └───┘ └───┘ └───┘ └───┘
+       ▲                         ▲
+       │                         └─ usage_count=0 → victim (evict)
+       └─ usage_count=3 → decrementa para 2, avança
+```
+
+Cada acesso incrementa `usage_count` (max 5). O clock hand avança: se `count > 0`, decrementa e avança; se `count == 0`, evict (flush se dirty). Aproxima LRU sem overhead de lista ligada.
+
+```sql
+-- Monitorar hit ratio (ideal > 99%)
+SELECT round(sum(heap_blks_hit)::numeric /
+  nullif(sum(heap_blks_hit) + sum(heap_blks_read), 0) * 100, 2) AS hit_ratio
+FROM pg_statio_user_tables;
+```
+
+---
+
+## 4. Write-Ahead Log (WAL)
+
+Princípio: **toda modificação é escrita no WAL antes de ser aplicada às data pages**.
+
+```
+COM WAL (seguro):
+1. Modifica tuple na página (em memória)
+2. Gera WAL record descrevendo a mudança
+3. Flush WAL record para disco (fsync) ← garante durabilidade
+4. Retorna "commit" ao cliente
+5. Dirty page escrita em disco DEPOIS (checkpoint) ← assíncrono
+```
+
+### Estrutura de um WAL record
+
+```
+┌──────────────────────────────────────────────┐
+│  WAL Record                                  │
+├──────────────────────────────────────────────┤
+│  xl_tot_len  │ tamanho total do record       │
+│  xl_xid      │ transaction ID                │
+│  xl_prev     │ LSN do record anterior        │
+│  xl_info     │ tipo (INSERT, UPDATE, COMMIT) │
+│  xl_rmid     │ resource manager ID           │
+│  xl_crc      │ checksum de integridade       │
+├──────────────────────────────────────────────┤
+│  Record-specific data:                       │
+│  - relation + block number (página alvo)     │
+│  - offset dentro da página                   │
+│  - bytes antigos (undo) e novos (redo)       │
+└──────────────────────────────────────────────┘
+```
+
+O **LSN (Log Sequence Number)** é a posição no WAL -- um inteiro monotonicamente crescente. Cada data page armazena o LSN da última modificação (`pd_lsn`). Durante recovery: se `page_lsn < wal_record_lsn`, o record precisa ser re-aplicado.
+
+### Crash Recovery: ARIES simplificado
+
+```
+┌──────────────────────────────────────────────────────┐
+│  1. ANALYSIS: lê WAL do checkpoint → identifica      │
+│     transações ativas e dirty pages no momento do    │
+│     crash                                            │
+│                                                      │
+│  2. REDO: replay WAL do checkpoint para frente →     │
+│     restaura estado exato do crash (inclusive         │
+│     transações não-committed)                        │
+│                                                      │
+│  3. UNDO: desfaz modificações de transações que      │
+│     estavam ativas mas não committed no crash         │
+│                                                      │
+│  Resultado: apenas transações committed sobrevivem   │
+└──────────────────────────────────────────────────────┘
+```
+
+**Checkpoint**: flush periódico de dirty pages que limita o tempo de recovery. Sem checkpoint, o recovery teria que reler todo o WAL desde o início do tempo.
+
+```sql
+-- PostgreSQL: configurações de checkpoint
+checkpoint_timeout = '5min'              -- tempo máximo entre checkpoints
+max_wal_size = '1GB'                     -- volume de WAL que dispara checkpoint
+checkpoint_completion_target = 0.9       -- spread: 90% do intervalo
+-- Se timeout=5min, o checkpoint tenta completar em 4.5min, distribuindo I/O
+```
+
+### WAL Archiving e PITR
+
+```sql
+-- postgresql.conf: habilitar archiving
+archive_mode = on
+archive_command = 'cp %p /archive/%f'
+
+-- Restaurar para qualquer ponto no tempo (ex: antes de um DROP TABLE acidental)
+restore_command = 'cp /archive/%f %p'
+recovery_target_time = '2024-03-15 14:30:00'
+```
+
+---
+
+## 5. MVCC (Multi-Version Concurrency Control)
+
+**Readers nunca bloqueiam writers, writers nunca bloqueiam readers.** O banco mantém múltiplas versões de cada row; cada transação vê um snapshot consistente.
+
+### PostgreSQL: xmin/xmax
+
+Cada tuple possui um header com campos de visibilidade:
+
+| Campo | Significado |
+|---|---|
+| `t_xmin` | XID da transação que **criou** esta versão |
+| `t_xmax` | XID da transação que **deletou/atualizou** (0 se viva) |
+| `t_ctid` | Ponteiro para a próxima versão (se updated) |
+| `t_infomask` | Bits de status (committed, aborted, etc.) |
+
+```
+Transação 100: INSERT ('Alice','alice@x')
+┌─────────────────────────────────────────────────┐
+│ v1: xmin=100, xmax=0, data=('Alice','alice@x')  │  ← VIVA
+└─────────────────────────────────────────────────┘
+
+Transação 105: UPDATE SET email='new@x'
+┌─────────────────────────────────────────────────┐
+│ v1: xmin=100, xmax=105, ctid→v2                 │  ← MORTA
+│ v2: xmin=105, xmax=0, data=('Alice','new@x')    │  ← VIVA
+└─────────────────────────────────────────────────┘
+
+Transação 110: DELETE
+┌─────────────────────────────────────────────────┐
+│ v1: xmin=100, xmax=105  [DEAD]                  │
+│ v2: xmin=105, xmax=110  [DEAD]                  │  ← VACUUM reclamará
+└─────────────────────────────────────────────────┘
+```
+
+### Regras de visibilidade
+
+Uma transação captura um **snapshot** (XIDs ativos naquele momento). Uma tuple é visível se:
+
+```typescript
+function isTupleVisible(tuple: Tuple, snapshot: Snapshot): boolean {
+  // Criador deve estar committed e não estar ativo no snapshot
+  if (!isCommitted(tuple.xmin)) return false;
+  if (snapshot.activeXids.includes(tuple.xmin)) return false;
+
+  // Se não deletada, é visível
+  if (tuple.xmax === 0) return true;
+
+  // Se deletor abortou ou ainda ativo no snapshot, tuple ainda visível
+  if (isAborted(tuple.xmax)) return true;
+  if (snapshot.activeXids.includes(tuple.xmax)) return true;
+  if (tuple.xmax >= snapshot.nextXid) return true;
+
+  return false; // deletada por transação committed e visível
+}
+```
+
+### PostgreSQL vs MySQL InnoDB
+
+| Aspecto | PostgreSQL | MySQL InnoDB |
+|---|---|---|
+| **UPDATE** | Cria tuple nova (append-only) | Modifica in-place; versão antiga vai para undo log |
+| **Garbage** | Dead tuples nas data pages até VACUUM | Undo log entries purgadas por purge thread |
+| **Bloat** | Table bloat se VACUUM não acompanha | Menos bloat nas data pages |
+
+---
+
+## 6. Vacuum e Bloat
+
+Dead tuples (consequência do MVCC append-only) ocupam espaço. **VACUUM** regular marca esse espaço como reutilizável (mas **não** devolve ao OS). Atualiza visibility map e free space map.
+
+```sql
+-- Autovacuum: dispara quando dead_tuples > threshold + scale_factor * total_tuples
+-- Para tabela com 1M rows: 50 + 0.2 * 1000000 = 200050 dead tuples
+autovacuum_vacuum_threshold = 50
+autovacuum_vacuum_scale_factor = 0.2
+
+-- Para tabelas grandes, ajustar por tabela:
+ALTER TABLE events SET (
+  autovacuum_vacuum_scale_factor = 0.01,  -- 1% em vez de 20%
+  autovacuum_vacuum_threshold = 1000
+);
+```
+
+```sql
+-- Detectar bloat
+CREATE EXTENSION pgstattuple;
+SELECT dead_tuple_count, dead_tuple_len,
+  round(dead_tuple_len::numeric / table_len * 100, 2) AS dead_pct
+FROM pgstattuple('users');
+-- Se dead_pct > 20%: pg_repack (sem lock) ou VACUUM FULL (AccessExclusiveLock)
+```
+
+**HOT Updates**: quando UPDATE **não muda colunas indexadas**, PostgreSQL cria nova versão na mesma página sem nova index entry. O índice aponta para a tuple original, que tem `ctid` -> versão nova. Para maximizar: `fillfactor < 100`.
+
+---
+
+## 7. Query Optimizer
+
+Transforma SQL declarativo em plano de execução eficiente usando **cost-based optimization**.
+
+### Cost model
+
+```sql
+-- Custos padrão (postgresql.conf)
+seq_page_cost = 1.0          -- ler página sequencialmente
+random_page_cost = 4.0       -- ler página aleatoriamente (seek)
+cpu_tuple_cost = 0.01        -- processar uma tuple
+cpu_index_tuple_cost = 0.005 -- processar entry de índice
+-- Em SSD: random_page_cost = 1.1 (seek time quase zero)
+```
+
+O optimizer usa **estatísticas** (`pg_statistic`, coletadas por `ANALYZE`) para estimar cardinalidade: `n_distinct`, `most_common_vals`, `correlation` (1.0 = dados ordenados fisicamente -> index scan eficiente).
+
+### Join algorithms
+
+**Nested Loop**: `O(n * m)` sem índice, `O(n * log m)` com índice. Bom para outer table pequena.
+
+**Hash Join**: `O(n + m)` tempo, `O(min(n,m))` espaço. Build hash na tabela menor, probe com a maior. Bom para equi-joins em tabelas grandes.
+
+**Merge Join**: `O(n log n + m log m)` com sort; `O(n + m)` se pré-ordenadas. Bom para dados já ordenados.
+
+### EXPLAIN ANALYZE: lendo planos de execução
+
+```sql
+EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT)
+SELECT u.name, count(o.id)
+FROM users u JOIN orders o ON o.user_id = u.id
+WHERE u.created_at > '2024-01-01'
+GROUP BY u.name ORDER BY count DESC LIMIT 10;
+
+-- Saída (exemplo):
+Limit  (cost=1234.56..1234.58 rows=10 width=48)
+       (actual time=45.2..45.3 rows=10 loops=1)
+  ->  Sort  (cost=1234.56..1240.12 rows=2225 width=48)
+            (actual time=45.2..45.2 rows=10 loops=1)
+        Sort Key: (count(o.id)) DESC
+        Sort Method: top-N heapsort  Memory: 26kB
+        ->  HashAggregate  (cost=1180.00..1202.25 rows=2225 width=48)
+                           (actual time=44.1..44.5 rows=2225 loops=1)
+              ->  Hash Join  (cost=85.50..1140.00 rows=8000 width=19)
+                             (actual time=2.1..38.5 rows=8000 loops=1)
+                    Hash Cond: (o.user_id = u.id)
+                    ->  Seq Scan on orders o
+                          (actual time=0.01..12.3 rows=15000 loops=1)
+                    ->  Hash  (cost=75.00..75.00 rows=2225 width=23)
+                          ->  Index Scan using idx_users_created on users u
+                                (actual time=0.03..1.2 rows=2225 loops=1)
+                                Index Cond: (created_at > '2024-01-01')
+                          Buffers: shared hit=45
+```
+
+Como ler:
+- **cost=X..Y**: X = startup cost, Y = custo total estimado
+- **actual time=X..Y**: tempo real em ms (startup..total)
+- **rows=N**: estimado vs actual -- diferença grande indica estatísticas ruins
+- **Buffers: shared hit=N**: páginas lidas do buffer pool (cache hit)
+- O plano é uma **árvore invertida**: folhas (scans) na base, nós superiores consomem resultados
+
+### Falhas comuns
+
+```sql
+-- 1. Estatísticas desatualizadas → ANALYZE table_name;
+-- 2. Dados não ordenados fisicamente → CLUSTER table USING index;
+-- 3. Condições correlacionadas (city='SP' AND state='SP'):
+--    Optimizer assume independência: P(city ∩ state) = P(city) × P(state)
+--    Fix: CREATE STATISTICS s (dependencies) ON city, state FROM addresses;
+```
+
+---
+
+## 8. Index Internals
+
+### B-tree index: descent algorithm
+
+```
+Busca key=42:  Root [20|50|80] → key<50 → Internal [30|40|45]
+→ key>40, key<45 → Leaf [...|42,TID(12,7)|...]
+→ Heap page 12, offset 7 → tuple real
+```
+
+### Covering indexes (Index-Only Scans)
+
+Se todas as colunas necessárias estão no índice, o banco responde **sem acessar a heap**:
+
+```sql
+CREATE INDEX idx_orders_covering ON orders(user_id) INCLUDE (total, created_at);
+-- Colunas INCLUDE ficam apenas nos leaf nodes (não participam da ordenação)
+
+-- Esta query usa index-only scan:
+SELECT total, created_at FROM orders WHERE user_id = 42;
+```
+
+### Partial indexes e expression indexes
+
+```sql
+-- Partial: índice apenas para pedidos pendentes (5% da tabela)
+CREATE INDEX idx_pending ON orders(created_at) WHERE status = 'pending';
+
+-- Expression: indexar resultado de função
+CREATE INDEX idx_email_lower ON users(lower(email));
+-- Query: WHERE lower(email) = 'alice@example.com'
+
+-- Indexar campo JSONB
+CREATE INDEX idx_events_type ON events((data->>'type'));
+```
+
+### GIN (Generalized Inverted Index)
+
+Índice **invertido** -- mapeia cada valor-elemento para a lista de rows que o contêm:
+
+```
+Dados: Row 1 tags=['python','backend'], Row 2 tags=['python','frontend'], Row 3 tags=['go','backend']
+
+GIN (invertido):
+  'python'   → {Row 1, Row 2}
+  'backend'  → {Row 1, Row 3}
+  'frontend' → {Row 2}
+  'go'       → {Row 3}
+```
+
+```sql
+-- Full-text search
+CREATE INDEX idx_fts ON articles USING GIN(to_tsvector('portuguese', title || ' ' || body));
+
+-- Arrays
+CREATE INDEX idx_tags ON posts USING GIN(tags);
+-- WHERE tags @> ARRAY['python']
+
+-- JSONB
+CREATE INDEX idx_data ON events USING GIN(data jsonb_path_ops);
+-- WHERE data @> '{"type": "purchase"}'
+```
+
+### GiST, BRIN e Hash
+
+```sql
+-- GiST (Generalized Search Tree): geospatial, range types
+CREATE INDEX idx_geo ON locations USING GIST(geom);
+-- WHERE ST_DWithin(geom, ST_MakePoint(-46.6, -23.5), 1000)
+
+-- BRIN (Block Range Index): min/max por range de blocos (~0.01% do B-tree)
+CREATE INDEX idx_logs_ts ON logs USING BRIN(created_at);
+-- Ideal para dados naturalmente ordenados (inserts cronológicos)
+```
+
+| Tipo | Melhor para | Operadores | Tamanho |
+|---|---|---|---|
+| **B-tree** | Equality, range, sorting | `=`, `<`, `>`, `BETWEEN` | Médio |
+| **GIN** | Multi-valued, FTS | `@>`, `<@`, `@@` | Grande |
+| **GiST** | Spatial, ranges | `&&`, `@>`, `<->` | Médio |
+| **BRIN** | Naturally ordered data | `<`, `>`, `=` | Mínimo |
+
+---
+
+## 9. Lock Manager
+
+### Lock modes (table-level)
+
+```
+Compatibilidade (X = conflita):
+                 AS  RS  RE  SUE  S  SRE  E  AE
+AccessShare       .   .   .   .   .   .   .  X   ← SELECT
+RowShare          .   .   .   .   .   .   X  X   ← SELECT FOR UPDATE
+RowExclusive      .   .   .   .   X   X   X  X   ← INSERT/UPDATE/DELETE
+ShareUpdateExcl   .   .   .   X   .   X   X  X   ← VACUUM, CREATE INDEX CONC.
+Share             .   .   X   .   .   X   X  X   ← CREATE INDEX
+AccessExclusive   X   X   X   X   X   X   X  X   ← DROP, ALTER TABLE
+```
+
+**Row-level locks**: PostgreSQL marca diretamente no tuple header (`xmax` + `infomask`). Escala para bilhões de rows sem overhead de memória. **Não faz lock escalation** (diferente de SQL Server).
+
+### Deadlock detection
+
+PostgreSQL constrói um **wait-for graph** e procura ciclos. Após `deadlock_timeout` (default 1s), aborta a transação com menor custo.
+
+```sql
+-- Advisory locks: locking "virtual" controlado pela aplicação
+SELECT pg_try_advisory_lock(hashtext('process_daily_report'));
+
+-- Job queue pattern com SKIP LOCKED
+SELECT id, payload FROM jobs WHERE status = 'pending'
+  ORDER BY created_at LIMIT 1 FOR UPDATE SKIP LOCKED;
+```
+
+---
+
+## 10. Replication Internals
+
+### Physical replication (streaming)
+
+```
+┌──────────┐     WAL stream (contínuo, TCP)    ┌──────────┐
+│ PRIMARY  │ ─────────────────────────────────→ │ REPLICA  │
+│          │ ← feedback (LSN aplicado)          │ (redo)   │
+└──────────┘                                    └──────────┘
+```
+
+### Logical replication
+
+```sql
+-- Publisher: replica seletiva por tabela
+CREATE PUBLICATION my_pub FOR TABLE users, orders;
+-- Subscriber:
+CREATE SUBSCRIPTION my_sub CONNECTION 'host=primary' PUBLICATION my_pub;
+```
+
+### Synchronous vs asynchronous
+
+```
+ASYNC (default):
+  Primary: COMMIT → ACK ao cliente → envia WAL → replica aplica
+  Risco: pode perder dados se primary crashar antes do WAL chegar à replica
+
+SYNC:
+  Primary: COMMIT → envia WAL → espera ACK da replica → ACK ao cliente
+  Garantia: zero data loss (dados em 2 nós antes de confirmar)
+```
+
+```sql
+-- Configurar synchronous replication
+synchronous_standby_names = 'FIRST 1 (replica1, replica2)'
+
+-- Níveis de synchronous_commit:
+-- off          → não espera nem flush local
+-- local        → espera flush local, não espera replica
+-- remote_write → espera replica receber (sem flush)
+-- on           → espera replica flush
+-- remote_apply → espera replica aplicar (read-your-writes)
+```
+
+Conflito em multi-master (BDR, Citus): **last-write-wins** (LWW), custom handlers, ou **CRDTs**.
+
+---
+
+## 11. Connection Pooling
+
+No PostgreSQL, cada connection = um **processo** (fork). Custo: ~5-10 MB RAM por conexão + context switch overhead.
+
+```
+200 clients ──→ PgBouncer (pool) ──→ 20 server connections ──→ PostgreSQL
+```
+
+| Modo | Comportamento | Limitações |
+|---|---|---|
+| **Session** | Conexão alocada até desconectar | Menos eficiente |
+| **Transaction** | Conexão alocada durante transação | Sem prepared statements cross-tx |
+| **Statement** | Conexão por statement | Sem transações multi-statement |
+
+```
+Fórmula: max_connections = (CPU cores × 2) + effective_spindle_count
+Ex: 8 cores + SSD → ~20 conexões. Mais conexões = mais context switching = MENOS throughput.
+```
+
+```typescript
+import { Pool } from 'pg';
+const pool = new Pool({ max: 20, connectionTimeoutMillis: 5000 });
+
+// Transações: checkout manual com release garantido
+async function transfer(from: number, to: number, amount: number) {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    await client.query('UPDATE accounts SET balance = balance - $1 WHERE id = $2', [amount, from]);
+    await client.query('UPDATE accounts SET balance = balance + $1 WHERE id = $2', [amount, to]);
+    await client.query('COMMIT');
+  } catch (err) {
+    await client.query('ROLLBACK');
+    throw err;
+  } finally {
+    client.release(); // SEMPRE devolver ao pool
+  }
+}
+```
+
+---
+
+## 12. Exercicios Praticos
+
+### Exercicio 1: Analisando B-tree page splits
+
+Dado um B-tree de ordem 4 (max 3 keys/nó), insira `[10,20,30,40,5,15,25,35,45,50]`. Para cada split, desenhe a árvore antes/depois e identifique a mediana que sobe.
+
+```typescript
+class BTreeNode {
+  keys: number[] = [];
+  children: BTreeNode[] = [];
+  isLeaf = true;
+  constructor(public order: number) {}
+  isFull() { return this.keys.length >= this.order - 1; }
+}
+
+class BTree {
+  root: BTreeNode;
+  constructor(private order: number) { this.root = new BTreeNode(order); }
+
+  insert(key: number) {
+    if (this.root.isFull()) {
+      const newRoot = new BTreeNode(this.order);
+      newRoot.isLeaf = false;
+      newRoot.children.push(this.root);
+      this.splitChild(newRoot, 0);
+      this.root = newRoot;
+    }
+    this.insertNonFull(this.root, key);
+  }
+
+  private splitChild(parent: BTreeNode, i: number) {
+    const child = parent.children[i];
+    const mid = Math.floor((this.order - 1) / 2);
+    const midKey = child.keys[mid];
+    const right = new BTreeNode(this.order);
+    right.isLeaf = child.isLeaf;
+    right.keys = child.keys.splice(mid + 1);
+    child.keys.splice(mid);
+    if (!child.isLeaf) right.children = child.children.splice(mid + 1);
+    parent.keys.splice(i, 0, midKey);
+    parent.children.splice(i + 1, 0, right);
+    console.log(`Split: mediana ${midKey}. L=[${child.keys}] R=[${right.keys}]`);
+  }
+
+  private insertNonFull(node: BTreeNode, key: number) {
+    if (node.isLeaf) {
+      const pos = node.keys.findIndex(k => k > key);
+      pos === -1 ? node.keys.push(key) : node.keys.splice(pos, 0, key);
+    } else {
+      let i = node.keys.findIndex(k => k > key);
+      if (i === -1) i = node.keys.length;
+      if (node.children[i].isFull()) { this.splitChild(node, i); if (key > node.keys[i]) i++; }
+      this.insertNonFull(node.children[i], key);
+    }
+  }
+}
+```
+
+### Exercicio 2: Simulando MVCC visibility
+
+```typescript
+interface Tuple { id: number; xmin: number; xmax: number; data: Record<string, unknown>; }
+interface Snapshot { xmin: number; xmax: number; xip: number[]; }
+const clog = new Map<number, 'committed' | 'aborted' | 'in_progress'>();
+
+function isVisible(t: Tuple, s: Snapshot): boolean {
+  if (clog.get(t.xmin) !== 'committed' || s.xip.includes(t.xmin)) return false;
+  if (t.xmin >= s.xmax) return false;
+  if (t.xmax === 0) return true;
+  if (clog.get(t.xmax) === 'aborted' || s.xip.includes(t.xmax) || t.xmax >= s.xmax) return true;
+  return false;
+}
+
+// Teste: T100 INSERT Alice (committed), T105 UPDATE->Bob (committed), T110 ativa
+clog.set(100, 'committed'); clog.set(105, 'committed'); clog.set(110, 'in_progress');
+const tuples: Tuple[] = [
+  { id: 1, xmin: 100, xmax: 105, data: { name: 'Alice' } },
+  { id: 1, xmin: 105, xmax: 0, data: { name: 'Bob' } },
+];
+const snap: Snapshot = { xmin: 110, xmax: 111, xip: [110] };
+tuples.forEach(t => console.log(`${t.data.name}: ${isVisible(t, snap) ? 'VISIVEL' : 'INVISIVEL'}`));
+// Alice=INVISIVEL, Bob=VISIVEL
+```
+
+### Exercicio 3: EXPLAIN ANALYZE na pratica
+
+```sql
+CREATE TABLE products (id SERIAL PRIMARY KEY, name TEXT, category TEXT, price NUMERIC);
+INSERT INTO products SELECT i, 'Product '||i,
+  (ARRAY['electronics','books','clothing','food','toys'])[1+(i%5)],
+  (random()*1000)::numeric(10,2) FROM generate_series(1,1000000) i;
+ANALYZE products;
+
+EXPLAIN (ANALYZE, BUFFERS) SELECT * FROM products WHERE id = 42;
+EXPLAIN (ANALYZE, BUFFERS) SELECT * FROM products WHERE category = 'books';
+-- Por que id usa Index Scan e category usa Seq Scan?
+-- Adicione CREATE INDEX ON products(category) e reexecute.
+```
+
+### Exercicio 4: Observando table bloat
+
+```sql
+CREATE EXTENSION pgstattuple;
+CREATE TABLE bloat_test (id SERIAL PRIMARY KEY, data TEXT);
+INSERT INTO bloat_test SELECT i, repeat('x',100) FROM generate_series(1,100000) i;
+SELECT * FROM pgstattuple('bloat_test');         -- estado inicial
+DELETE FROM bloat_test WHERE id % 2 = 0;
+SELECT * FROM pgstattuple('bloat_test');         -- observe dead_tuple_count
+VACUUM bloat_test;
+SELECT * FROM pgstattuple('bloat_test');         -- free_space aumentou? table_len diminuiu?
+VACUUM FULL bloat_test;
+SELECT * FROM pgstattuple('bloat_test');         -- agora table_len diminuiu
+```
+
+### Exercicio 5: Provocando deadlock
+
+```sql
+-- Sessão 1:                          -- Sessão 2:
+BEGIN;                                 BEGIN;
+UPDATE accounts SET bal=bal-100        UPDATE accounts SET bal=bal-50
+  WHERE id=1;                            WHERE id=2;
+-- espere...                           UPDATE accounts SET bal=bal+50
+                                         WHERE id=1;  -- BLOQUEIA
+UPDATE accounts SET bal=bal+100
+  WHERE id=2;  -- DEADLOCK detectado!
+-- Fix: sempre adquirir locks na mesma ordem (ORDER BY id)
+```
+
+### Exercicio 6: WAL e crash recovery
+
+```sql
+-- Observe o WAL em ação:
+SELECT pg_current_wal_lsn();  -- posição atual no WAL
+
+BEGIN;
+INSERT INTO products (name, category, price) VALUES ('Test', 'books', 9.99);
+SELECT pg_current_wal_lsn();  -- LSN avançou (INSERT record)
+
+COMMIT;
+SELECT pg_current_wal_lsn();  -- LSN avançou mais (COMMIT record)
+
+-- Examine WAL records (PG 16+ com pg_walinspect):
+CREATE EXTENSION pg_walinspect;
+SELECT * FROM pg_get_wal_records_info('0/1000000', '0/1000100')
+ORDER BY start_lsn;
+
+-- Perguntas:
+-- 1. Quanto o LSN avançou entre INSERT e COMMIT?
+-- 2. Que tipos de WAL records foram gerados?
+-- 3. Se o banco crashar após COMMIT mas antes do checkpoint,
+--    como o recovery restaura o INSERT?
+```
+
+---
+
+## 13. Referencias
+
+- **"Database Internals"** — Alex Petrov (O'Reilly, 2019). Storage engines, B-trees, LSM-trees, distributed systems.
+- **"PostgreSQL 14 Internals"** — Egor Rogov (Postgres Professional, 2023). MVCC, buffer pool, WAL, vacuum, optimizer.
+- **"Designing Data-Intensive Applications"** — Martin Kleppmann (O'Reilly, 2017). Cap. 3 (storage engines), cap. 7 (transações).
+- **"ARIES: A Transaction Recovery Method"** — Mohan et al. (1992). Paper fundacional de crash recovery.
+- **"The Log-Structured Merge-Tree"** — O'Neil et al. (1996). Paper original de LSM-trees.
+- [PostgreSQL Internals Documentation](https://www.postgresql.org/docs/current/internals.html)
+- [The Internals of PostgreSQL](https://www.interdb.jp/pg/) — Hironobu Suzuki. Recurso gratuito.

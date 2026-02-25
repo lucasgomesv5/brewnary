@@ -1,0 +1,1076 @@
+---
+title: "Sistemas Distribuídos"
+description: "Teorema CAP, modelos de consistência, particionamento de dados, replicação, consensus (Raft/Paxos), relógios lógicos, failure modes e padrões para sistemas distribuídos em produção"
+track: "architecture"
+order: 5
+section: "Sistemas Distribuídos"
+priority: "high"
+tags: ["cap-theorem", "consistência", "particionamento", "replicação", "raft", "paxos", "distribuídos"]
+prerequisites: []
+keyTakeaways:
+  - "CAP Theorem: em partição de rede, escolha entre consistência ou disponibilidade — não dá pra ter os três"
+  - "Consistência eventual é o padrão na maioria dos sistemas distribuídos modernos (DynamoDB, Cassandra)"
+  - "Raft é o algoritmo de consensus mais prático — usado em etcd, CockroachDB, TiKV"
+  - "Relógios lógicos (Lamport, vector clocks) ordenam eventos em sistemas sem relógio global"
+  - "Fallacies of Distributed Computing: a rede não é confiável, latência não é zero, largura de banda é finita"
+---
+
+## Fallacies of Distributed Computing
+
+Peter Deutsch (Sun Microsystems, 1994) documentou 8 suposições falsas que programadores novatos em sistemas distribuídos fazem. Cada uma dessas falácias causa bugs, outages e problemas de design que só aparecem em produção, sob carga real.
+
+```
+AS 8 FALÁCIAS DE COMPUTAÇÃO DISTRIBUÍDA:
+
+1. A rede é confiável
+   → Pacotes se perdem, conexões caem, switches falham
+   → Consequência: TODA chamada de rede pode falhar
+   → Mitigação: retries, timeouts, circuit breakers, idempotência
+
+2. Latência é zero
+   → Chamada local: ~1ns. Chamada de rede no datacenter: ~0.5ms
+   → Chamada cross-region: ~50-150ms
+   → Consequência: chatty protocols (muitas chamadas pequenas) são lentos
+   → Mitigação: batching, caching, protocolos binários (gRPC, protobuf)
+
+3. Largura de banda é infinita
+   → Rede interna: ~10 Gbps. Internet: variável e compartilhada
+   → Consequência: serialização ineficiente consome bandwidth
+   → Mitigação: compressão, paginação, streaming, protocolos eficientes
+
+4. A rede é segura
+   → Qualquer pacote pode ser interceptado, modificado ou forjado
+   → Consequência: ataques man-in-the-middle, data exfiltration
+   → Mitigação: TLS/mTLS, zero-trust networking, service mesh
+
+5. A topologia não muda
+   → Servidores são adicionados/removidos, IPs mudam, rotas mudam
+   → Consequência: hard-coded endpoints quebram
+   → Mitigação: service discovery, DNS, load balancers, service mesh
+
+6. Existe um administrador
+   → Em sistemas distribuídos, não há controle centralizado
+   → Múltimos times, múltiplas organizações, múltiplas jurisdições
+   → Consequência: mudanças unilaterais quebram dependentes
+   → Mitigação: contratos de API, versionamento, backward compatibility
+
+7. Custo de transporte é zero
+   → Serialização, desserialização, marshalling, TLS handshake
+   → Consequência: overhead escondido em cada chamada
+   → Mitigação: connection pooling, keep-alive, session resumption
+
+8. A rede é homogênea
+   → Diferentes hardware, OS, protocolos, versões coexistem
+   → Consequência: bugs sutis de compatibilidade
+   → Mitigação: protocolos padrão (HTTP, gRPC), testes de contrato
+```
+
+```
+IMPLICAÇÕES PRÁTICAS DAS FALÁCIAS:
+
+┌────────────────────────┬───────────────────────────────────────┐
+│ Design monolítico      │ Design distribuído                    │
+├────────────────────────┼───────────────────────────────────────┤
+│ Chamada de função      │ Chamada de rede (pode falhar)         │
+│ Transação ACID local   │ Consistência eventual ou saga         │
+│ Stack trace completo   │ Trace distribuído (correlação IDs)    │
+│ Debug com breakpoint   │ Debug com logs + métricas + traces    │
+│ Deploy atômico         │ Rolling deploy com backward compat    │
+│ Latência previsível    │ Latência variável (tail latencies)    │
+│ Falha total ou nada    │ Falhas parciais (partial failures)    │
+│ Relógio único          │ Sem relógio global (clock skew)       │
+└────────────────────────┴───────────────────────────────────────┘
+
+Regra de ouro: Se você pode resolver com um monólito, resolva.
+Sistemas distribuídos adicionam complexidade que só se justifica
+quando os benefícios (escala, isolamento, deploy independente)
+superam significativamente os custos.
+```
+
+---
+
+## CAP Theorem
+
+### Definição Formal
+
+O Teorema CAP (Eric Brewer, 2000; prova formal por Gilbert & Lynch, 2002) afirma que em um sistema de dados distribuído, durante uma partição de rede, é impossível simultaneamente garantir Consistência e Disponibilidade.
+
+```
+DEFINIÇÕES FORMAIS:
+
+Consistência (C — Linearizability):
+  → Toda leitura retorna o valor da escrita mais recente ou um erro
+  → Equivalente a ter uma única cópia dos dados
+  → Todas as réplicas concordam sobre o estado atual
+
+Disponibilidade (A — Availability):
+  → Todo request recebido por um nó não-falhado recebe uma resposta
+  → A resposta pode não ser o dado mais recente
+  → Sem timeouts ou erros — sempre retorna algo
+
+Tolerância a Partição (P — Partition Tolerance):
+  → O sistema continua operando apesar de perda/atraso de mensagens
+    entre nós da rede
+  → Em qualquer sistema distribuído real, partições ACONTECEM
+  → Portanto, P não é opcional — a escolha real é entre C e A
+
+┌─────────────────────────────────────────────────┐
+│                                                  │
+│    Durante uma partição de rede:                │
+│                                                  │
+│    CP (Consistência + Partição):                │
+│    → Nós que não conseguem se comunicar          │
+│      REJEITAM requests (retornam erro)           │
+│    → Dados são sempre consistentes               │
+│    → Indisponível durante partição               │
+│    → Ex: etcd, ZooKeeper, PostgreSQL (sync rep)  │
+│                                                  │
+│    AP (Disponibilidade + Partição):             │
+│    → Nós respondem mesmo sem comunicação          │
+│    → Dados podem divergir (conflitos)            │
+│    → Sempre disponível, mas possivelmente stale  │
+│    → Ex: DynamoDB, Cassandra, DNS                │
+│                                                  │
+│    CA (Consistência + Disponibilidade):         │
+│    → Só possível sem partições de rede           │
+│    → Single-node databases (PostgreSQL stand-alone)│
+│    → Na prática, partições sempre são possíveis  │
+│                                                  │
+└─────────────────────────────────────────────────┘
+```
+
+### PACELC Extension
+
+```
+PACELC (Daniel Abadi, 2012):
+Extensão do CAP que captura o trade-off em operação NORMAL (sem partição).
+
+Se há Partição (P):
+  → Escolher entre Availability (A) e Consistency (C)
+Else (E — operação normal):
+  → Escolher entre Latency (L) e Consistency (C)
+
+Exemplos práticos:
+
+┌──────────────┬──────────────────────────────────────────────────┐
+│ Sistema      │ PACELC                                           │
+├──────────────┼──────────────────────────────────────────────────┤
+│ PostgreSQL   │ PA/EC — partição: perde A; normal: prioriza C   │
+│ (sync rep)   │ Reads sempre consistentes, escrita síncrona     │
+├──────────────┼──────────────────────────────────────────────────┤
+│ DynamoDB     │ PA/EL — partição: mantém A; normal: prioriza L  │
+│              │ Leituras rápidas, eventual consistency padrão    │
+├──────────────┼──────────────────────────────────────────────────┤
+│ Cassandra    │ PA/EL — partição: mantém A; normal: prioriza L  │
+│              │ Tunable consistency (ONE, QUORUM, ALL)           │
+├──────────────┼──────────────────────────────────────────────────┤
+│ CockroachDB  │ PC/EC — partição: prioriza C; normal: prioriza C│
+│              │ Sempre consistente, aceita maior latência        │
+├──────────────┼──────────────────────────────────────────────────┤
+│ MongoDB      │ PA/EC — partição: perde A; normal: prioriza C   │
+│ (default)    │ Strong reads do primary, eventual de secondary  │
+└──────────────┴──────────────────────────────────────────────────┘
+
+Por que PACELC importa mais que CAP:
+→ Partições de rede são RARAS no mesmo datacenter
+→ O trade-off do dia a dia é Latência vs Consistência
+→ DynamoDB é rápido PORQUE aceita eventual consistency
+→ CockroachDB é consistente mas adiciona 1 RTT de latência
+```
+
+---
+
+## Consistency Models
+
+Modelos de consistência definem as garantias que um sistema distribuído oferece sobre a ordem e visibilidade de operações. São um espectro, não uma escolha binária.
+
+```
+ESPECTRO DE CONSISTÊNCIA (mais forte → mais fraco):
+
+┌──────────────────────────────────────────────────────────────┐
+│                                                               │
+│  Linearizability (strongest)                                 │
+│  │  → Como se houvesse uma única cópia dos dados             │
+│  │  → Toda leitura retorna a escrita mais recente            │
+│  │  → Custo: alta latência (coordenação síncrona)            │
+│  │  → Uso: locks distribuídos, leader election               │
+│  │  → Ex: ZooKeeper, etcd                                    │
+│  │                                                            │
+│  Sequential Consistency                                       │
+│  │  → Todas as operações são vistas na MESMA ORDEM           │
+│  │  → Mas a ordem pode não refletir tempo real               │
+│  │  → Custo: coordenação para ordernar                       │
+│  │  → Uso: total order broadcast                             │
+│  │                                                            │
+│  Causal Consistency                                           │
+│  │  → Operações causalmente relacionadas são ordenadas        │
+│  │  → Operações concorrentes (sem relação causal) podem       │
+│  │    ser vistas em qualquer ordem                            │
+│  │  → Custo: tracking de dependências causais                │
+│  │  → Uso: chat (mensagens de uma conversa são ordenadas)    │
+│  │  → Ex: MongoDB (causal consistency sessions)              │
+│  │                                                            │
+│  Read-your-writes                                             │
+│  │  → Após escrever, o MESMO cliente sempre vê sua escrita   │
+│  │  → Outros clientes podem ver dados stale                  │
+│  │  → Implementação: sticky sessions ou read from primary    │
+│  │  → Uso: perfil de usuário (editar e ver atualizado)       │
+│  │                                                            │
+│  Eventual Consistency (weakest practical)                     │
+│     → Se nenhuma nova escrita ocorrer, eventualmente          │
+│       todas as réplicas convergem para o mesmo valor          │
+│     → Sem garantia de QUANDO convergem                       │
+│     → Custo: resolução de conflitos necessária               │
+│     → Uso: DNS, CDN, social feeds, analytics                │
+│     → Ex: DynamoDB (default), Cassandra (ONE), S3            │
+│                                                               │
+└──────────────────────────────────────────────────────────────┘
+```
+
+```
+CONFLITOS EM EVENTUAL CONSISTENCY:
+
+Quando duas réplicas aceitam escritas concorrentes para o mesmo dado,
+precisamos de uma estratégia de resolução de conflitos:
+
+1. Last-Writer-Wins (LWW):
+   → Usa timestamp para decidir qual escrita "ganha"
+   → Simples mas PERDE dados silenciosamente
+   → Problema: clock skew entre nós pode escolher errado
+   → Ex: Cassandra (padrão), DynamoDB (padrão)
+
+2. Multi-Value (siblings):
+   → Armazena AMBOS os valores conflitantes
+   → Retorna todos ao cliente para resolução
+   → Ex: Riak (com vector clocks)
+
+3. CRDTs (Conflict-free Replicated Data Types):
+   → Estruturas de dados que CONVERGEM automaticamente
+   → Propriedades matemáticas: comutatividade, associatividade, idempotência
+   → Sem coordenação central necessária
+   → Tipos:
+     - G-Counter: cada nó incrementa seu slot; total = soma dos slots
+     - PN-Counter: par de G-Counters (positivo - negativo)
+     - LWW-Register: último write (por timestamp) vence
+     - OR-Set (Observed-Remove Set): add/remove sem conflito
+     - LWW-Element-Set: set com LWW per element
+   → State-based (merge via join) vs Op-based (broadcast ops)
+   → Ex: Redis CRDT, Riak Data Types, Automerge, Yjs (collaborative editing)
+   → Para implementações detalhadas, veja "Fundamentos de Sistemas Distribuídos"
+
+4. Application-level resolution:
+   → Lógica de merge definida pela aplicação
+   → Ex: Git merge (manual), Google Docs (OT/CRDT), carrinho
+     de compras (union de items)
+```
+
+---
+
+## Data Partitioning
+
+Particionamento (sharding) divide dados entre múltiplos nós para escalar horizontalmente. A estratégia de particionamento determina como os dados são distribuídos e como queries são roteadas.
+
+```
+ESTRATÉGIAS DE PARTICIONAMENTO:
+
+1. RANGE PARTITIONING:
+   → Divide dados por ranges de valores
+   → Ex: users A-M → shard 1, N-Z → shard 2
+   → Ex: timestamps Jan-Mar → partition 1, Apr-Jun → partition 2
+
+   Prós:
+   → Range queries eficientes (buscar dados de um mês)
+   → Implementação simples
+
+   Contras:
+   → HOTSPOTS: distribuição desigual (mais nomes com "S" que "X")
+   → Rebalanceamento complexo quando ranges mudam
+
+   Quando usar:
+   → Time-series data (partitionar por mês/dia)
+   → Dados com range queries frequentes
+
+2. HASH PARTITIONING:
+   → partition = hash(key) % num_partitions
+   → Distribui dados uniformemente (se hash é bom)
+
+   Prós:
+   → Distribuição uniforme de carga
+   → Sem hotspots (na maioria dos casos)
+
+   Contras:
+   → Range queries impossíveis (scatter-gather)
+   → Adicionar/remover nós redistribui TUDO
+
+   Quando usar:
+   → Point lookups (buscar por ID)
+   → Quando distribuição uniforme é prioridade
+
+3. CONSISTENT HASHING:
+   → Nós e chaves são mapeados em um anel (ring) de hash
+   → Cada nó é responsável pelo range entre ele e o nó anterior
+   → Adicionar/remover nó redistribui apenas 1/N dos dados
+
+   ┌──────────────────────────────────┐
+   │          Hash Ring                │
+   │                                   │
+   │    Node A ←───── ← Node D        │
+   │   ↗                    ↘         │
+   │  │                      │        │
+   │  │    Keys mapeadas     │        │
+   │  │    no ring           │        │
+   │   ↖                    ↙         │
+   │    Node B ─────→ → Node C        │
+   │                                   │
+   └──────────────────────────────────┘
+
+   VIRTUAL NODES (vnodes):
+   → Cada nó físico tem múltiplos pontos virtuais no ring
+   → Melhora distribuição quando há poucos nós físicos
+   → Ex: Cassandra usa 256 vnodes por padrão
+   → Nó com mais recursos pode ter mais vnodes
+
+   Prós:
+   → Redistribuição mínima ao escalar
+   → Com vnodes, distribuição uniforme mesmo com poucos nós
+
+   Contras:
+   → Mais complexo de implementar e debugar
+   → Hotspots em vnodes que cobrem ranges populares
+
+   Usado por: DynamoDB, Cassandra, Riak, Memcached (client-side)
+
+4. DIRECTORY-BASED:
+   → Tabela de lookup que mapeia key → partition
+   → Flexibilidade total de roteamento
+
+   Prós:
+   → Pode rebalancear arbitrariamente
+   → Suporta qualquer estratégia de distribuição
+
+   Contras:
+   → Lookup table é single point of failure
+   → Lookup adiciona latência em toda operação
+
+   Quando usar:
+   → Multi-tenant (tenant_id → partition dedicada)
+   → Dados com requisitos regulatórios (LGPD: dados BR no Brasil)
+```
+
+```
+SECONDARY INDEXES EM SISTEMAS PARTICIONADOS:
+
+Problema: como manter índices secundários quando dados estão particionados?
+
+1. Local Index (document-partitioned):
+   → Cada partition mantém seu próprio índice dos dados locais
+   → Escrita: rápida (atualiza apenas índice local)
+   → Leitura: scatter-gather (query vai para TODAS as partitions)
+   → Usado por: MongoDB, Cassandra, Elasticsearch
+
+2. Global Index (term-partitioned):
+   → Índice é particionado independente dos dados
+   → Escrita: lenta (atualiza índice em outra partition)
+   → Leitura: rápida (query vai para 1 partition do índice)
+   → Usado por: DynamoDB (GSI), CockroachDB
+
+Trade-off: reads frequentes → global index
+           writes frequentes → local index
+```
+
+---
+
+## Replication
+
+Replicação mantém cópias dos dados em múltiplos nós para durabilidade, disponibilidade e performance de leitura.
+
+```
+MODELOS DE REPLICAÇÃO:
+
+1. SINGLE-LEADER (Primary-Replica):
+   → 1 nó aceita escritas (leader/primary)
+   → N nós recebem cópias (followers/replicas)
+   → Replicas servem leituras
+
+   ┌──────────────────────────────────────────────┐
+   │                                               │
+   │  Client ──write──→ [Leader] ──sync/async──→   │
+   │                       │                        │
+   │  Client ──read──→ [Replica 1]                 │
+   │  Client ──read──→ [Replica 2]                 │
+   │  Client ──read──→ [Replica 3]                 │
+   │                                               │
+   └──────────────────────────────────────────────┘
+
+   Replicação síncrona:
+   → Leader espera confirmação da replica antes de confirmar ao client
+   → Garante que replica está atualizada
+   → Aumenta latência de escrita
+   → Se replica falhar, escrita bloqueia
+
+   Replicação assíncrona:
+   → Leader confirma ao client sem esperar replicas
+   → Menor latência de escrita
+   → Risco: dados perdidos se leader falhar antes de replicar
+   → Replication lag causa leituras stale
+
+   Usado por: PostgreSQL, MySQL, MongoDB (default), Redis Sentinel
+
+2. MULTI-LEADER (Active-Active):
+   → Múltiplos nós aceitam escritas
+   → Cada leader replica para os outros
+   → Conflitos são inevitáveis
+
+   ┌──────────────────────────────────────────────┐
+   │                                               │
+   │  [Leader US] ←──replication──→ [Leader EU]   │
+   │      ↑                              ↑        │
+   │   writes                         writes      │
+   │   from US                        from EU     │
+   │                                               │
+   └──────────────────────────────────────────────┘
+
+   Quando usar:
+   → Multi-datacenter (cada DC tem seu leader)
+   → Offline-first apps (cada dispositivo é um "leader")
+   → Collaborative editing (Google Docs)
+
+   Desafio principal: resolução de conflitos
+   → Write conflicts quando dois leaders escrevem o mesmo dado
+   → Soluções: LWW, merge functions, CRDTs
+
+   Usado por: CouchDB, Galera Cluster (MySQL), Active Directory
+
+3. LEADERLESS:
+   → QUALQUER nó aceita leituras e escritas
+   → Client escreve para múltiplos nós simultaneamente
+   → Quorum define quando operação é bem-sucedida
+
+   ┌──────────────────────────────────────────────┐
+   │                                               │
+   │  Client ──write──→ [Node 1] ✓                │
+   │          ──write──→ [Node 2] ✓                │
+   │          ──write──→ [Node 3] ✗ (falhou)       │
+   │                                               │
+   │  W=2 de N=3: escrita bem-sucedida             │
+   │                                               │
+   │  Client ──read──→ [Node 1] v2                │
+   │          ──read──→ [Node 2] v2                │
+   │          ──read──→ [Node 3] v1 (stale)        │
+   │                                               │
+   │  R=2 de N=3: retorna v2 (mais recente)        │
+   │                                               │
+   └──────────────────────────────────────────────┘
+
+   Usado por: DynamoDB, Cassandra, Riak, Voldemort
+```
+
+### Quorum Reads/Writes
+
+```
+QUORUM: W + R > N garante que leituras veem a escrita mais recente
+
+Onde:
+  N = número total de réplicas
+  W = número de nós que confirmam uma escrita
+  R = número de nós consultados em uma leitura
+
+Se W + R > N, pelo menos 1 nó lido terá o dado mais recente.
+
+Configurações comuns:
+┌────────┬─────────────────────────────────────────────────┐
+│ Config │ Comportamento                                    │
+├────────┼─────────────────────────────────────────────────┤
+│ N=3    │ Balanceado — tolerância a 1 falha em writes     │
+│ W=2    │ e 1 falha em reads                              │
+│ R=2    │ Latência moderada (espera 2 de 3)               │
+├────────┼─────────────────────────────────────────────────┤
+│ N=3    │ Read-optimized — reads de 1 nó (rápido)         │
+│ W=3    │ Writes lentos (todos devem confirmar)            │
+│ R=1    │ Bom para read-heavy workloads                   │
+├────────┼─────────────────────────────────────────────────┤
+│ N=3    │ Write-optimized — writes de 1 nó (rápido)       │
+│ W=1    │ Reads lentos (consulta todos os nós)            │
+│ R=3    │ Risco: dados perdidos se nó com W=1 falhar      │
+└────────┴─────────────────────────────────────────────────┘
+
+SLOPPY QUORUM (DynamoDB):
+→ Se nós designados estão indisponíveis, aceita escrita em outros nós
+→ "Hinted handoff": quando nó original volta, dados são transferidos
+→ Melhora disponibilidade, mas enfraquece garantia de consistência
+
+READ REPAIR:
+→ Ao ler de múltiplos nós, detectar que algum está desatualizado
+→ Enviar o valor correto para o nó desatualizado
+→ Reparo lazy — funciona apenas para dados lidos frequentemente
+
+ANTI-ENTROPY (background repair):
+→ Processo background compara dados entre réplicas
+→ Merkle trees para detectar diferenças eficientemente
+→ Repara dados que não são lidos frequentemente
+```
+
+---
+
+## Consensus Algorithms
+
+Consensus é o problema de fazer múltiplos nós concordarem sobre um valor, mesmo na presença de falhas. É fundamental para leader election, state machine replication e transações distribuídas.
+
+### FLP Impossibility
+
+```
+RESULTADO FLP (Fischer, Lynch, Paterson, 1985):
+
+"Em um sistema assíncrono, é impossível atingir consensus
+determinístico se MESMO UM nó pode falhar."
+
+Implicações:
+→ Nenhum algoritmo de consensus GARANTE terminação em
+  tempo finito em sistema assíncrono com falhas
+→ Na prática, algoritmos como Raft e Paxos usam TIMEOUTS
+  (parcialmente síncrono) para contornar FLP
+→ Timeouts permitem detectar falhas, mas false positives
+  (nó lento interpretado como falho) podem causar split-brain
+
+Por que isso importa:
+→ Consensus é fundamentalmente DIFÍCIL
+→ Não invente seu próprio algoritmo de consensus
+→ Use implementações testadas (etcd/Raft, ZooKeeper/ZAB)
+```
+
+### Raft Algorithm
+
+Raft (Diego Ongaro, 2014) foi projetado para ser mais compreensível que Paxos, mantendo as mesmas garantias de segurança.
+
+```
+RAFT — VISÃO GERAL:
+
+Cada nó está em um de três estados:
+  FOLLOWER → CANDIDATE → LEADER
+
+O tempo é dividido em "terms" (mandatos):
+  → Cada term tem no máximo 1 leader
+  → Terms são numerados sequencialmente (1, 2, 3...)
+  → Se um nó vê term mais alto, atualiza seu term
+
+COMPONENTES PRINCIPAIS:
+1. Leader Election — como um leader é eleito
+2. Log Replication — como o leader replica dados
+3. Safety — garantias de que logs são consistentes
+```
+
+```
+1. LEADER ELECTION:
+
+Estado inicial: todos são FOLLOWERS
+
+Follower não recebe heartbeat do leader em tempo X:
+  → Incrementa term
+  → Transiciona para CANDIDATE
+  → Vota em si mesmo
+  → Envia RequestVote RPC para todos os outros nós
+
+Regras de votação:
+  → Cada nó vota em no máximo 1 candidate por term
+  → Vote é dado ao primeiro candidate que pedir
+  → Candidate precisa de maioria (N/2 + 1) para vencer
+  → Se recebe AppendEntries de leader com term >= seu, volta a FOLLOWER
+
+Cenários:
+  a) Candidate recebe maioria → vira LEADER, envia heartbeats
+  b) Outro nó vira leader → candidate volta a FOLLOWER
+  c) Timeout sem resultado → incrementa term, nova eleição
+     (election timeout randomizado para evitar empate perpétuo)
+
+┌──────────────────────────────────────────────────┐
+│                                                   │
+│  [A: Follower] [B: Follower] [C: Follower]       │
+│                                                   │
+│  (timeout em B, nenhum heartbeat recebido)        │
+│                                                   │
+│  [A: Follower] [B: Candidate] [C: Follower]      │
+│                 ↓ RequestVote                     │
+│  [A: vota em B] [B: vota em si] [C: vota em B]   │
+│                                                   │
+│  B recebe 3/3 votos (maioria) → Leader            │
+│                                                   │
+│  [A: Follower] [B: LEADER] [C: Follower]         │
+│                 ↓ heartbeats periódicos           │
+│                                                   │
+└──────────────────────────────────────────────────┘
+```
+
+```
+2. LOG REPLICATION:
+
+Toda operação passa pelo leader:
+  Client → Leader → AppendEntries RPC → Followers
+
+Processo:
+  1. Client envia request ao Leader
+  2. Leader adiciona entry ao seu log (não commitada)
+  3. Leader envia AppendEntries RPC a todos os Followers
+  4. Followers adicionam entry ao seu log
+  5. Followers respondem com sucesso
+  6. Quando MAIORIA confirma → Leader COMMITA a entry
+  7. Leader aplica ao state machine e responde ao Client
+  8. Followers são notificados do commit no próximo heartbeat
+
+Log consistency:
+  → Se duas entries em logs diferentes têm o mesmo index e term,
+    elas contêm o mesmo comando
+  → Se duas entries em logs diferentes têm o mesmo index e term,
+    TODOS os entries anteriores também são idênticos
+  → Leader nunca sobrescreve ou deleta entries do seu log
+
+┌────────────────────────────────────────────────┐
+│  Leader log:   [1:set x=1] [2:set y=2] [3:set z=3]  │
+│  Follower A:   [1:set x=1] [2:set y=2] [3:set z=3]  │
+│  Follower B:   [1:set x=1] [2:set y=2]               │
+│                                                        │
+│  Entries 1 e 2: committed (maioria tem)               │
+│  Entry 3: committed se Leader + A = maioria (2 de 3) │
+│  Follower B receberá entry 3 no próximo AppendEntries│
+└────────────────────────────────────────────────┘
+```
+
+```
+3. SAFETY GUARANTEES:
+
+Election Restriction:
+  → Candidate só recebe voto se seu log for pelo menos tão
+    atualizado quanto o do voter
+  → Garante que leader sempre tem todas as entries committed
+  → Impede que nó desatualizado vire leader
+
+Leader Completeness:
+  → Se uma entry é committed em um dado term, ela estará presente
+    no log de TODOS os leaders de terms futuros
+  → Consequência: uma vez committed, dado nunca é perdido
+    (enquanto maioria dos nós estiver viva)
+
+State Machine Safety:
+  → Se um nó aplica uma entry ao seu state machine em um dado index,
+    nenhum outro nó aplica entry diferente no mesmo index
+  → Garante que todos os nós têm o mesmo estado
+
+IMPLEMENTAÇÕES DE RAFT:
+→ etcd: usado pelo Kubernetes para coordenação
+→ CockroachDB: database distribuído PostgreSQL-compatible
+→ TiKV: storage engine do TiDB
+→ HashiCorp Consul: service discovery e configuration
+→ RabbitMQ Quorum Queues: replicação de filas
+```
+
+---
+
+## Logical Clocks
+
+Em sistemas distribuídos, não há relógio global confiável. Relógios físicos (NTP) têm clock skew de milissegundos a segundos. Relógios lógicos estabelecem ordenação de eventos sem depender de relógios físicos.
+
+### Lamport Timestamps
+
+```
+LAMPORT TIMESTAMPS (Leslie Lamport, 1978):
+
+Cada nó mantém um contador lógico C:
+  Regra 1: Antes de cada evento local, incrementa C
+  Regra 2: Ao ENVIAR mensagem, inclui timestamp C
+  Regra 3: Ao RECEBER mensagem com timestamp T,
+           C = max(C, T) + 1
+
+Propriedade: Se evento A aconteceu antes de B (A → B),
+             então C(A) < C(B)
+
+IMPORTANTE: O inverso NÃO é verdade!
+  C(A) < C(B) NÃO significa que A aconteceu antes de B
+  Eventos concorrentes podem ter qualquer ordenação de timestamps
+
+Exemplo:
+  Node 1:  [C=1: write x] ──msg(C=1)──→ [C=3: read x]
+  Node 2:  [C=1: write y] [C=2: read y]
+
+  C(write_x)=1, C(write_y)=1
+  São concorrentes! Lamport não distingue.
+
+Limitação: não captura concorrência — não sabe se dois eventos
+           são causalmente relacionados ou independentes
+```
+
+### Vector Clocks
+
+```
+VECTOR CLOCKS:
+
+Cada nó mantém um VETOR de contadores, um por nó no sistema.
+  Node i: VC[i] = [c1, c2, ..., cn]
+
+Regras:
+  1. Antes de evento local em nó i: VC[i][i]++
+  2. Ao enviar mensagem: inclui VC do sender
+  3. Ao receber mensagem com VC_msg:
+     Para cada j: VC[j] = max(VC[j], VC_msg[j])
+     Depois: VC[i]++
+
+Comparação:
+  VC(A) < VC(B)  sse  para todo i: A[i] <= B[i] e existe j: A[j] < B[j]
+  → A HAPPENED-BEFORE B (A causou B)
+
+  Se nem VC(A) < VC(B) nem VC(B) < VC(A):
+  → A e B são CONCORRENTES (sem relação causal)
+
+Exemplo com 3 nós:
+  Node A:  [1,0,0] → [2,0,0] ──msg──→
+  Node B:  [0,1,0] → recebe → [2,2,0] → [2,3,0]
+  Node C:  [0,0,1] → [0,0,2]
+
+  [2,0,0] e [0,0,2] são concorrentes (nem um < outro)
+  [2,0,0] < [2,2,0] (A causou o estado de B)
+
+Limitação: vetor cresce com O(N) onde N = número de nós
+           Impraticável para sistemas com muitos nós (>100)
+```
+
+### Hybrid Logical Clocks (HLC)
+
+```
+HYBRID LOGICAL CLOCKS (Kulkarni et al., 2014):
+
+Combina relógio físico (NTP) com relógio lógico.
+  HLC = (physical_time, logical_counter)
+
+Vantagens sobre vector clocks:
+  → Tamanho fixo (64 bits), não cresce com número de nós
+  → Captura causalidade como Lamport timestamps
+  → Próximo do tempo real (facilitando debugging)
+  → Pode ser comparado com timestamps de wall clock
+
+Usado por:
+  → CockroachDB (MVCC timestamps)
+  → YugabyteDB
+  → MongoDB (cluster time)
+
+Regra básica:
+  1. Ao gerar evento: HLC = max(local_HLC, physical_clock)
+  2. Se physical_clock > HLC: reset logical_counter = 0
+  3. Se physical_clock <= HLC: logical_counter++
+  4. Ao receber mensagem: HLC = max(local_HLC, msg_HLC, physical_clock)
+```
+
+---
+
+## Failure Modes
+
+Entender os tipos de falha é fundamental para projetar sistemas que tolerem cada cenário.
+
+```
+TIPOS DE FALHA:
+
+1. CRASH-STOP (fail-stop):
+   → Nó para de funcionar e NUNCA volta
+   → Outros nós eventualmente detectam via timeout
+   → Mais simples de lidar
+   → Ex: hardware queimou, VM terminada
+
+2. CRASH-RECOVERY (fail-recover):
+   → Nó para de funcionar mas pode VOLTAR depois
+   → Ao voltar, pode ter estado desatualizado
+   → Precisa de persistent storage para recover
+   → Ex: restart após OOM, reboot após patch
+   → MAIS COMUM em produção
+
+3. OMISSION FAILURE:
+   → Nó não envia/recebe mensagens que deveria
+   → Send omission: mensagem nunca é enviada
+   → Receive omission: mensagem nunca é recebida (dropped)
+   → Difícil distinguir de crash
+   → Ex: network partition, buffer overflow, queue full
+
+4. TIMING FAILURE:
+   → Nó responde mas FORA do tempo esperado
+   → Resposta chega mas tarde demais
+   → Em sistemas síncronos: detectável por timeout
+   → Em sistemas assíncronos: indistinguível de falha
+   → Ex: GC pause, CPU throttling, rede congestionada
+
+5. BYZANTINE FAILURE (mais difícil):
+   → Nó se comporta ARBITRARIAMENTE (incluindo maliciosamente)
+   → Pode enviar mensagens incorretas, mentir, conspirar
+   → Requer Byzantine Fault Tolerance (BFT): 3f+1 nós para tolerar f
+   → Ex: hardware corrompido, software com bug, ataque malicioso
+   → Relevante: blockchains (Bitcoin usa Proof-of-Work como BFT)
+   → Na maioria dos sistemas internos: ignoramos Byzantine
+
+PARTIAL FAILURES (o desafio real):
+→ Em um sistema monolítico: ou funciona ou não
+→ Em distribuído: PARTE do sistema pode falhar
+→ Alguns nós OK, outros down, outros lentos, outros inconsistentes
+→ O sistema deve continuar operando com funcionalidade reduzida
+→ É o cenário mais difícil de testar e de raciocinar sobre
+
+┌──────────────────────────────────────────────────┐
+│ Exemplo de partial failure:                       │
+│                                                   │
+│ [API Server 1: OK]                               │
+│ [API Server 2: OK]                               │
+│ [API Server 3: SLOW (GC pause)]                  │
+│ [Database Primary: OK]                           │
+│ [Database Replica 1: OK]                         │
+│ [Database Replica 2: DOWN (disk failure)]        │
+│ [Redis Cache: OK]                                │
+│ [RabbitMQ: PARTITIONED (network issue)]          │
+│                                                   │
+│ O sistema funciona? Parcialmente. Depende:       │
+│ → Reads: OK (primary + replica 1)                │
+│ → Writes: OK (primary, async to replica 1)       │
+│ → Cache: OK                                       │
+│ → Async events: DEGRADED (RabbitMQ particionado) │
+│ → API: DEGRADED (1/3 dos servers lentos)         │
+└──────────────────────────────────────────────────┘
+```
+
+---
+
+## Patterns for Distributed Systems
+
+### Saga Pattern
+
+```
+SAGA: substituição para transações distribuídas (2PC)
+
+Problema: sem ACID distribuído, como manter consistência
+entre múltiplos serviços?
+
+Saga = sequência de transações locais, cada uma com uma
+       compensação (rollback) correspondente.
+
+ORQUESTRAÇÃO (orquestrador central):
+
+  ┌───────────┐
+  │ Saga      │
+  │ Orchestr. │
+  └─────┬─────┘
+        │
+  Step 1: Reserve Inventory ✓
+  Step 2: Process Payment ✓
+  Step 3: Ship Order ✗ (falhou!)
+        │
+  Compensações (na ordem reversa):
+  Comp 2: Refund Payment
+  Comp 1: Release Inventory
+
+COREOGRAFIA (event-driven, sem orquestrador):
+
+  OrderService → OrderCreated
+    → InventoryService → InventoryReserved
+      → PaymentService → PaymentProcessed
+        → ShippingService → ShipmentFailed!
+          → PaymentService → PaymentRefunded
+            → InventoryService → InventoryReleased
+
+  Prós: desacoplado, sem single point of failure
+  Contras: difícil de rastrear fluxo, debugging complexo
+
+REGRAS DE SAGAS:
+  → Cada step é uma transação LOCAL (ACID no banco local)
+  → Compensações devem ser IDEMPOTENTES (podem ser executadas múltiplas vezes)
+  → Compensações são semânticas (refund, não rollback técnico)
+  → Estado intermediário é VISÍVEL para outros (sem isolamento)
+```
+
+### CQRS (Command Query Responsibility Segregation)
+
+```
+CQRS: separar modelo de escrita do modelo de leitura
+
+       Commands                    Queries
+    (write model)               (read model)
+         │                          │
+    ┌────▼─────┐              ┌────▼─────┐
+    │ Command  │              │  Query   │
+    │ Handler  │              │  Handler │
+    └────┬─────┘              └────┬─────┘
+         │                          │
+    ┌────▼─────┐              ┌────▼─────┐
+    │ Write DB │──replication─│ Read DB  │
+    │(normalized│    (async)   │(denormal.)│
+    │  schema) │              │ optimized│
+    │          │              │ for reads│
+    └──────────┘              └──────────┘
+
+Quando usar:
+  → Read/write ratio muito desigual (100:1)
+  → Modelos de leitura e escrita são fundamentalmente diferentes
+  → Precisa de views materializadas otimizadas para queries
+  → Acoplado com Event Sourcing
+
+Quando NÃO usar:
+  → CRUD simples (overhead não justifica)
+  → Consistência forte entre read e write é obrigatória
+  → Time pequeno sem experiência em eventual consistency
+```
+
+### Event Sourcing
+
+```
+EVENT SOURCING: armazenar EVENTOS em vez de estado atual
+
+Ao invés de:
+  UPDATE accounts SET balance = 950 WHERE id = 1;
+
+Armazene:
+  INSERT INTO events VALUES ('AccountDebited', {id: 1, amount: 50});
+
+Estado atual = replay de todos os eventos
+
+Vantagens:
+  → Audit trail completo e imutável
+  → Pode reconstruir estado de qualquer ponto no tempo
+  → Event store é append-only (performance de escrita excelente)
+  → Natural para CQRS (eventos alimentam projeções de leitura)
+  → Debug: "por que o saldo é X?" → replay eventos
+
+Desafios:
+  → Eventual consistency entre event store e projeções
+  → Schema evolution de eventos (versionamento)
+  → Reconstruir estado de bilhões de eventos: SNAPSHOTS
+  → Complexidade de implementação significativa
+```
+
+### Outbox Pattern
+
+```
+OUTBOX PATTERN: garantir que evento é publicado quando
+                dado é persistido (atomicidade)
+
+Problema: sem transação distribuída entre DB e message broker,
+como garantir que ambos são atualizados?
+
+Solução:
+  1. Na mesma transação do DB, salvar o evento em tabela "outbox"
+  2. Processo separado lê outbox e publica no broker
+  3. Após publicação confirmada, marca evento como publicado
+
+  BEGIN TRANSACTION;
+    INSERT INTO orders (...) VALUES (...);
+    INSERT INTO outbox_events (type, payload) VALUES
+      ('OrderCreated', '{"orderId": "123", ...}');
+  COMMIT;
+
+  -- Processo separado (polling ou CDC/Debezium):
+  -- Lê outbox_events não publicados
+  -- Publica no Kafka/RabbitMQ
+  -- Marca como published
+
+Alternativa: CDC (Change Data Capture)
+  → Debezium lê WAL/binlog do banco e publica eventos
+  → Sem tabela outbox, sem polling
+  → Mais eficiente, mais complexo de operar
+```
+
+### Idempotency Keys
+
+```
+IDEMPOTÊNCIA: executar a mesma operação múltiplas vezes
+              produz o mesmo resultado
+
+Por que é crucial em distribuídos:
+  → Retries inevitáveis (rede não confiável)
+  → At-least-once delivery em message brokers
+  → Client não sabe se request foi processado (timeout)
+
+Implementação com idempotency keys:
+
+  // Client envia:
+  POST /payments
+  X-Idempotency-Key: "pay_abc123_attempt_1"
+  { amount: 100, currency: "BRL" }
+
+  // Server:
+  async function processPayment(req) {
+    const key = req.headers['x-idempotency-key'];
+
+    // 1. Verificar se já processou esta key
+    const existing = await db.query(
+      'SELECT result FROM idempotency_keys WHERE key = $1',
+      [key]
+    );
+    if (existing) return existing.result; // Retorna resultado anterior
+
+    // 2. Processar e salvar resultado atomicamente
+    const result = await db.transaction(async (tx) => {
+      const payment = await processPaymentLogic(req.body);
+      await tx.query(
+        'INSERT INTO idempotency_keys (key, result, expires_at) VALUES ($1, $2, NOW() + interval \'24h\')',
+        [key, JSON.stringify(payment)]
+      );
+      return payment;
+    });
+
+    return result;
+  }
+
+  // Mesmo request com mesma key → mesmo resultado
+  // Sem efeitos colaterais duplicados (sem cobrar 2x)
+```
+
+---
+
+## Observabilidade em Sistemas Distribuídos
+
+```
+OS TRÊS PILARES:
+
+1. LOGS (o que aconteceu):
+   → Structured logging (JSON) com correlation IDs
+   → Log aggregation (ELK Stack, Loki, Datadog)
+   → Correlation ID propaga entre serviços para rastrear request
+
+2. MÉTRICAS (como está performando):
+   → RED: Rate, Errors, Duration (para serviços)
+   → USE: Utilization, Saturation, Errors (para recursos)
+   → Dashboards com Grafana, Prometheus
+   → Alertas baseados em SLOs
+
+3. TRACES (como requests fluem):
+   → Distributed tracing (Jaeger, Zipkin, Datadog APM)
+   → Span = unidade de trabalho; Trace = conjunto de spans
+   → Identifica latência entre serviços
+   → OpenTelemetry como padrão
+
+Correlação entre os três:
+  → Trace ID conecta logs + métricas + traces de um request
+  → "P99 subiu?" → encontra trace lento → vê logs → identifica causa
+```
+
+---
+
+## Referências
+
+```
+LIVROS ESSENCIAIS:
+- "Designing Data-Intensive Applications" — Martin Kleppmann
+  A BÍBLIA de sistemas distribuídos. Leitura obrigatória.
+- "Understanding Distributed Systems" — Roberto Vitillo
+  Versão mais acessível e prática dos mesmos conceitos.
+- "Database Internals" — Alex Petrov
+  Aprofunda storage engines, replicação e consensus.
+
+PAPERS FUNDAMENTAIS:
+- "In Search of an Understandable Consensus Algorithm" — Ongaro & Ousterhout (Raft)
+  https://raft.github.io/raft.pdf
+- "Spanner: Google's Globally-Distributed Database" — Google
+  https://research.google/pubs/pub39966/
+- "Dynamo: Amazon's Highly Available Key-value Store" — Amazon
+  https://www.allthingsdistributed.com/files/amazon-dynamo-sosp2007.pdf
+- "Time, Clocks, and the Ordering of Events in a Distributed System" — Lamport
+  O paper original de relógios lógicos (1978).
+
+RECURSOS ONLINE:
+- Jepsen.io — Kyle Kingsbury testa claims de consistência de databases
+  https://jepsen.io
+- raft.github.io — Visualização interativa do Raft
+- "The Morning Paper" — Resumos de papers de distributed systems
+- Martin Kleppmann's blog e talks
+- Marc Brooker's blog (AWS) — distribuídos na prática
+```

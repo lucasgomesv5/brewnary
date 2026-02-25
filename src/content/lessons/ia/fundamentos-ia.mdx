@@ -1,0 +1,408 @@
+---
+title: "Fundamentos de Inteligência Artificial"
+description: "Definição formal de IA, taxonomia Narrow/General/Super AI, paradigmas de ML, e a história completa do campo — de Turing aos LLMs modernos"
+track: "ia"
+order: 1
+section: "Fundamentos"
+priority: "high"
+tags: ["ia", "machine-learning", "deep-learning", "fundamentos", "historia", "turing"]
+prerequisites: []
+keyTakeaways:
+  - "IA e o campo da computacao que busca criar agentes racionais -- a hierarquia IA > ML > DL e fundamental, e a taxonomia Narrow/General/Super AI distingue o escopo das capacidades"
+  - "Os tres paradigmas de ML (supervisionado, nao-supervisionado e por reforco) resolvem classes de problemas distintas; abordagens hibridas como self-supervised learning sao a base do treinamento de LLMs modernos"
+  - "A historia da IA revela ciclos de hype e AI winters -- o momento de inflexao moderno foi o ImageNet 2012 (AlexNet) para visao computacional e Attention Is All You Need (2017) para NLP"
+---
+
+# Fundamentos de Inteligencia Artificial
+
+## 1. Definicao Formal
+
+Inteligencia Artificial (IA) e o campo da ciencia da computacao dedicado a criar sistemas capazes de realizar tarefas que, quando executadas por humanos, requerem inteligencia. Essa definicao, embora amplamente aceita, e intencionalmente vaga -- e existem abordagens distintas para operacionaliza-la.
+
+As quatro abordagens historicas para definir IA, organizadas por Stuart Russell e Peter Norvig no livro *Artificial Intelligence: A Modern Approach*:
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│              ABORDAGENS PARA DEFINIR IA                      │
+├──────────────────────────┬──────────────────────────────────┤
+│    Pensando como humano  │   Pensando racionalmente         │
+│    (Ciencia Cognitiva)   │   (Logica formal, leis do        │
+│    Modelar o processo    │   pensamento)                    │
+│    cognitivo humano      │   Inferencia correta a partir    │
+│                          │   de premissas                   │
+├──────────────────────────┼──────────────────────────────────┤
+│    Agindo como humano    │   Agindo racionalmente           │
+│    (Teste de Turing)     │   (Agentes racionais)            │
+│    Comportamento         │   Tomar a melhor acao possivel   │
+│    indistinguivel de     │   dada a informacao disponivel   │
+│    um humano             │   (abordagem dominante hoje)     │
+└──────────────────────────┴──────────────────────────────────┘
+```
+
+A abordagem dominante na IA moderna e a do **agente racional**: um sistema que percebe seu ambiente e toma acoes que maximizam uma medida de desempenho. Essa definicao nao exige que o sistema pense como um humano -- apenas que aja de forma otima.
+
+---
+
+## 2. Taxonomia: Narrow AI, General AI e Super AI
+
+A classificacao mais utilizada para IA distingue tres niveis de capacidade:
+
+### Narrow AI (IA Estreita / ANI)
+
+Sistemas projetados para executar **uma tarefa especifica** com desempenho igual ou superior ao humano. Toda IA que existe hoje e Narrow AI.
+
+**Exemplos:**
+- **Classificacao de imagens**: ResNet identifica objetos em fotos com acuracia superior a humanos (top-5 error < 3.6% no ImageNet)
+- **Processamento de linguagem natural**: GPT-4, Claude, Gemini geram texto coerente e respondem perguntas
+- **Jogos**: AlphaGo derrotou o campeao mundial de Go; AlphaFold previu a estrutura de proteinas
+- **Recomendacao**: Netflix, Spotify e YouTube usam sistemas de recomendacao baseados em ML
+- **Veiculos autonomos**: Tesla Autopilot, Waymo usam percepcao visual + planejamento de trajetoria
+
+Cada um desses sistemas e extremamente capaz em seu dominio, mas **nenhum** consegue transferir seu conhecimento para tarefas fora do escopo de treinamento sem adaptacao significativa.
+
+### General AI (IA Geral / AGI)
+
+Um sistema hipotetico com capacidade cognitiva **equivalente a de um humano** em qualquer dominio intelectual. AGI poderia aprender qualquer tarefa que um humano aprende, transferir conhecimento entre dominios e raciocinar de forma abstrata.
+
+AGI **nao existe atualmente**. Ha debate sobre se LLMs modernos representam um passo em direcao a AGI ou se sao fundamentalmente limitados por sua arquitetura (pattern matching sofisticado vs. raciocinio genuino). A definicao exata de AGI tambem nao tem consenso academico.
+
+### Super AI (Superinteligencia / ASI)
+
+Um sistema hipotetico que **excede** a capacidade cognitiva humana em todos os dominios. Conceito explorado por Nick Bostrom em *Superintelligence* (2014). Nao existe e nao ha consenso sobre se ou quando seria possivel.
+
+```
+┌────────────────────────────────────────────────────────────┐
+│                    TAXONOMIA DE IA                          │
+│                                                            │
+│  ┌──────────────────────────────────────────────────────┐  │
+│  │  Super AI (ASI)                                      │  │
+│  │  Excede capacidade humana em TODOS os dominios       │  │
+│  │  Status: Hipotetico                                  │  │
+│  │                                                      │  │
+│  │  ┌──────────────────────────────────────────────┐    │  │
+│  │  │  General AI (AGI)                            │    │  │
+│  │  │  Equivalente a humano em QUALQUER dominio    │    │  │
+│  │  │  Status: Hipotetico                          │    │  │
+│  │  │                                              │    │  │
+│  │  │  ┌──────────────────────────────────────┐    │    │  │
+│  │  │  │  Narrow AI (ANI)                     │    │    │  │
+│  │  │  │  Excelente em UMA tarefa especifica  │    │    │  │
+│  │  │  │  Status: EXISTE HOJE                 │    │    │  │
+│  │  │  │  Ex: GPT-4, AlphaGo, DALL-E         │    │    │  │
+│  │  │  └──────────────────────────────────────┘    │    │  │
+│  │  └──────────────────────────────────────────────┘    │  │
+│  └──────────────────────────────────────────────────────┘  │
+└────────────────────────────────────────────────────────────┘
+```
+
+---
+
+## 3. A Hierarquia: IA vs ML vs Deep Learning
+
+Esses tres termos sao frequentemente usados como sinonimos, mas representam conjuntos aninhados com escopos distintos:
+
+```
+┌────────────────────────────────────────────────────────────┐
+│  INTELIGENCIA ARTIFICIAL (IA)                              │
+│  Qualquer tecnica que permite a maquinas imitar            │
+│  comportamento inteligente.                                │
+│  Inclui: sistemas baseados em regras, logica formal,       │
+│  busca, planejamento, ML, etc.                             │
+│                                                            │
+│  ┌──────────────────────────────────────────────────────┐  │
+│  │  MACHINE LEARNING (ML)                               │  │
+│  │  Subconjunto de IA que APRENDE padroes a partir      │  │
+│  │  de dados, sem ser explicitamente programado.        │  │
+│  │  Inclui: regressao, arvores de decisao, SVM,        │  │
+│  │  random forests, redes neurais, etc.                 │  │
+│  │                                                      │  │
+│  │  ┌──────────────────────────────────────────────┐    │  │
+│  │  │  DEEP LEARNING (DL)                          │    │  │
+│  │  │  Subconjunto de ML que usa redes neurais     │    │  │
+│  │  │  com MUITAS camadas (profundas).             │    │  │
+│  │  │  Inclui: CNNs, RNNs, Transformers, GANs     │    │  │
+│  │  │  Requer grandes volumes de dados e GPU.      │    │  │
+│  │  └──────────────────────────────────────────────┘    │  │
+│  └──────────────────────────────────────────────────────┘  │
+└────────────────────────────────────────────────────────────┘
+```
+
+**IA sem ML** -- Sistemas especialistas (expert systems) usam regras if/then definidas por humanos. Um motor de regras de fraude bancaria que implementa `if transacao > R$10000 AND pais != Brasil then bloquear` e IA (toma decisoes), mas nao e ML (nao aprende com dados).
+
+**ML sem Deep Learning** -- Um modelo de regressao logistica que prevE churn de clientes com base em features numericas e ML classico. Aprende com dados, mas usa um unico "neuronio" com funcao sigmoide -- nao e deep learning.
+
+**Deep Learning** -- Um modelo Transformer como o GPT-4 que gera texto e deep learning: redes neurais com bilhoes de parametros distribuidos em dezenas de camadas.
+
+---
+
+## 4. Paradigmas de Machine Learning
+
+Machine Learning se divide em tres paradigmas fundamentais, definidos pela natureza dos dados de treinamento e pelo objetivo do aprendizado.
+
+### 4.1 Aprendizado Supervisionado (Supervised Learning)
+
+O modelo recebe pares **(entrada, rotulo)** e aprende a mapear entradas para rotulos. O objetivo e generalizar esse mapeamento para dados nunca vistos.
+
+```
+Dados de treinamento:
+  (email_1, spam)
+  (email_2, nao_spam)
+  (email_3, spam)
+  ...
+
+Modelo aprende:  f(email) -> {spam, nao_spam}
+
+Inferencia:
+  f(email_novo) -> spam  (predicao)
+```
+
+**Tipos de problemas:**
+- **Classificacao**: rotulo e uma categoria discreta (spam/nao spam, gato/cachorro, benigno/maligno)
+- **Regressao**: rotulo e um valor continuo (preco de imovel, temperatura amanha, tempo de entrega)
+
+**Algoritmos classicos:**
+- Regressao linear e logistica
+- k-Nearest Neighbors (KNN)
+- Arvores de decisao e Random Forests
+- Support Vector Machines (SVM)
+- Redes neurais (MLP, CNN, Transformers)
+
+### 4.2 Aprendizado Nao-Supervisionado (Unsupervised Learning)
+
+O modelo recebe **apenas entradas** (sem rotulos) e deve encontrar estrutura, padroes ou agrupamentos nos dados.
+
+**Tipos de problemas:**
+- **Clustering**: agrupar dados similares (segmentacao de clientes, deteccao de anomalias)
+- **Reducao de dimensionalidade**: comprimir dados preservando informacao (PCA, t-SNE, UMAP)
+- **Aprendizado de representacoes**: extrair features uteis (autoencoders, embeddings)
+
+### 4.3 Aprendizado por Reforco (Reinforcement Learning)
+
+Um **agente** interage com um **ambiente**, executa **acoes** e recebe **recompensas** (ou penalidades). O objetivo e aprender uma **politica** (estrategia) que maximiza a recompensa acumulada ao longo do tempo.
+
+```
+┌─────────────────────────────────────────────────────┐
+│                 REINFORCEMENT LEARNING                │
+│                                                       │
+│   ┌──────────┐    acao (a_t)    ┌──────────────┐     │
+│   │          │ ────────────────→│              │     │
+│   │  AGENTE  │                  │  AMBIENTE    │     │
+│   │          │←────────────────│              │     │
+│   └──────────┘  estado (s_t+1)  └──────────────┘     │
+│                  recompensa (r_t)                     │
+│                                                       │
+│   Objetivo: aprender politica pi(s) -> a              │
+│   que maximiza sum(gamma^t * r_t)                     │
+│   onde gamma e o fator de desconto (0 < gamma <= 1)   │
+└─────────────────────────────────────────────────────┘
+```
+
+**Exemplos celebres:**
+- **AlphaGo** (DeepMind, 2016): aprendeu Go jogando contra si mesmo milhoes de vezes
+- **OpenAI Five** (2019): equipe de 5 agentes aprendeu a jogar Dota 2 em nivel profissional
+- **RLHF** (Reinforcement Learning from Human Feedback): tecnica usada para alinhar LLMs como ChatGPT e Claude com preferencias humanas
+
+### 4.4 Alem dos Tres Paradigmas
+
+**Aprendizado Semi-Supervisionado** -- Combina uma **pequena** quantidade de dados rotulados com uma **grande** quantidade de dados nao rotulados. Util quando rotular dados e caro (ex: imagens medicas que requerem um radiologista).
+
+**Aprendizado Auto-Supervisionado (Self-Supervised Learning)** -- O modelo cria seus proprios rotulos a partir da estrutura dos dados. Essa e a base do treinamento de LLMs modernos:
+
+```
+Texto original:  "O gato sentou no tapete"
+Tarefa criada:   Dado "O gato sentou no ___", prever "tapete"
+
+O modelo nunca recebeu rotulos humanos -- ele criou a tarefa
+de predicao a partir da propria estrutura do texto.
+```
+
+**Transfer Learning** -- Um modelo pre-treinado em uma tarefa (ex: classificacao de imagens no ImageNet) e adaptado para outra tarefa (ex: deteccao de tumores em raios-X). O conhecimento aprendido nas camadas iniciais (deteccao de bordas, texturas) e reutilizado.
+
+---
+
+## 5. Quando Usar (e Quando Nao Usar) IA
+
+IA nao e a solucao para todo problema. Um fluxograma pratico:
+
+```
+O problema requer decisao baseada em dados?
+  │
+  ├── NAO → Use logica convencional (if/else, regras de negocio)
+  │
+  └── SIM → Voce tem dados suficientes?
+              │
+              ├── NAO → Colete dados primeiro ou use regras + heuristicas
+              │
+              └── SIM → Os dados sao rotulados?
+                          │
+                          ├── SIM → Supervised Learning
+                          │         (classificacao ou regressao)
+                          │
+                          ├── PARCIAL → Semi-supervised ou
+                          │             Self-supervised
+                          │
+                          └── NAO → Unsupervised Learning
+                                    (clustering, anomalias)
+
+Existe um ambiente simulavel com feedback claro?
+  └── SIM → Reinforcement Learning
+```
+
+---
+
+## 6. Metricas Fundamentais
+
+Para avaliar modelos de ML, e essencial entender as metricas basicas:
+
+```
+                    Predicao Positiva    Predicao Negativa
+                   ┌────────────────────┬────────────────────┐
+Real Positivo      │  True Positive (TP)│ False Negative (FN)│
+                   ├────────────────────┼────────────────────┤
+Real Negativo      │ False Positive (FP)│ True Negative (TN) │
+                   └────────────────────┴────────────────────┘
+
+Acuracia   = (TP + TN) / (TP + TN + FP + FN)
+Precisao   = TP / (TP + FP)     -- "Dos que previ positivo, quantos sao?"
+Recall     = TP / (TP + FN)     -- "Dos positivos reais, quantos encontrei?"
+F1-Score   = 2 * (Precisao * Recall) / (Precisao + Recall)
+```
+
+**Quando priorizar cada metrica:**
+- **Precisao alta**: quando falso positivo e caro (ex: marcar email legitimo como spam)
+- **Recall alto**: quando falso negativo e perigoso (ex: nao detectar cancer em exame)
+- **F1-Score**: quando voce precisa de equilibrio entre precisao e recall
+
+---
+
+## 7. Historia da IA: Dos Fundamentos aos LLMs
+
+### 7.1 Fundacoes (1940s-1955)
+
+A historia da IA comeca antes do termo existir. Em 1936, Alan Turing publicou *On Computable Numbers*, definindo a **Maquina de Turing** -- um modelo teorico que formalizou o que significa "computar". Em 1943, McCulloch e Pitts propuseram o primeiro modelo matematico de um neuronio artificial. Em 1950, Turing propos o **Imitation Game** (Teste de Turing) no paper *Computing Machinery and Intelligence*.
+
+### 7.2 O Nascimento Formal (1956-1969)
+
+No verao de 1956, John McCarthy, Marvin Minsky, Nathaniel Rochester e Claude Shannon organizaram o workshop de Dartmouth -- o **marco zero** da IA como campo. O proprio termo "Artificial Intelligence" foi cunhado para o evento.
+
+```
+MARCOS DO PERIODO:
+  1956  Logic Theorist (Newell & Simon) -- provas de teoremas
+  1957  Perceptron (Rosenblatt) -- primeiro algoritmo de aprendizado
+  1958  LISP (McCarthy) -- linguagem padrao da IA por decadas
+  1964  ELIZA (Weizenbaum) -- primeiro chatbot (pattern matching)
+```
+
+Os pioneiros fizeram previsoes extremamente otimistas. Herbert Simon (1957): "Dentro de 10 anos, um computador sera campeao mundial de xadrez" (aconteceu em 1997, 40 anos depois).
+
+### 7.3 O Primeiro AI Winter (1974-1980)
+
+O **relatorio Lighthill** (1973) concluiu que a IA nao havia cumprido suas promessas. Problemas tecnicos reais: explosao combinatoria, limitacoes do Perceptron (Minsky & Papert, 1969, provaram que perceptrons de camada unica nao resolviam XOR), e falta de dados e computacao. Financiamento foi cortado drasticamente e o termo "IA" se tornou toxico em propostas.
+
+### 7.4 Sistemas Especialistas e o Segundo Boom (1980-1987)
+
+Sistemas especialistas (expert systems) codificavam conhecimento em regras if/then. MYCIN (diagnostico medico), R1/XCON (configuracao de computadores DEC -- economizou ~$40M/ano). O Japao lancou o projeto Fifth Generation Computer Systems (1982).
+
+### 7.5 O Segundo AI Winter (1987-1993)
+
+Sistemas especialistas eram frageis e caros de manter. O mercado de maquinas LISP colapsou. O projeto japones falhou. Pesquisadores rebatizaram seus trabalhos como "machine learning" e "data mining" para evitar o estigma.
+
+### 7.6 O Renascimento do ML (1990s-2011)
+
+Tres fatores convergiram: **dados** (internet), **computacao** (GPUs) e **algoritmos** (backpropagation + novas arquiteturas).
+
+```
+MARCOS:
+  1986  Backpropagation popularizado (Rumelhart, Hinton, Williams)
+  1989  LeNet-5 (Yann LeCun) -- CNN para digitos
+  1997  Deep Blue vence Kasparov; LSTM (Hochreiter & Schmidhuber)
+  2006  "Deep Learning" cunhado (Geoffrey Hinton)
+  2009  ImageNet (Fei-Fei Li) -- 14M imagens rotuladas
+```
+
+### 7.7 A Revolucao do Deep Learning (2012-2016)
+
+AlexNet (Krizhevsky, Sutskever, Hinton) reduziu o erro no ImageNet de 26% para 16.4% -- uma ruptura sem precedentes. Usou GPUs, ReLU, dropout e data augmentation. Em 2015, ResNet (152 camadas) superou o nivel humano. Em 2016, AlphaGo derrotou o campeao mundial de Go.
+
+```
+ImageNet Top-5 Error Rate:
+  2011: 25.8%  (metodos tradicionais)
+  2012: 16.4%  ← AlexNet (RUPTURA)
+  2015:  3.6%  ← ResNet (ABAIXO DO NIVEL HUMANO ~5%)
+```
+
+### 7.8 A Era dos Transformers (2017-2022)
+
+O paper *Attention Is All You Need* (Vaswani et al., 2017) introduziu a arquitetura **Transformer**, eliminando recorrencia em favor de **self-attention** pura. Seguiram-se BERT (2018), GPT-1/2 (2018-2019), GPT-3 (2020) e AlphaFold 2 (2020).
+
+### 7.9 A Era dos LLMs e IA Generativa (2022-Presente)
+
+Em novembro de 2022, ChatGPT atingiu 100 milhoes de usuarios em 2 meses. Seguiu-se uma corrida por LLMs: GPT-4, Claude, Llama, Gemini, Mistral, DeepSeek, Qwen. A IA generativa expandiu para imagens (DALL-E, Midjourney, Stable Diffusion), audio (Whisper) e video (Sora).
+
+```
+2022 Nov  ChatGPT -- 100M usuarios em 2 meses
+2023 Mar  GPT-4 (multimodal), Claude (Anthropic)
+2023 Jul  Llama 2 (Meta) -- open-weight
+2024      Claude 3, GPT-4 Turbo, agentes e tool use
+2025      Modelos de raciocinio, agentes autonomos
+```
+
+### 7.10 Licoes dos Ciclos
+
+```
+Ciclo tipico:
+  Avancos tecnicos → Hype excessivo → Promessas nao cumpridas
+  → Corte de financiamento → "Inverno"
+  → Avancos incrementais silenciosos → Novo breakthrough → Repete
+```
+
+**Licoes fundamentais:**
+1. A tecnologia precede a utilidade em decadas (backpropagation: 1960s → pratico em 2010s)
+2. Dados + Compute > Algoritmos sofisticados
+3. Scaling laws sao reais (mais parametros + mais dados + mais compute = melhor desempenho)
+4. Ciclos de hype sao perigosos e atrasam progresso real
+5. A IA como campo e resiliente -- cada retomada foi mais poderosa que a anterior
+
+---
+
+## Resumo Cronologico
+
+```
+1943  Neuronio McCulloch-Pitts
+1950  Teste de Turing
+1956  Conferencia de Dartmouth (nasce a "IA")
+1957  Perceptron (Rosenblatt)
+1969  Livro Perceptrons (Minsky & Papert)
+1974  Primeiro AI Winter
+1980  Sistemas especialistas resurgem
+1986  Backpropagation popularizado (Hinton et al.)
+1987  Segundo AI Winter
+1997  Deep Blue, LSTM
+2006  Deep Learning (Hinton)
+2012  AlexNet -- RUPTURA no ImageNet
+2014  GANs, Seq2Seq + Attention
+2015  ResNet supera nivel humano
+2016  AlphaGo
+2017  Transformer ("Attention Is All You Need")
+2018  BERT, GPT-1
+2020  GPT-3, AlphaFold 2
+2022  ChatGPT, Stable Diffusion
+2023  GPT-4, Claude, Llama 2
+2024  Claude 3, Gemini, agentes de IA
+2025  Modelos de raciocinio, agentes autonomos
+```
+
+---
+
+## Referencias e Fontes
+
+- **Artificial Intelligence: A Modern Approach** -- Stuart Russell & Peter Norvig. O livro-texto padrao de IA, cobrindo desde busca e logica ate aprendizado de maquina e agentes racionais
+- **Computing Machinery and Intelligence** -- Alan Turing (1950). O paper seminal que introduziu o Teste de Turing e a questao "Can machines think?"
+- **Deep Learning** -- Ian Goodfellow, Yoshua Bengio & Aaron Courville (2016). Referencia fundamental para redes neurais, otimizacao e arquiteturas profundas. [deeplearningbook.org](https://www.deeplearningbook.org)
+- **Attention Is All You Need** -- Vaswani et al. (2017). O paper que introduziu a arquitetura Transformer. [arxiv.org/abs/1706.03762](https://arxiv.org/abs/1706.03762)
+- **The Quest for Artificial Intelligence** -- Nils Nilsson (2009). Historia abrangente da IA contada por um dos pioneiros do campo
+- **Stanford HAI (Human-Centered Artificial Intelligence)** -- [hai.stanford.edu](https://hai.stanford.edu). Centro de pesquisa com relatorios anuais sobre o estado da IA (AI Index Report)
+- **Anthropic Documentation** -- [docs.anthropic.com](https://docs.anthropic.com). Documentacao oficial da Anthropic, incluindo research papers sobre Constitutional AI e alinhamento
+- **OpenAI Cookbook** -- [cookbook.openai.com](https://cookbook.openai.com). Guias praticos e exemplos de uso de modelos de linguagem
+- **Andrej Karpathy's Neural Networks: Zero to Hero** -- [youtube.com/@andrejkarpathy](https://www.youtube.com/@andrejkarpathy). Serie de lectures cobrindo desde backpropagation ate GPT do zero
+- **fast.ai** -- [fast.ai](https://www.fast.ai). Curso pratico de deep learning com abordagem top-down, cobrindo desde aplicacoes ate fundamentos

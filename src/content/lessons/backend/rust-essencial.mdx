@@ -1,0 +1,896 @@
+---
+title: "Rust Essencial"
+description: "Ownership, borrowing, lifetimes, traits, error handling, concorrência segura (Send/Sync, Arc<Mutex<T>>), async Rust com Tokio, memory layout e Rust para web (Axum)"
+track: "backend"
+order: 28
+section: "Linguagens"
+priority: "medium"
+tags: ["rust", "ownership", "borrowing", "lifetimes", "traits", "async", "tokio", "memory-safety", "concorrência"]
+prerequisites: ["go-fundamentos"]
+keyTakeaways:
+  - "Ownership é a inovação central do Rust: cada valor tem exatamente um owner, e quando o owner sai de escopo o valor é dropped — isso garante memory safety sem garbage collector"
+  - "O borrow checker impõe em compile time: ou múltiplas referências imutáveis (&T) ou exatamente uma referência mutável (&mut T) — eliminando data races por construção"
+  - "Send + Sync são marker traits que o compilador verifica automaticamente: Send permite transferir ownership entre threads, Sync permite compartilhar referências — Arc<Mutex<T>> satisfaz ambos"
+  - "Async Rust usa state machines geradas pelo compilador (cada .await point é um estado) rodando em runtimes como Tokio — zero-cost abstractions para I/O concorrente"
+---
+
+## Por que Rust
+
+Rust nasceu em 2006 como projeto pessoal de Graydon Hoare na Mozilla. A versão 1.0 saiu em 2015. O objetivo era direto: **oferecer a performance de C/C++ sem os bugs de memória que geram 70% das vulnerabilidades de segurança** (dado confirmado pela Microsoft e pelo Google sobre Chromium).
+
+A proposta central é o conceito de **zero-cost abstractions**: o compilador garante safety em tempo de compilação, sem runtime overhead. Não existe garbage collector, não existe reference counting implícito, não existe VM.
+
+### Crescimento e adoção
+
+```
+Empresa         │ Uso
+────────────────┼──────────────────────────────────────────────
+Google          │ Android (Binder IPC), Chrome, Fuchsia OS
+Microsoft       │ Windows kernel modules, Azure IoT
+Amazon          │ Firecracker (VMs do Lambda), Bottlerocket OS
+Cloudflare      │ Pingora (proxy HTTP que substitui Nginx)
+Meta            │ Source control (Mononoke), build system (Buck2)
+Discord         │ Migrou serviço de Read States de Go para Rust
+Linux Kernel    │ Suporte oficial a módulos em Rust (v6.1+)
+```
+
+O crescimento em vagas é de aproximadamente 67% ano a ano. Rust ainda é nicho, mas a tendência é clara — especialmente em infraestrutura, sistemas embarcados e segurança.
+
+### Onde Rust brilha
+
+- **Systems programming** — kernels, drivers, firmware, runtimes
+- **Infraestrutura de rede** — proxies, load balancers, DNS servers (Pingora, Linkerd2-proxy)
+- **CLI tools** — ripgrep, fd, bat, delta — substituem utilities Unix com performance superior
+- **WebAssembly** — suporte de primeira classe, ideal para edge computing e browser
+- **Criptografia e segurança** — memory safety elimina classes inteiras de vulnerabilidades
+
+### Onde Rust NÃO é ideal
+
+- **Prototipação rápida** — borrow checker adiciona fricção; Python ou Go são mais produtivos para POCs
+- **Scripts simples** — bash, Python ou Node são mais pragmáticos
+- **Equipes sem experiência** — curva de aprendizado real; lifetimes causam frustração nas primeiras semanas
+- **CRUD web simples** — Go ou Java entregam mais rápido sem requisitos extremos de performance
+
+---
+
+## Ownership
+
+Ownership é **a inovação fundamental** do Rust — memory safety sem garbage collector. As regras:
+
+1. Cada valor tem exatamente **um owner**
+2. Quando o owner sai de escopo, o valor é **dropped** (memória liberada)
+3. Ownership pode ser **transferida** (move), não duplicada implicitamente
+
+### Move Semantics
+
+```rust
+fn main() {
+    let s1 = String::from("hello"); // s1 owns the String
+    let s2 = s1;                    // ownership MOVES to s2; s1 is invalid
+    // println!("{}", s1);          // COMPILE ERROR: value used after move
+    println!("{}", s2);             // ok — s2 is the owner now
+}
+```
+
+O que acontece na memória:
+
+```
+ANTES do move:                    DEPOIS do move:
+  Stack          Heap               Stack          Heap
+  ┌────────┐   ┌───────┐           ┌────────┐
+  │ s1     │   │ hello │           │ s1 XXX │  (invalidado)
+  │ ptr ───┼──►│       │           └────────┘
+  │ len: 5 │   └───────┘           ┌────────┐   ┌───────┐
+  │ cap: 5 │                       │ s2     │   │ hello │
+  └────────┘                       │ ptr ───┼──►│       │
+                                   │ len: 5 │   └───────┘
+                                   │ cap: 5 │
+                                   └────────┘
+```
+
+Nenhuma cópia dos dados no heap. Apenas stack metadata foi copiada. **Zero-cost**.
+
+### Ownership em funções
+
+```rust
+fn take_ownership(s: String) {
+    println!("Recebi: {}", s);
+} // s é dropped aqui — memória liberada
+
+fn main() {
+    let msg = String::from("hello");
+    take_ownership(msg);
+    // println!("{}", msg); // COMPILE ERROR: msg foi moved
+}
+```
+
+### Copy e Clone
+
+Tipos na stack implementam **Copy** — atribuição faz cópia bit-a-bit (barata):
+
+```rust
+let x: i32 = 42;
+let y = x;              // CÓPIA — x continua válido
+println!("{} {}", x, y); // "42 42"
+```
+
+Tipos Copy: `i32`, `f64`, `bool`, `char`, tuples de Copy types, arrays de Copy types.
+
+Para heap types, cópia explícita com **Clone**:
+
+```rust
+let s1 = String::from("hello");
+let s2 = s1.clone();           // deep copy — nova alocação no heap
+println!("{} {}", s1, s2);     // ambos válidos
+```
+
+---
+
+## Borrowing e References
+
+**Borrowing** empresta uma referência ao valor sem transferir ownership:
+
+```rust
+fn calculate_length(s: &String) -> usize {
+    s.len()
+} // s sai de escopo, mas o valor NÃO é dropped (é apenas referência)
+
+fn main() {
+    let s1 = String::from("hello");
+    let len = calculate_length(&s1); // emprestamos referência
+    println!("'{}' tem {} bytes", s1, len); // s1 continua válido
+}
+```
+
+### Regras do Borrow Checker
+
+**Regra 1**: **OU** múltiplas `&T` **OU** exatamente uma `&mut T` — nunca ambos.
+**Regra 2**: Referências devem sempre ser válidas (no dangling).
+
+```rust
+// COMPILA: múltiplas referências imutáveis
+let s = String::from("hello");
+let r1 = &s;
+let r2 = &s;
+println!("{} {}", r1, r2);
+```
+
+```rust
+// NÃO COMPILA: &mut coexistindo com &
+let mut s = String::from("hello");
+let r1 = &s;
+let r2 = &mut s;     // ERRO: não pode ter &mut enquanto &s existe
+println!("{}", r1);
+```
+
+```rust
+// COMPILA: NLL (Non-Lexical Lifetimes) — &s termina antes de &mut
+let mut s = String::from("hello");
+let r1 = &s;
+println!("{}", r1);   // último uso de r1 — borrow termina aqui
+let r2 = &mut s;      // ok — nenhum borrow imutável ativo
+r2.push_str(" world");
+```
+
+### Slices
+
+`&str` é um **fat pointer** (ponteiro + comprimento) — a forma idiomática de passar strings:
+
+```rust
+fn first_word(s: &str) -> &str {
+    let bytes = s.as_bytes();
+    for (i, &byte) in bytes.iter().enumerate() {
+        if byte == b' ' { return &s[..i]; }
+    }
+    &s[..]
+}
+```
+
+---
+
+## Lifetimes
+
+Lifetimes informam ao compilador **por quanto tempo uma referência é válida**.
+
+```rust
+// NÃO COMPILA: compilador não sabe qual lifetime retornar
+fn longest(x: &str, y: &str) -> &str {
+    if x.len() > y.len() { x } else { y }
+}
+
+// Solução: anotar com lifetime 'a
+fn longest<'a>(x: &'a str, y: &'a str) -> &'a str {
+    if x.len() > y.len() { x } else { y }
+}
+```
+
+### Lifetime Elision Rules
+
+O compilador infere lifetimes automaticamente com três regras:
+
+1. Cada parâmetro referência recebe seu próprio lifetime
+2. Se há exatamente um input lifetime, ele é atribuído a todos os outputs
+3. Se um parâmetro é `&self`/`&mut self`, o lifetime de self é atribuído aos outputs
+
+### Lifetimes em Structs
+
+```rust
+struct Excerpt<'a> {
+    text: &'a str,
+}
+
+impl<'a> Excerpt<'a> {
+    fn announce(&self, msg: &str) -> &str {
+        println!("Atenção: {}", msg);
+        self.text // lifetime de &self (regra 3)
+    }
+}
+```
+
+`'static` indica que a referência vive por toda a duração do programa — string literals são `'static`:
+
+```rust
+let s: &'static str = "eu vivo para sempre no binário";
+```
+
+---
+
+## Tipos: Structs, Enums, Pattern Matching
+
+### Structs
+
+```rust
+struct User {
+    id: u64, name: String, email: String, active: bool,
+}
+
+impl User {
+    fn new(id: u64, name: String, email: String) -> Self {
+        Self { id, name, email, active: true }
+    }
+    fn display_name(&self) -> &str { &self.name }
+    fn deactivate(&mut self) { self.active = false; }
+}
+```
+
+### Enums (Algebraic Data Types)
+
+Cada variante pode carregar dados diferentes. O `match` é **exhaustive**:
+
+```rust
+enum OrderStatus {
+    Pending,
+    Processing { estimated_minutes: u32 },
+    Shipped(String),        // tracking code
+    Delivered { at: String },
+    Cancelled { reason: String },
+}
+
+fn handle_order(status: &OrderStatus) {
+    match status {
+        OrderStatus::Pending => println!("Aguardando pagamento"),
+        OrderStatus::Processing { estimated_minutes } =>
+            println!("ETA: {} min", estimated_minutes),
+        OrderStatus::Shipped(tracking) =>
+            println!("Rastreio: {}", tracking),
+        OrderStatus::Delivered { at } => println!("Entregue em {}", at),
+        OrderStatus::Cancelled { reason } => println!("Cancelado: {}", reason),
+    }
+}
+```
+
+### Option e Result — sem null
+
+```rust
+// Option<T>: Some(T) | None — substitui null
+// Result<T, E>: Ok(T) | Err(E) — error handling explícito
+
+fn find_user(id: u64) -> Option<User> {
+    if id == 1 {
+        Some(User::new(1, "Alice".into(), "alice@example.com".into()))
+    } else {
+        None
+    }
+}
+
+// if let — quando só interessa um caso
+if let Some(user) = find_user(1) {
+    println!("Nome: {}", user.display_name());
+}
+```
+
+---
+
+## Traits
+
+Traits são interfaces com superpoderes — implementações default, generic bounds, dispatch estático ou dinâmico.
+
+```rust
+trait Summary {
+    fn summarize_author(&self) -> String;
+    // Implementação default
+    fn summarize(&self) -> String {
+        format!("(Leia mais de {}...)", self.summarize_author())
+    }
+}
+
+struct Article { title: String, author: String, content: String }
+
+impl Summary for Article {
+    fn summarize_author(&self) -> String { self.author.clone() }
+    fn summarize(&self) -> String {
+        format!("{} por {}", self.title, self.author)
+    }
+}
+```
+
+### Trait Bounds e Generics
+
+```rust
+// Trait bound explícito
+fn notify<T: Summary + std::fmt::Display>(item: &T) {
+    println!("Breaking: {}", item.summarize());
+}
+
+// impl Trait (syntactic sugar)
+fn notify_simple(item: &impl Summary) {
+    println!("{}", item.summarize());
+}
+
+// where clause — legível com múltiplos bounds
+fn process<T, U>(t: &T, u: &U) -> String
+where T: Summary + Clone, U: std::fmt::Display + std::fmt::Debug {
+    format!("{} — {:?}", t.summarize(), u)
+}
+```
+
+### Static vs Dynamic Dispatch
+
+```rust
+// Static — monomorphization (zero overhead, mais code bloat)
+fn print_summary(item: &impl Summary) { println!("{}", item.summarize()); }
+
+// Dynamic — vtable (indireção, mas permite coleções heterogêneas)
+fn print_summary_dyn(item: &dyn Summary) { println!("{}", item.summarize()); }
+
+fn get_summaries() -> Vec<Box<dyn Summary>> {
+    vec![Box::new(article1), Box::new(article2)]
+}
+```
+
+### Derive Macros e Orphan Rule
+
+```rust
+#[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
+struct Point { x: i32, y: i32 }
+```
+
+**Orphan rule**: só pode implementar trait se você é dono do trait ou do tipo. Workaround: **newtype pattern**:
+
+```rust
+struct UserList(Vec<User>);
+impl std::fmt::Display for UserList { /* ... */ }
+```
+
+---
+
+## Error Handling
+
+### panic! vs Result
+
+`panic!`: bugs, estados impossíveis. `Result<T, E>`: erros esperados (I/O, rede, validação).
+
+### O operador ?
+
+```rust
+fn read_username() -> Result<String, io::Error> {
+    let content = fs::read_to_string("config.txt")?; // propaga Err
+    Ok(content.lines().next().unwrap_or("anonymous").to_string())
+}
+```
+
+### thiserror (libraries) + anyhow (applications)
+
+```rust
+use thiserror::Error;
+
+#[derive(Error, Debug)]
+enum AppError {
+    #[error("database error: {0}")]
+    Database(#[from] sqlx::Error),
+    #[error("user {id} not found")]
+    NotFound { id: i64 },
+    #[error("unauthorized")]
+    Unauthorized,
+}
+```
+
+```rust
+use anyhow::{Context, Result};
+
+async fn fetch_user(id: i64) -> Result<User> {
+    let user = db::find_user(id).await
+        .context("falha ao buscar usuário no banco")?;
+    user.ok_or_else(|| anyhow::anyhow!("usuário {} não encontrado", id))
+}
+```
+
+Padrão idiomático: **thiserror para libraries** (tipos específicos para match), **anyhow para binaries** (mensagem + backtrace).
+
+---
+
+## Concorrência Segura
+
+Rust garante **ausência de data races em compile time** via `Send` e `Sync`:
+
+- **Send**: tipo pode ser transferido para outra thread
+- **Sync**: tipo pode ser compartilhado entre threads via `&T`
+
+O compilador verifica automaticamente. Tipos não-Send/Sync: `Rc<T>`, `*mut T`, `Cell<T>`.
+
+### Arc e Mutex
+
+```rust
+use std::sync::{Arc, Mutex};
+use std::thread;
+
+fn main() {
+    let counter = Arc::new(Mutex::new(0));
+    let mut handles = vec![];
+
+    for _ in 0..10 {
+        let counter = Arc::clone(&counter);
+        let handle = thread::spawn(move || {
+            let mut num = counter.lock().unwrap();
+            *num += 1;
+        });
+        handles.push(handle);
+    }
+
+    for handle in handles { handle.join().unwrap(); }
+    println!("Resultado: {}", *counter.lock().unwrap()); // 10
+}
+```
+
+### RwLock e Channels
+
+```rust
+// RwLock — múltiplos readers OU um writer
+let config = Arc::new(RwLock::new(AppConfig::default()));
+let val = config.read().unwrap();   // múltiplas threads simultaneamente
+let mut val = config.write().unwrap(); // exclusivo
+```
+
+```rust
+// Channels — message passing (mpsc)
+let (tx, rx) = mpsc::channel();
+for i in 0..5 {
+    let tx = tx.clone();
+    thread::spawn(move || { tx.send(format!("msg {}", i)).unwrap(); });
+}
+drop(tx);
+for msg in rx { println!("Recebido: {}", msg); }
+```
+
+### Rayon: paralelismo data-parallel
+
+```rust
+use rayon::prelude::*;
+
+let numbers: Vec<u64> = (0..1_000_000).collect();
+let sum: u64 = numbers.par_iter().map(|&n| n * n).sum(); // paralelo automático
+```
+
+### Exemplo: web scraper concorrente
+
+```rust
+use std::sync::{Arc, Mutex};
+use std::thread;
+
+fn main() {
+    let urls = vec!["https://example.com/1", "https://example.com/2", "https://example.com/3"];
+    let results = Arc::new(Mutex::new(Vec::new()));
+    let mut handles = vec![];
+
+    for url in urls {
+        let results = Arc::clone(&results);
+        let url = url.to_string();
+        handles.push(thread::spawn(move || {
+            let result = scrape_url(&url);
+            results.lock().unwrap().push((url, result));
+        }));
+    }
+
+    for h in handles { h.join().unwrap(); }
+    for (url, res) in results.lock().unwrap().iter() {
+        match res {
+            Ok(c) => println!("{}: {} bytes", url, c.len()),
+            Err(e) => eprintln!("{}: ERRO — {}", url, e),
+        }
+    }
+}
+```
+
+---
+
+## Async Rust
+
+Concorrência cooperativa para I/O-bound workloads via **Futures** — state machines geradas pelo compilador.
+
+### Future Trait
+
+```rust
+trait Future {
+    type Output;
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output>;
+}
+enum Poll<T> { Ready(T), Pending }
+```
+
+Futures são **lazy** — não executam até serem polled. O runtime (Tokio) chama `poll` quando podem progredir.
+
+### async/await e State Machines
+
+```rust
+async fn fetch_data(url: &str) -> Result<String, reqwest::Error> {
+    let response = reqwest::get(url).await?;     // estado 1 → 2
+    let body = response.text().await?;            // estado 2 → 3
+    Ok(body)                                      // estado 3 (final)
+}
+```
+
+O compilador gera uma state machine — cada `.await` é um estado. **Zero-cost**: sem alocação heap, sem boxing.
+
+### Tokio Runtime
+
+```rust
+#[tokio::main]
+async fn main() {
+    let handle1 = tokio::spawn(async { fetch_data("https://api.example.com/users").await });
+    let handle2 = tokio::spawn(async { fetch_data("https://api.example.com/posts").await });
+    let (users, posts) = tokio::join!(handle1, handle2);
+}
+```
+
+### Patterns: select!, Streams
+
+```rust
+use tokio::select;
+use tokio::time::{sleep, Duration};
+
+async fn with_timeout() {
+    select! {
+        result = fetch_data("https://slow-api.com") => println!("{:?}", result),
+        _ = sleep(Duration::from_secs(5)) => println!("Timeout"),
+    }
+}
+```
+
+```rust
+use tokio_stream::StreamExt;
+
+async fn process_stream() {
+    let mut stream = tokio_stream::iter(vec![1, 2, 3, 4, 5])
+        .map(|n| n * 2).filter(|n| *n > 4);
+    while let Some(value) = stream.next().await {
+        println!("Valor: {}", value);
+    }
+}
+```
+
+---
+
+## Memory Layout
+
+### Stack vs Heap
+
+```
+Stack (rápido, LIFO, tamanho fixo)     Heap (dinâmico, alocado em runtime)
+┌─────────────────────────┐
+│ x: i32 = 42    [4B]    │
+│ ptr ────────────────────┼────► ┌──────────────┐
+│ len: 5                  │      │ h e l l o    │
+│ cap: 5                  │      └──────────────┘
+└─────────────────────────┘
+```
+
+### Box, Rc, Arc
+
+```rust
+let boxed: Box<i32> = Box::new(42);       // heap, um owner
+
+use std::rc::Rc;
+let a = Rc::new("shared".to_string());
+let b = Rc::clone(&a);                     // ref count (single-thread)
+
+use std::sync::Arc;
+let a = Arc::new(vec![1, 2, 3]);
+let b = Arc::clone(&a);                    // atomic ref count (multi-thread)
+```
+
+### Interior Mutability
+
+```rust
+use std::cell::{Cell, RefCell};
+
+let cell = Cell::new(42);
+cell.set(100);                              // mutação sem &mut
+
+let ref_cell = RefCell::new(vec![1, 2, 3]);
+ref_cell.borrow_mut().push(4);             // borrow check em RUNTIME
+```
+
+Layout de tipos comuns:
+
+```
+String/Vec<T>: [ptr | len | cap]  (24 bytes na stack, dados no heap)
+Box<T>:        [ptr]              (8 bytes na stack, T no heap)
+&str:          [ptr | len]        (16 bytes, fat pointer)
+```
+
+---
+
+## Cargo e Ecosystem
+
+### Cargo.toml
+
+```toml
+[package]
+name = "my-api"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+tokio = { version = "1", features = ["full"] }
+axum = "0.7"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+sqlx = { version = "0.7", features = ["runtime-tokio", "postgres"] }
+tracing = "0.1"
+anyhow = "1"
+thiserror = "1"
+
+[profile.release]
+lto = true
+codegen-units = 1
+strip = true
+```
+
+### Crates essenciais
+
+```
+Serialização   │ serde, serde_json        HTTP server  │ axum, actix-web
+HTTP client    │ reqwest                   Async        │ tokio
+Database       │ sqlx, diesel, sea-orm     Logging      │ tracing
+CLI            │ clap                      Errors       │ anyhow, thiserror
+Auth           │ jsonwebtoken, argon2      Config       │ config, dotenvy
+```
+
+---
+
+## Rust para Web: Axum
+
+Axum é o framework web do ecossistema Tokio — built on `tower` (middleware) e `hyper` (HTTP).
+
+### Hello World
+
+```rust
+use axum::{routing::get, Router};
+
+#[tokio::main]
+async fn main() {
+    let app = Router::new().route("/", get(|| async { "Hello, World!" }));
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
+    axum::serve(listener, app).await.unwrap();
+}
+```
+
+### REST API completa
+
+```rust
+use axum::{extract::{Path, Query, State, Json}, routing::{get, post}, Router, http::StatusCode};
+use serde::{Deserialize, Serialize};
+use std::sync::Arc;
+use tokio::sync::RwLock;
+
+type AppState = Arc<RwLock<Vec<User>>>;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+struct User { id: u64, name: String, email: String }
+
+#[derive(Deserialize)]
+struct CreateUser { name: String, email: String }
+
+async fn list_users(State(state): State<AppState>) -> Json<Vec<User>> {
+    Json(state.read().await.clone())
+}
+
+async fn get_user(
+    State(state): State<AppState>, Path(id): Path<u64>,
+) -> Result<Json<User>, StatusCode> {
+    state.read().await.iter().find(|u| u.id == id)
+        .cloned().map(Json).ok_or(StatusCode::NOT_FOUND)
+}
+
+async fn create_user(
+    State(state): State<AppState>, Json(input): Json<CreateUser>,
+) -> (StatusCode, Json<User>) {
+    let mut users = state.write().await;
+    let user = User { id: users.len() as u64 + 1, name: input.name, email: input.email };
+    users.push(user.clone());
+    (StatusCode::CREATED, Json(user))
+}
+
+#[tokio::main]
+async fn main() {
+    let state: AppState = Arc::new(RwLock::new(Vec::new()));
+    let app = Router::new()
+        .route("/users", get(list_users).post(create_user))
+        .route("/users/{id}", get(get_user))
+        .with_state(state);
+    let listener = tokio::net::TcpListener::bind("0.0.0.0:3000").await.unwrap();
+    axum::serve(listener, app).await.unwrap();
+}
+```
+
+### Middleware e Error Handling
+
+```rust
+use tower_http::cors::CorsLayer;
+use tower_http::trace::TraceLayer;
+
+let app = Router::new()
+    .route("/users", get(list_users))
+    .layer(TraceLayer::new_for_http())
+    .layer(CorsLayer::permissive());
+```
+
+```rust
+use axum::response::{IntoResponse, Response};
+
+enum ApiError { NotFound(String), Internal(anyhow::Error) }
+
+impl IntoResponse for ApiError {
+    fn into_response(self) -> Response {
+        match self {
+            ApiError::NotFound(msg) => (StatusCode::NOT_FOUND, msg).into_response(),
+            ApiError::Internal(err) => {
+                tracing::error!("{:?}", err);
+                (StatusCode::INTERNAL_SERVER_ERROR, "internal error").into_response()
+            }
+        }
+    }
+}
+```
+
+---
+
+## Interop
+
+### FFI com C
+
+```rust
+extern "C" {
+    fn abs(input: i32) -> i32;
+}
+fn main() { unsafe { println!("abs(-5) = {}", abs(-5)); } }
+
+// Expor para C
+#[no_mangle]
+pub extern "C" fn rust_add(a: i32, b: i32) -> i32 { a + b }
+```
+
+### WebAssembly
+
+```rust
+use wasm_bindgen::prelude::*;
+
+#[wasm_bindgen]
+pub fn fibonacci(n: u32) -> u32 {
+    match n { 0 => 0, 1 => 1, _ => fibonacci(n - 1) + fibonacci(n - 2) }
+}
+```
+
+```bash
+wasm-pack build --target web
+# Output: .wasm + JavaScript glue code
+```
+
+Casos de uso: **Cloudflare Workers**, **Figma**, funções CPU-intensive no frontend.
+
+---
+
+## Comparação com Go, Java e C++
+
+```
+Critério           │ Rust          │ Go            │ Java          │ C++
+───────────────────┼───────────────┼───────────────┼───────────────┼───────────────
+Memory model       │ Ownership     │ GC            │ GC (JVM)      │ Manual
+Memory safety      │ Compile-time  │ Runtime (GC)  │ Runtime (GC)  │ Nenhuma *
+Null safety        │ Option<T>     │ nil (unsafe)  │ Optional      │ nullptr
+Concurrency        │ Send/Sync     │ Goroutines    │ Virtual Thrs  │ Manual
+Error handling     │ Result<T,E>   │ error return  │ Exceptions    │ Exceptions
+Compile time       │ Lento         │ Muito rápido  │ Médio         │ Muito lento
+Ecosystem maturity │ Crescendo     │ Maduro        │ Muito maduro  │ Muito maduro
+Learning curve     │ Alta          │ Baixa         │ Média         │ Muito alta
+```
+
+**Escolha Rust** quando performance é hard requirement, memory safety é crítica, ou não pode ter GC pauses.
+**Escolha Go** quando quer produtividade alta com boa performance, microserviços, ou concorrência como prioridade.
+**Escolha Java** quando precisa de ecossistema enterprise maduro ou o time já tem expertise JVM.
+
+---
+
+## Exercícios
+
+### 1. Ownership e Borrowing
+
+Implemente `longest_word` que recebe `&str` e retorna a palavra mais longa como `&str`:
+
+```rust
+fn longest_word(text: &str) -> &str { todo!() }
+
+#[test]
+fn test_longest_word() {
+    assert_eq!(longest_word("the quick brown fox"), "quick");
+    assert_eq!(longest_word("a bb ccc dd"), "ccc");
+}
+```
+
+### 2. Enums e Pattern Matching
+
+Modele um sistema de pagamentos com enum para estados e transições válidas:
+
+```rust
+enum PaymentStatus {
+    Pending,
+    Authorized { auth_code: String },
+    Captured { amount_cents: u64 },
+    Refunded { reason: String },
+    Failed { error: String },
+}
+
+impl PaymentStatus {
+    fn can_capture(&self) -> bool { todo!() }
+    fn capture(self, amount_cents: u64) -> Result<Self, String> { todo!() }
+    fn refund(self, reason: String) -> Result<Self, String> { todo!() }
+}
+```
+
+### 3. Traits e Generics
+
+Implemente `Repository<T>` genérico com implementação in-memory usando `HashMap`:
+
+```rust
+trait Repository<T> {
+    fn find_by_id(&self, id: u64) -> Option<&T>;
+    fn save(&mut self, id: u64, entity: T);
+    fn delete(&mut self, id: u64) -> Option<T>;
+    fn count(&self) -> usize;
+}
+```
+
+### 4. Concorrência com threads
+
+Download simulado de N URLs em paralelo com `Arc<Mutex<Vec<_>>>`. Colete resultados e imprima tempo total.
+
+### 5. Async com Tokio
+
+Converta o exercício 4 para `tokio::spawn` + `tokio::join!`. Compare ergonomia threads vs async.
+
+### 6. Axum API
+
+API REST com Axum para TODO list: `GET /todos`, `POST /todos`, `PUT /todos/{id}`, `DELETE /todos/{id}` com `Arc<RwLock<Vec<Todo>>>`.
+
+---
+
+## Referências
+
+- [The Rust Programming Language](https://doc.rust-lang.org/book/) — o "Rust Book", leitura obrigatória
+- [Rust by Example](https://doc.rust-lang.org/rust-by-example/) — aprendizado por exemplos
+- [Rust in Action](https://www.manning.com/books/rust-in-action) (Tim McNamara)
+- [Programming Rust, 2nd Edition](https://www.oreilly.com/library/view/programming-rust-2nd/9781492052586/) (Blandy, Orendorff, Tindall)
+- [Tokio Tutorial](https://tokio.rs/tokio/tutorial) — async Rust na prática
+- [Axum Documentation](https://docs.rs/axum/latest/axum/)
+- [Rust API Guidelines](https://rust-lang.github.io/api-guidelines/)
+- [The Rustonomicon](https://doc.rust-lang.org/nomicon/) — unsafe Rust avançado

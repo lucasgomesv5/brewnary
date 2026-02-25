@@ -1,0 +1,780 @@
+---
+title: "Princípios SOLID"
+description: "Os 5 princípios SOLID com exemplos avançados em TypeScript — SRP, OCP, LSP, ISP e DIP com anti-patterns, métricas de coesão e acoplamento, e análise pragmática"
+track: "architecture"
+order: 1
+section: "Design e Arquitetura"
+priority: "medium"
+tags: ["solid", "design-patterns", "clean-code", "arquitetura"]
+prerequisites: []
+keyTakeaways:
+  - "Single Responsibility: cada classe/módulo faz UMA coisa — meça coesão (LCOM) e acoplamento (Ce/Ca) para validar separação de responsabilidades"
+  - "Open/Closed com Strategy Pattern e plugin architecture permite adicionar novos comportamentos sem modificar código existente"
+  - "Dependency Inversion: dependa de abstrações para trocar implementações sem mudar o serviço consumidor — use IoC containers em projetos maiores"
+---
+
+## Introdução: Por Que SOLID Importa
+
+Os princípios SOLID foram formalizados por Robert C. Martin no início dos anos 2000, mas suas raízes remontam a décadas de pesquisa em engenharia de software — desde os trabalhos de David Parnas sobre information hiding (1972) até a formalização de Barbara Liskov sobre subtipagem comportamental (1987).
+
+SOLID não é um checklist dogmático. É um **conjunto de heurísticas** que guiam decisões de design quando o custo de mudança futura é alto. O ponto crítico é saber **quando aplicar** e **quando relaxar** cada princípio.
+
+```
+A diferença entre uma abordagem dogmática e pragmática:
+
+Dogmático:  "Preciso criar 47 classes para seguir SRP"
+Pragmático: "Este módulo tem duas razões para mudar? Se sim, separo.
+             Se não, manter junto reduz complexidade acidental."
+```
+
+---
+
+## S — Single Responsibility Principle (SRP)
+
+### A Definição Real (Não a Simplificada)
+
+A definição popular — "uma classe deve ter apenas uma responsabilidade" — é vaga e leva a over-engineering. A definição precisa de Robert C. Martin:
+
+> "Um módulo deve ter um, e apenas um, motivo para mudar."
+
+Mais especificamente: **um módulo deve ser responsável perante um, e apenas um, ator (stakeholder)**.
+
+### Métricas de Coesão e Acoplamento
+
+Para avaliar SRP objetivamente, use métricas:
+
+```typescript
+// LCOM (Lack of Cohesion of Methods)
+// LCOM = 0 → alta coesão (bom)
+// LCOM alto → baixa coesão (possível violação de SRP)
+
+// Exemplo: classe com LCOM alto (baixa coesão)
+class UserManager {
+  private db: Database;
+  private emailClient: SmtpClient;
+  private pdfGenerator: PdfEngine;
+
+  // Grupo 1: operações de persistência (usa db)
+  createUser(data: UserData): User {
+    return this.db.insert('users', data);
+  }
+
+  findUser(id: string): User {
+    return this.db.findById('users', id);
+  }
+
+  // Grupo 2: operações de email (usa emailClient)
+  sendWelcomeEmail(user: User): void {
+    this.emailClient.send({
+      to: user.email,
+      template: 'welcome',
+    });
+  }
+
+  sendPasswordReset(user: User, token: string): void {
+    this.emailClient.send({
+      to: user.email,
+      template: 'reset',
+      data: { token },
+    });
+  }
+
+  // Grupo 3: operações de relatório (usa pdfGenerator)
+  generateUserReport(users: User[]): Buffer {
+    return this.pdfGenerator.render('user-report', { users });
+  }
+}
+
+// LCOM = 3 (três grupos de métodos que não compartilham campos)
+// Três atores diferentes: DBA, time de marketing, time de BI
+```
+
+### A Refatoração Correta
+
+```typescript
+// Cada classe responde a UM ator e tem LCOM ≈ 0
+
+class UserRepository {
+  constructor(private readonly db: Database) {}
+
+  create(data: UserData): User {
+    return this.db.insert('users', data);
+  }
+
+  findById(id: string): User | null {
+    return this.db.findById('users', id);
+  }
+
+  findByEmail(email: string): User | null {
+    return this.db.findOne('users', { email });
+  }
+}
+
+class UserNotificationService {
+  constructor(private readonly emailClient: SmtpClient) {}
+
+  sendWelcome(user: User): void {
+    this.emailClient.send({
+      to: user.email,
+      template: 'welcome',
+    });
+  }
+
+  sendPasswordReset(user: User, token: string): void {
+    this.emailClient.send({
+      to: user.email,
+      template: 'reset',
+      data: { token },
+    });
+  }
+}
+
+class UserReportGenerator {
+  constructor(private readonly pdfEngine: PdfEngine) {}
+
+  generate(users: User[]): Buffer {
+    return this.pdfEngine.render('user-report', { users });
+  }
+}
+```
+
+### Métricas Práticas
+
+```
+Acoplamento Aferente (Ca): quantos módulos dependem DESTE módulo
+  → Ca alto = módulo é muito usado → mudanças aqui quebram muito
+
+Acoplamento Eferente (Ce): de quantos módulos ESTE módulo depende
+  → Ce alto = módulo depende de muita coisa → frágil a mudanças externas
+
+Instabilidade (I) = Ce / (Ca + Ce)
+  → I = 0: totalmente estável (muitos dependem dele, ele depende de poucos)
+  → I = 1: totalmente instável (ninguém depende dele, ele depende de muitos)
+
+Regra: Módulos estáveis devem ser abstratos. Módulos instáveis podem ser concretos.
+```
+
+### Anti-Pattern: The God Class
+
+```typescript
+// Violação clássica em aplicações Express/NestJS
+class AppController {
+  async handleRequest(req: Request, res: Response) {
+    // Valida input
+    if (!req.body.email) return res.status(400).json({ error: 'Email obrigatório' });
+
+    // Lógica de negócio
+    const user = await db.query('SELECT * FROM users WHERE email = $1', [req.body.email]);
+    const discount = user.tier === 'premium' ? 0.2 : 0;
+    const total = cart.items.reduce((sum, i) => sum + i.price, 0) * (1 - discount);
+
+    // Persistência
+    await db.query('INSERT INTO orders (user_id, total) VALUES ($1, $2)', [user.id, total]);
+
+    // Notificação
+    await sendgrid.send({ to: user.email, subject: 'Pedido confirmado' });
+
+    // Resposta HTTP
+    res.json({ orderId: order.id, total });
+  }
+}
+// Este método tem 5 razões para mudar: validação, regras de negócio,
+// persistência, notificação e serialização HTTP.
+```
+
+---
+
+## O — Open/Closed Principle (OCP)
+
+### A Definição Formal
+
+> "Entidades de software devem ser abertas para extensão, mas fechadas para modificação."
+
+Na prática: você deve poder adicionar novos comportamentos **sem alterar código existente já testado**.
+
+### Strategy Pattern — O Padrão Clássico para OCP
+
+```typescript
+// Interface define o contrato
+interface PaymentStrategy {
+  readonly name: string;
+  validate(amount: number, metadata: PaymentMetadata): ValidationResult;
+  process(amount: number, metadata: PaymentMetadata): Promise<PaymentResult>;
+  refund(transactionId: string, amount: number): Promise<RefundResult>;
+}
+
+// Cada estratégia é uma implementação independente
+class PixPayment implements PaymentStrategy {
+  readonly name = 'pix';
+
+  validate(amount: number, metadata: PaymentMetadata): ValidationResult {
+    if (!metadata.pixKey) return { valid: false, error: 'Chave PIX obrigatória' };
+    if (amount > 100_000) return { valid: false, error: 'Limite PIX excedido' };
+    return { valid: true };
+  }
+
+  async process(amount: number, metadata: PaymentMetadata): Promise<PaymentResult> {
+    const qrCode = await this.generateQRCode(metadata.pixKey, amount);
+    return { status: 'pending', qrCode, expiresAt: Date.now() + 30 * 60_000 };
+  }
+
+  async refund(transactionId: string, amount: number): Promise<RefundResult> {
+    return this.pixApi.initiateRefund(transactionId, amount);
+  }
+
+  private async generateQRCode(key: string, amount: number): Promise<string> {
+    // Gera QR code EMV/BRCode
+    return this.pixApi.createQR({ key, amount });
+  }
+}
+
+class CreditCardPayment implements PaymentStrategy {
+  readonly name = 'credit_card';
+
+  validate(amount: number, metadata: PaymentMetadata): ValidationResult {
+    if (!metadata.cardToken) return { valid: false, error: 'Token do cartão obrigatório' };
+    if (!this.luhnCheck(metadata.cardNumber)) return { valid: false, error: 'Cartão inválido' };
+    return { valid: true };
+  }
+
+  async process(amount: number, metadata: PaymentMetadata): Promise<PaymentResult> {
+    const auth = await this.gateway.authorize(metadata.cardToken, amount);
+    if (!auth.approved) return { status: 'declined', reason: auth.reason };
+    const capture = await this.gateway.capture(auth.id, amount);
+    return { status: 'approved', transactionId: capture.id };
+  }
+
+  async refund(transactionId: string, amount: number): Promise<RefundResult> {
+    return this.gateway.refund(transactionId, amount);
+  }
+
+  private luhnCheck(cardNumber: string): boolean {
+    // Implementação do algoritmo de Luhn
+    let sum = 0;
+    let alternate = false;
+    for (let i = cardNumber.length - 1; i >= 0; i--) {
+      let n = parseInt(cardNumber[i], 10);
+      if (alternate) { n *= 2; if (n > 9) n -= 9; }
+      sum += n;
+      alternate = !alternate;
+    }
+    return sum % 10 === 0;
+  }
+}
+
+// Registry — o PaymentService NUNCA é modificado para adicionar novo meio
+class PaymentService {
+  private strategies = new Map<string, PaymentStrategy>();
+
+  register(strategy: PaymentStrategy): void {
+    this.strategies.set(strategy.name, strategy);
+  }
+
+  async processPayment(
+    method: string,
+    amount: number,
+    metadata: PaymentMetadata
+  ): Promise<PaymentResult> {
+    const strategy = this.strategies.get(method);
+    if (!strategy) throw new UnsupportedPaymentError(method);
+
+    const validation = strategy.validate(amount, metadata);
+    if (!validation.valid) throw new PaymentValidationError(validation.error);
+
+    return strategy.process(amount, metadata);
+  }
+}
+
+// Uso — adicionar BoletoPayment NÃO modifica PaymentService
+const service = new PaymentService();
+service.register(new PixPayment());
+service.register(new CreditCardPayment());
+// service.register(new BoletoPayment());  // Novo! Zero mudanças no existente.
+```
+
+### Plugin Architecture — OCP em Escala
+
+```typescript
+// Sistema de plugins para processamento de eventos
+interface EventPlugin {
+  readonly name: string;
+  readonly version: string;
+  readonly events: string[];
+  handle(event: DomainEvent): Promise<void>;
+  healthCheck(): Promise<HealthStatus>;
+}
+
+class EventBus {
+  private plugins: Map<string, EventPlugin[]> = new Map();
+
+  registerPlugin(plugin: EventPlugin): void {
+    for (const eventType of plugin.events) {
+      const existing = this.plugins.get(eventType) ?? [];
+      existing.push(plugin);
+      this.plugins.set(eventType, existing);
+    }
+  }
+
+  async emit(event: DomainEvent): Promise<void> {
+    const handlers = this.plugins.get(event.type) ?? [];
+    await Promise.allSettled(
+      handlers.map(plugin => plugin.handle(event))
+    );
+  }
+}
+
+// Cada plugin é um módulo independente — OCP puro
+// O EventBus NUNCA precisa ser modificado para suportar novos eventos
+```
+
+### Anti-Pattern: Switch/If Chain que Cresce
+
+```typescript
+// Cada novo tipo = mudança neste código + risco de regressão
+function calculateShipping(type: string, weight: number): number {
+  if (type === 'sedex')       return weight * 5.0 + 15;
+  else if (type === 'pac')    return weight * 2.5 + 8;
+  else if (type === 'jadlog') return weight * 3.2 + 10;
+  else if (type === 'loggi')  return weight * 2.8 + 12;
+  // Cada PR adiciona mais um else if...
+  // Ninguém testa os anteriores quando adiciona novo.
+  throw new Error('Tipo desconhecido');
+}
+```
+
+---
+
+## L — Liskov Substitution Principle (LSP)
+
+### O Formalismo de Liskov
+
+Barbara Liskov e Jeannette Wing definiram (1994):
+
+> Se S é um subtipo de T, então objetos do tipo T podem ser substituídos por objetos do tipo S sem alterar as propriedades desejáveis do programa.
+
+Isso implica três regras formais:
+
+```
+1. Contravariância de pré-condições:
+   → Subtipos NÃO podem ter pré-condições MAIS fortes que o tipo base
+   → Se o pai aceita qualquer número, o filho não pode exigir "apenas positivos"
+
+2. Covariância de pós-condições:
+   → Subtipos NÃO podem ter pós-condições MAIS fracas que o tipo base
+   → Se o pai garante retorno não-nulo, o filho também deve garantir
+
+3. Invariante de classe:
+   → Subtipos devem preservar todas as invariantes do tipo base
+   → Se o pai mantém saldo ≥ 0, o filho não pode violar isso
+```
+
+### O Exemplo Clássico: Rectangle/Square
+
+```typescript
+class Rectangle {
+  constructor(protected _width: number, protected _height: number) {}
+
+  get width(): number { return this._width; }
+  set width(value: number) { this._width = value; }
+
+  get height(): number { return this._height; }
+  set height(value: number) { this._height = value; }
+
+  area(): number { return this._width * this._height; }
+}
+
+// Violação de LSP: Square muda o comportamento esperado
+class Square extends Rectangle {
+  set width(value: number) {
+    this._width = value;
+    this._height = value; // Efeito colateral inesperado!
+  }
+
+  set height(value: number) {
+    this._width = value;  // Efeito colateral inesperado!
+    this._height = value;
+  }
+}
+
+// Código que funciona com Rectangle QUEBRA com Square
+function doubleWidth(rect: Rectangle): void {
+  const originalHeight = rect.height;
+  rect.width = rect.width * 2;
+  // Invariante esperada: height não mudou
+  console.assert(rect.height === originalHeight); // FALHA para Square!
+}
+```
+
+### Exemplo Real: Violação de LSP em Repositórios
+
+```typescript
+interface UserRepository {
+  findById(id: string): Promise<User | null>;
+  save(user: User): Promise<User>;
+  delete(id: string): Promise<void>;
+}
+
+// Implementação padrão — funciona conforme esperado
+class PostgresUserRepository implements UserRepository {
+  async findById(id: string): Promise<User | null> {
+    const row = await this.pool.query('SELECT * FROM users WHERE id = $1', [id]);
+    return row.rows[0] ? this.mapToUser(row.rows[0]) : null;
+  }
+
+  async save(user: User): Promise<User> {
+    await this.pool.query(
+      'INSERT INTO users (id, name, email) VALUES ($1, $2, $3) ON CONFLICT (id) DO UPDATE SET name = $2, email = $3',
+      [user.id, user.name, user.email]
+    );
+    return user;
+  }
+
+  async delete(id: string): Promise<void> {
+    await this.pool.query('DELETE FROM users WHERE id = $1', [id]);
+  }
+}
+
+// VIOLAÇÃO DE LSP: ReadOnlyRepository lança exceção em operações válidas
+class ReadOnlyUserRepository implements UserRepository {
+  async findById(id: string): Promise<User | null> {
+    return this.cache.get(id);
+  }
+
+  async save(user: User): Promise<User> {
+    throw new Error('Operação não suportada em repositório read-only');
+    // Fortaleceu a pré-condição! O contrato diz que save() funciona.
+  }
+
+  async delete(id: string): Promise<void> {
+    throw new Error('Operação não suportada em repositório read-only');
+    // Mesmo problema — viola a expectativa do consumidor.
+  }
+}
+```
+
+### A Correção: Interface Segregation + LSP
+
+```typescript
+// Separe as interfaces para respeitar LSP
+interface ReadableRepository<T> {
+  findById(id: string): Promise<T | null>;
+  findAll(filter?: Partial<T>): Promise<T[]>;
+}
+
+interface WritableRepository<T> {
+  save(entity: T): Promise<T>;
+  delete(id: string): Promise<void>;
+}
+
+interface UserRepository extends ReadableRepository<User>, WritableRepository<User> {}
+
+// Agora ReadOnlyUserRepository implementa APENAS ReadableRepository
+class ReadOnlyUserRepository implements ReadableRepository<User> {
+  async findById(id: string): Promise<User | null> {
+    return this.cache.get(id);
+  }
+
+  async findAll(filter?: Partial<User>): Promise<User[]> {
+    return this.cache.getAll(filter);
+  }
+  // Não precisa implementar save/delete — não faz parte do contrato!
+}
+```
+
+---
+
+## I — Interface Segregation Principle (ISP)
+
+### O Problema das Fat Interfaces
+
+> "Nenhum cliente deve ser forçado a depender de métodos que não usa."
+
+```typescript
+// Fat interface — força implementação de métodos desnecessários
+interface Animal {
+  eat(food: Food): void;
+  sleep(hours: number): void;
+  fly(altitude: number): void;     // Cachorro não voa!
+  swim(depth: number): void;       // Águia não nada!
+  dig(depth: number): void;        // Peixe não cava!
+  climb(height: number): void;     // Baleia não escala!
+}
+
+// Implementações ficam cheias de métodos vazios ou throws
+class Dog implements Animal {
+  eat(food: Food): void { /* ok */ }
+  sleep(hours: number): void { /* ok */ }
+  fly(altitude: number): void { throw new Error('Cães não voam'); }
+  swim(depth: number): void { /* ok, alguns cães nadam */ }
+  dig(depth: number): void { /* ok */ }
+  climb(height: number): void { throw new Error('Cães não escalam'); }
+}
+```
+
+### Role Interfaces — A Solução
+
+```typescript
+// Interfaces pequenas e focadas em capacidades (roles)
+interface Feedable {
+  eat(food: Food): void;
+}
+
+interface Sleepable {
+  sleep(hours: number): void;
+}
+
+interface Flyable {
+  fly(altitude: number): void;
+  land(): void;
+}
+
+interface Swimmable {
+  swim(depth: number): void;
+  surface(): void;
+}
+
+// Cada classe compõe APENAS as interfaces relevantes
+class Dog implements Feedable, Sleepable, Swimmable {
+  eat(food: Food): void { /* ... */ }
+  sleep(hours: number): void { /* ... */ }
+  swim(depth: number): void { /* ... */ }
+  surface(): void { /* ... */ }
+}
+
+class Eagle implements Feedable, Sleepable, Flyable {
+  eat(food: Food): void { /* ... */ }
+  sleep(hours: number): void { /* ... */ }
+  fly(altitude: number): void { /* ... */ }
+  land(): void { /* ... */ }
+}
+
+// Funções consomem APENAS o que precisam
+function feedAnimal(animal: Feedable): void {
+  animal.eat(new GenericFood());
+}
+
+function launchIntoSky(flyer: Flyable): void {
+  flyer.fly(1000);
+}
+```
+
+### Exemplo Real: Middleware com Interfaces Segregadas
+
+```typescript
+// Em vez de uma interface monolítica de Logger:
+interface Logger {
+  debug(msg: string, meta?: Record<string, unknown>): void;
+  info(msg: string, meta?: Record<string, unknown>): void;
+  warn(msg: string, meta?: Record<string, unknown>): void;
+  error(msg: string, error?: Error, meta?: Record<string, unknown>): void;
+  setLevel(level: LogLevel): void;
+  addTransport(transport: Transport): void;
+  flush(): Promise<void>;
+  child(bindings: Record<string, unknown>): Logger;
+}
+
+// Segregue por papel do consumidor:
+interface LogWriter {
+  debug(msg: string, meta?: Record<string, unknown>): void;
+  info(msg: string, meta?: Record<string, unknown>): void;
+  warn(msg: string, meta?: Record<string, unknown>): void;
+  error(msg: string, error?: Error, meta?: Record<string, unknown>): void;
+}
+
+interface LogConfigurator {
+  setLevel(level: LogLevel): void;
+  addTransport(transport: Transport): void;
+}
+
+interface LogLifecycle {
+  flush(): Promise<void>;
+  child(bindings: Record<string, unknown>): LogWriter;
+}
+
+// O handler HTTP só precisa de LogWriter
+// O bootstrap da app precisa de LogConfigurator
+// O graceful shutdown precisa de LogLifecycle
+```
+
+---
+
+## D — Dependency Inversion Principle (DIP)
+
+### As Duas Regras
+
+> 1. Módulos de alto nível não devem depender de módulos de baixo nível. Ambos devem depender de abstrações.
+> 2. Abstrações não devem depender de detalhes. Detalhes devem depender de abstrações.
+
+### Inversão de Controle (IoC) na Prática
+
+```typescript
+// SEM inversão — alto nível depende de baixo nível
+class OrderService {
+  private repo = new PostgresOrderRepository();    // Acoplado!
+  private notifier = new SendGridEmailNotifier();   // Acoplado!
+  private logger = new WinstonLogger();             // Acoplado!
+
+  async placeOrder(dto: CreateOrderDto): Promise<Order> {
+    const order = Order.create(dto);
+    await this.repo.save(order);
+    await this.notifier.notify(order);
+    this.logger.info('Order placed', { orderId: order.id });
+    return order;
+  }
+}
+
+// COM inversão — alto nível depende de abstrações
+interface OrderRepository {
+  save(order: Order): Promise<void>;
+  findById(id: string): Promise<Order | null>;
+}
+
+interface OrderNotifier {
+  notify(order: Order): Promise<void>;
+}
+
+interface Logger {
+  info(msg: string, meta?: Record<string, unknown>): void;
+  error(msg: string, error?: Error): void;
+}
+
+class OrderService {
+  constructor(
+    private readonly repo: OrderRepository,
+    private readonly notifier: OrderNotifier,
+    private readonly logger: Logger
+  ) {}
+
+  async placeOrder(dto: CreateOrderDto): Promise<Order> {
+    const order = Order.create(dto);
+    await this.repo.save(order);
+    await this.notifier.notify(order);
+    this.logger.info('Order placed', { orderId: order.id });
+    return order;
+  }
+}
+```
+
+### Dependency Injection Container
+
+```typescript
+// Container simples (na prática, use tsyringe, InversifyJS ou NestJS)
+class Container {
+  private bindings = new Map<string, () => unknown>();
+
+  bind<T>(token: string, factory: () => T): void {
+    this.bindings.set(token, factory);
+  }
+
+  resolve<T>(token: string): T {
+    const factory = this.bindings.get(token);
+    if (!factory) throw new Error(`Nenhum binding para: ${token}`);
+    return factory() as T;
+  }
+}
+
+// Configuração (composition root)
+const container = new Container();
+
+container.bind<OrderRepository>('OrderRepository', () =>
+  new PostgresOrderRepository(container.resolve('DatabasePool'))
+);
+
+container.bind<OrderNotifier>('OrderNotifier', () =>
+  new SendGridNotifier(container.resolve('SendGridConfig'))
+);
+
+container.bind<OrderService>('OrderService', () =>
+  new OrderService(
+    container.resolve('OrderRepository'),
+    container.resolve('OrderNotifier'),
+    container.resolve('Logger')
+  )
+);
+
+// Em testes — troca implementações sem mudar o serviço
+const testContainer = new Container();
+testContainer.bind<OrderRepository>('OrderRepository', () =>
+  new InMemoryOrderRepository()
+);
+testContainer.bind<OrderNotifier>('OrderNotifier', () =>
+  new FakeNotifier() // Não envia email de verdade
+);
+```
+
+### Anti-Pattern: Service Locator (o falso DIP)
+
+```typescript
+// Service Locator PARECE DIP, mas é um anti-pattern
+class OrderService {
+  async placeOrder(dto: CreateOrderDto): Promise<Order> {
+    // Dependências são ocultas — impossível saber o que este serviço precisa
+    const repo = ServiceLocator.get<OrderRepository>('OrderRepository');
+    const notifier = ServiceLocator.get<OrderNotifier>('OrderNotifier');
+
+    // Problemas:
+    // 1. Dependências não aparecem no construtor — são invisíveis
+    // 2. Testes precisam configurar o ServiceLocator global
+    // 3. Erros de resolução só aparecem em runtime
+    // 4. Impossível fazer análise estática de dependências
+  }
+}
+```
+
+---
+
+## SOLID vs Pragmatismo: Quando Relaxar
+
+```
+Princípio    | Quando relaxar
+-------------|--------------------------------------------------
+SRP          | Scripts únicos, lambdas pequenas, protótipos
+             | descartáveis. Se o módulo tem < 100 linhas e
+             | uma razão para existir, não force separação.
+
+OCP          | Quando há apenas 2-3 variantes E é improvável
+             | que novas apareçam. Um if/else simples é
+             | mais legível que um Strategy com 2 implementações.
+
+LSP          | Quase nunca relaxe LSP. Violações de LSP
+             | causam bugs sutis e difíceis de rastrear.
+
+ISP          | Em APIs internas com poucos consumidores
+             | conhecidos. O overhead de muitas interfaces
+             | pequenas pode ser pior que uma interface média.
+
+DIP          | Em módulos folha (sem dependentes), scripts,
+             | CLIs simples. Se ninguém depende de você,
+             | DIP é overhead sem benefício.
+```
+
+### O Teste Pragmático
+
+Antes de aplicar qualquer princípio SOLID, pergunte:
+
+```
+1. Qual é o custo de mudança se eu NÃO aplicar?
+   → Se o código tem vida curta ou poucos dependentes, o custo é baixo.
+
+2. Quantas vezes este código já precisou mudar?
+   → Se nunca mudou, não otimize para mudança hipotética (YAGNI).
+
+3. Quantas pessoas trabalham neste módulo?
+   → SRP e ISP são mais críticos quando múltiplos times tocam o mesmo código.
+
+4. Existe teste que garanta que a refatoração não quebrou nada?
+   → Sem testes, refatoração para SOLID é risco, não melhoria.
+```
+
+---
+
+## Referências e Leitura Aprofundada
+
+```
+- "Agile Software Development" — Robert C. Martin (a fonte original de SOLID)
+- "A Behavioral Notion of Subtyping" — Liskov & Wing, 1994 (LSP formal)
+- "Design Principles and Design Patterns" — Robert C. Martin, 2000
+- "Clean Architecture" — Robert C. Martin (SOLID no contexto de arquitetura)
+- Métricas LCOM: Chidamber & Kemerer, "A Metrics Suite for OOD", 1994
+- "Dependency Injection Principles, Practices, and Patterns" — van Deursen et al.
+```

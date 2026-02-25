@@ -1,0 +1,1598 @@
+---
+title: "Acessibilidade e WCAG"
+description: "WCAG 2.2 Level AA (princípios POUR), European Accessibility Act, ARIA em profundidade, keyboard navigation, screen readers, testing automatizado (axe-core), component patterns WAI-ARIA e compliance checklist"
+track: "frontend"
+order: 17
+section: "Avançado"
+priority: "high"
+tags: ["acessibilidade", "WCAG", "ARIA", "a11y", "screen-reader", "keyboard-navigation", "axe-core", "EAA"]
+prerequisites: ["html-semantico", "dom-e-eventos"]
+keyTakeaways:
+  - "WCAG 2.2 Level AA é o padrão legal na maioria dos países — os 4 princípios POUR (Perceivable, Operable, Understandable, Robust) organizam 50+ critérios de sucesso"
+  - "A European Accessibility Act (EAA) entrou em vigor em Jun/2025 — empresas que vendem para a UE DEVEM ter produtos digitais acessíveis ou enfrentam multas significativas"
+  - "ARIA é um suplemento ao HTML semântico, não um substituto — a primeira regra de ARIA é: não use ARIA se existe um elemento HTML nativo que resolve o problema"
+  - "Testing automatizado (axe-core) detecta ~30-40% dos problemas de acessibilidade — os outros 60-70% requerem teste manual com keyboard navigation e screen readers"
+---
+
+## Por que Acessibilidade Importa
+
+Acessibilidade (a11y) não é um nice-to-have ou uma feature opcional. É um requisito fundamental de engenharia de software. A Organização Mundial da Saúde estima que **15% da população mundial** — mais de 1 bilhão de pessoas — vive com alguma forma de deficiência. Quando você ignora acessibilidade, você exclui ativamente uma parcela significativa dos seus usuários.
+
+### Tipos de Deficiência
+
+O modelo de deficiência vai muito além da cegueira:
+
+```
+Tipo           Permanente              Temporária           Situacional
+─────────────────────────────────────────────────────────────────────────
+Visual         Cegueira, baixa visão   Dilatação de pupila  Sol no monitor
+Auditiva       Surdez                  Infecção de ouvido   Ambiente barulhento
+Motora         Amputação, paralisia    Braço quebrado       Segurando um bebê
+Cognitiva      Dislexia, TDAH          Concussão            Privação de sono
+Fala           Mutismo                 Laringite            Sotaque estrangeiro
+```
+
+Deficiências temporárias e situacionais afetam **todos** os usuários em algum momento. Quando você projeta para acessibilidade, você melhora a experiência para todos — não apenas para pessoas com deficiências permanentes.
+
+### Benefícios Além de Compliance
+
+- **SEO**: motores de busca são essencialmente screen readers. Alt text, headings hierárquicos e landmarks melhoram diretamente o ranking.
+- **Usabilidade**: foco visível, labels claros e navegação por teclado beneficiam power users e desenvolvedores que não tiram as mãos do teclado.
+- **Mobile UX**: target sizes adequados, contraste suficiente e conteúdo que funciona sem hover atendem diretamente ao mobile.
+- **Robustez**: HTML semântico e ARIA correto produzem código mais resiliente e testável.
+
+### Legal Landscape
+
+A legislação de acessibilidade é global e crescente:
+
+| Legislação | Região | Requisito |
+|------------|--------|-----------|
+| ADA (Americans with Disabilities Act) | EUA | Acessibilidade digital interpretada pelos tribunais como extensão da lei |
+| European Accessibility Act (EAA) | União Europeia | Conformidade obrigatória desde Jun/2025 para produtos e serviços digitais |
+| Lei Brasileira de Inclusão (13.146/2015) | Brasil | Obrigatoriedade de acessibilidade em sites de empresas com sede no Brasil |
+| Accessibility for Ontarians (AODA) | Canadá (Ontário) | WCAG 2.0 AA obrigatório para organizações com 50+ funcionários |
+| EN 301 549 | União Europeia | Standard técnico que referencia WCAG 2.1 AA como baseline |
+
+Processos judiciais por falta de acessibilidade são reais e frequentes — nos EUA, o número de lawsuits relacionadas a acessibilidade web ultrapassou 4.000 por ano.
+
+---
+
+## European Accessibility Act (EAA)
+
+A EAA (Diretiva 2019/882) é a legislação mais impactante dos últimos anos para acessibilidade digital. Entrou em vigor em **28 de junho de 2025** e afeta qualquer empresa que vende produtos ou serviços digitais para consumidores na União Europeia, independentemente de onde a empresa está sediada.
+
+### O que a EAA Exige
+
+A diretiva cobre produtos e serviços digitais incluindo:
+
+- **E-commerce**: websites e apps de venda online
+- **Serviços bancários**: internet banking, apps de pagamento
+- **Telecomunicações**: apps de comunicação, plataformas de vídeo
+- **Transporte**: compra de passagens online, apps de navegação
+- **E-books**: readers e conteúdo de publicações digitais
+- **Sistemas operacionais e hardware**: computadores, smartphones, terminais de autoatendimento
+
+### Conformidade Técnica
+
+A EAA referencia a norma **EN 301 549**, que por sua vez se baseia em **WCAG 2.1 Level AA**. Na prática, cumprir WCAG 2.1 AA (ou melhor, WCAG 2.2 AA) é o caminho para conformidade.
+
+```
+EAA (Diretiva Legal)
+ └── EN 301 549 (Standard Técnico)
+      └── WCAG 2.1 AA (Critérios Mensuráveis)
+           └── 50+ Success Criteria organizados em 4 princípios (POUR)
+```
+
+### Penalidades
+
+Cada estado membro da UE define suas próprias penalidades, mas incluem:
+
+- Multas financeiras proporcionais ao faturamento
+- Proibição de comercialização do produto/serviço na UE
+- Obrigação de recall ou correção compulsória
+- Publicação obrigatória da infração
+
+### Microempresas
+
+A EAA isenta microempresas (menos de 10 funcionários E faturamento anual inferior a 2 milhões de euros) da obrigação. Porém, se sua empresa SaaS tem um único cliente enterprise europeu, a compliance pode ser exigida contratualmente.
+
+---
+
+## WCAG 2.2 — Os 4 Princípios (POUR)
+
+O WCAG organiza todos os critérios de sucesso em 4 princípios. Cada princípio contém guidelines, e cada guideline contém success criteria nos níveis A, AA e AAA. **Level AA** é o padrão legal aceito universalmente.
+
+### Perceivable (Perceptível)
+
+O conteúdo deve ser apresentado de formas que os usuários possam perceber.
+
+**1.1 Text Alternatives** — Todo conteúdo não-textual precisa de alternativa textual.
+
+```html
+<!-- Imagem informativa: alt descreve o conteúdo -->
+<img src="grafico-receita-2024.png"
+     alt="Gráfico de barras mostrando receita trimestral de 2024:
+          Q1 R$2.1M, Q2 R$2.8M, Q3 R$3.2M, Q4 R$4.1M" />
+
+<!-- Imagem decorativa: alt vazio (não omitir o atributo) -->
+<img src="decorative-divider.svg" alt="" />
+
+<!-- Imagem como link: alt descreve o destino, não a imagem -->
+<a href="/home">
+  <img src="logo.svg" alt="Ir para página inicial" />
+</a>
+
+<!-- Ícone com texto adjacente: esconder ícone do screen reader -->
+<button>
+  <svg aria-hidden="true" focusable="false"><!-- ícone de lixeira --></svg>
+  Excluir item
+</button>
+
+<!-- Ícone sem texto: precisa de label acessível -->
+<button aria-label="Excluir item">
+  <svg aria-hidden="true" focusable="false"><!-- ícone de lixeira --></svg>
+</button>
+```
+
+**1.2 Time-based Media** — Vídeos precisam de captions, áudio precisa de transcrição.
+
+```html
+<video controls>
+  <source src="tutorial.mp4" type="video/mp4" />
+  <track kind="captions" src="captions-pt.vtt" srclang="pt" label="Português" default />
+  <track kind="descriptions" src="audiodesc-pt.vtt" srclang="pt" label="Audiodescrição" />
+</video>
+```
+
+**1.3 Adaptable** — A estrutura e relações do conteúdo devem ser determinadas programaticamente.
+
+```html
+<!-- Heading hierarchy: nunca pule níveis -->
+<h1>Título da Página</h1>
+  <h2>Seção Principal</h2>
+    <h3>Subseção</h3>
+  <h2>Outra Seção</h2>  <!-- OK: volta para h2 -->
+    <h4>Erro: pulou h3</h4>  <!-- ERRADO -->
+
+<!-- Tabelas com headers explícitos -->
+<table>
+  <caption>Vendas por região em 2024</caption>
+  <thead>
+    <tr>
+      <th scope="col">Região</th>
+      <th scope="col">Q1</th>
+      <th scope="col">Q2</th>
+    </tr>
+  </thead>
+  <tbody>
+    <tr>
+      <th scope="row">Sul</th>
+      <td>R$1.2M</td>
+      <td>R$1.5M</td>
+    </tr>
+  </tbody>
+</table>
+```
+
+**1.4 Distinguishable** — Facilitar para o usuário ver e ouvir o conteúdo.
+
+```css
+/* Contrast ratios WCAG 2.2 AA */
+/* Texto normal (< 18pt ou < 14pt bold): mínimo 4.5:1 */
+/* Texto grande (≥ 18pt ou ≥ 14pt bold): mínimo 3:1 */
+/* UI components e graphical objects: mínimo 3:1 */
+
+/* Bom: alto contraste */
+.text-primary {
+  color: #1a1a2e;            /* Sobre fundo branco: ratio ~16:1 */
+  background-color: #ffffff;
+}
+
+/* Ruim: contraste insuficiente */
+.text-muted {
+  color: #999999;            /* Sobre fundo branco: ratio ~2.8:1 — FALHA */
+  background-color: #ffffff;
+}
+
+/* Text spacing: o conteúdo não pode quebrar quando o usuário ajusta */
+/* Esses valores devem funcionar sem perda de conteúdo: */
+/* line-height: 1.5x font size */
+/* letter-spacing: 0.12x font size */
+/* word-spacing: 0.16x font size */
+/* paragraph-spacing: 2x font size */
+
+/* Reflow: todo conteúdo deve funcionar em 320px de largura sem scroll horizontal */
+.content {
+  max-width: 100%;
+  overflow-wrap: break-word;
+}
+```
+
+### Operable (Operável)
+
+Todos os componentes de interface e navegação devem ser operáveis.
+
+**2.1 Keyboard Accessible** — Toda funcionalidade deve estar disponível via teclado.
+
+```html
+<!-- Botão nativo: já é acessível por padrão -->
+<button onclick="handleClick()">Salvar</button>
+
+<!-- Custom "botão" — precisa de role, tabindex e keyboard handler -->
+<div role="button"
+     tabindex="0"
+     onclick="handleClick()"
+     onkeydown="handleKeyDown(event)">
+  Salvar
+</div>
+```
+
+```typescript
+// Handler de teclado para custom buttons
+function handleKeyDown(event: KeyboardEvent): void {
+  if (event.key === 'Enter' || event.key === ' ') {
+    event.preventDefault(); // Prevenir scroll no Space
+    handleClick();
+  }
+}
+```
+
+A lição aqui: **use elementos HTML nativos sempre que possível**. O `<button>` nativo já vem com role, tabindex, keyboard handling e focus styling de graça.
+
+**2.4 Navigable** — Fornecer meios para ajudar os usuários a navegar e encontrar conteúdo.
+
+```html
+<!-- Skip link: primeiro elemento focável da página -->
+<body>
+  <a href="#main-content" class="skip-link">
+    Pular para conteúdo principal
+  </a>
+  <header><!-- navegação longa --></header>
+  <main id="main-content">
+    <!-- conteúdo principal -->
+  </main>
+</body>
+```
+
+```css
+.skip-link {
+  position: absolute;
+  top: -40px;
+  left: 0;
+  padding: 8px 16px;
+  background: #000;
+  color: #fff;
+  z-index: 100;
+  transition: top 0.2s;
+}
+
+.skip-link:focus {
+  top: 0; /* Aparece quando recebe foco via Tab */
+}
+```
+
+**2.5 Input Modalities** — O WCAG 2.2 trouxe requisitos importantes aqui.
+
+```css
+/* Target size mínimo WCAG 2.2 AA: 24x24px (AAA: 44x44px) */
+/* Recomendação prática: sempre use 44x44px para touch targets */
+.button {
+  min-width: 44px;
+  min-height: 44px;
+  padding: 12px 24px;
+}
+
+/* Spacing entre targets: se o target é menor que 24px,
+   o espaço ao redor deve compensar */
+.icon-button {
+  min-width: 24px;
+  min-height: 24px;
+  padding: 10px; /* Total touch area: 44x44px */
+}
+```
+
+### Understandable (Compreensível)
+
+O conteúdo e operação da interface devem ser compreensíveis.
+
+**3.1 Readable** — Especificar o idioma da página e de trechos em outros idiomas.
+
+```html
+<html lang="pt-BR">
+  <body>
+    <p>Este componente usa o pattern de <span lang="en">render props</span>.</p>
+  </body>
+</html>
+```
+
+**3.3 Input Assistance** — Ajudar os usuários a evitar e corrigir erros.
+
+```html
+<form novalidate>
+  <div class="field">
+    <label for="email">Email</label>
+    <input id="email"
+           type="email"
+           aria-required="true"
+           aria-invalid="true"
+           aria-describedby="email-error"
+           autocomplete="email" />
+    <p id="email-error" role="alert" class="error">
+      Formato inválido. Use exemplo@dominio.com
+    </p>
+  </div>
+</form>
+```
+
+### Robust (Robusto)
+
+O conteúdo deve ser robusto o suficiente para ser interpretado por uma variedade de agentes, incluindo assistive technologies.
+
+**4.1 Compatible** — HTML válido e nome/role/valor programaticamente determinável para custom components.
+
+```html
+<!-- Custom toggle: todas as informações acessíveis programaticamente -->
+<button role="switch"
+        aria-checked="false"
+        aria-label="Modo escuro"
+        onclick="toggleDarkMode(this)">
+  <span class="toggle-thumb"></span>
+</button>
+```
+
+```typescript
+function toggleDarkMode(button: HTMLButtonElement): void {
+  const isActive = button.getAttribute('aria-checked') === 'true';
+  button.setAttribute('aria-checked', String(!isActive));
+  document.documentElement.classList.toggle('dark', !isActive);
+}
+```
+
+### Novidades do WCAG 2.2
+
+O WCAG 2.2 adicionou 9 novos critérios de sucesso. Os mais impactantes:
+
+```
+Critério                     Nível   Impacto prático
+──────────────────────────────────────────────────────────────────
+2.4.11 Focus Not Obscured     AA     Foco não pode ficar escondido por
+(Minimum)                            sticky headers/footers
+2.4.13 Focus Appearance        AAA    Indicador de foco com área mínima
+                                      e contraste 3:1
+2.5.7 Dragging Movements      AA     Toda operação de drag-and-drop
+                                      precisa de alternativa single-pointer
+2.5.8 Target Size (Minimum)   AA     Targets devem ter no mínimo 24x24px
+                                      (exceto inline links e browser defaults)
+3.3.7 Redundant Entry          AA     Não pedir ao usuário informações
+                                      já fornecidas no mesmo processo
+3.3.8 Accessible               AA     Login não pode depender de cognitive
+Authentication (Minimum)              function tests (ex: CAPTCHA de puzzle)
+```
+
+```css
+/* 2.4.11 Focus Not Obscured: garantir que sticky headers não escondam o foco */
+:target {
+  scroll-margin-top: 80px; /* Altura do sticky header */
+}
+
+:focus {
+  scroll-margin-top: 80px;
+}
+
+/* 2.5.8 Target Size: mínimo 24x24px */
+button, a, input, select, textarea {
+  min-height: 24px;
+  min-width: 24px;
+}
+```
+
+---
+
+## ARIA em Profundidade
+
+WAI-ARIA (Web Accessibility Initiative — Accessible Rich Internet Applications) é uma especificação que permite adicionar semântica a elementos HTML quando os elementos nativos não são suficientes. ARIA modifica a **accessibility tree**, não o DOM visual.
+
+### As 5 Regras de ARIA
+
+Estas regras são definidas pela W3C e devem ser seguidas rigorosamente:
+
+1. **Não use ARIA se um elemento HTML nativo resolve o problema.** `<button>` é melhor que `<div role="button">` em 100% dos casos.
+2. **Não mude a semântica nativa a menos que seja absolutamente necessário.** Não coloque `role="heading"` em um `<button>`.
+3. **Todos os controles interativos com ARIA devem ser operáveis via teclado.** Se você adicionar `role="button"`, precisa implementar `Enter` e `Space`.
+4. **Não use `role="presentation"` ou `aria-hidden="true"` em elementos focáveis.** Isso cria um elemento que pode receber foco mas é invisível para screen readers.
+5. **Todos os elementos interativos devem ter um accessible name.** Via conteúdo de texto, `aria-label`, ou `aria-labelledby`.
+
+```html
+<!-- Regra 1: use HTML nativo -->
+<!-- RUIM -->
+<div role="button" tabindex="0" onclick="save()">Salvar</div>
+<!-- BOM -->
+<button onclick="save()">Salvar</button>
+
+<!-- Regra 4: nunca esconda elementos focáveis -->
+<!-- RUIM: screen reader não vê, mas Tab para nele -->
+<button aria-hidden="true">Fechar</button>
+<!-- BOM: se precisa esconder, tire do tab order também -->
+<button aria-hidden="true" tabindex="-1">Fechar</button>
+<!-- MELHOR: use inert se quer esconder uma região inteira -->
+<div inert>
+  <button>Fechar</button>
+</div>
+```
+
+### Roles
+
+Roles definem o que um elemento **é** na accessibility tree.
+
+```html
+<!-- Landmark roles: estrutura macro da página -->
+<header>           <!-- role="banner" (implícito quando filho de body) -->
+<nav>              <!-- role="navigation" -->
+<main>             <!-- role="main" -->
+<aside>            <!-- role="complementary" -->
+<footer>           <!-- role="contentinfo" (implícito quando filho de body) -->
+<form>             <!-- role="form" (somente se tiver aria-label ou aria-labelledby) -->
+<section>          <!-- role="region" (somente se tiver aria-label ou aria-labelledby) -->
+
+<!-- Widget roles: componentes interativos -->
+<div role="tablist">       <!-- Container de tabs -->
+<div role="tab">           <!-- Uma tab individual -->
+<div role="tabpanel">      <!-- Conteúdo associado a uma tab -->
+<div role="dialog">        <!-- Modal/dialog -->
+<div role="alert">         <!-- Mensagem urgente (live region assertiva implícita) -->
+<div role="alertdialog">   <!-- Dialog que requer ação imediata -->
+<div role="progressbar">   <!-- Indicador de progresso -->
+<div role="combobox">      <!-- Input com listbox dropdown -->
+```
+
+### States e Properties
+
+States e properties comunicam o **estado atual** de um elemento para assistive technologies.
+
+```html
+<!-- aria-expanded: menus, accordions, disclosure widgets -->
+<button aria-expanded="false" aria-controls="menu-items">
+  Menu
+</button>
+<ul id="menu-items" hidden>
+  <li><a href="/profile">Perfil</a></li>
+  <li><a href="/settings">Configurações</a></li>
+</ul>
+
+<!-- aria-selected: tabs, listbox items -->
+<div role="tablist">
+  <button role="tab" aria-selected="true" aria-controls="panel-1">Tab 1</button>
+  <button role="tab" aria-selected="false" aria-controls="panel-2">Tab 2</button>
+</div>
+
+<!-- aria-checked: checkboxes customizados, switches -->
+<button role="switch" aria-checked="false">
+  Notificações por email
+</button>
+
+<!-- aria-describedby vs aria-labelledby vs aria-label -->
+<!--
+  aria-label:        nome acessível direto (string)
+  aria-labelledby:   nome acessível via referência a outro elemento (ID)
+  aria-describedby:  descrição adicional via referência a outro elemento (ID)
+
+  Prioridade do accessible name:
+  1. aria-labelledby (maior prioridade)
+  2. aria-label
+  3. Conteúdo de texto do elemento
+  4. title attribute (menor prioridade — evite usar)
+-->
+<div id="dialog-title">Confirmar exclusão</div>
+<div id="dialog-desc">Esta ação não pode ser desfeita.</div>
+<div role="dialog"
+     aria-labelledby="dialog-title"
+     aria-describedby="dialog-desc">
+  <!-- conteúdo do dialog -->
+</div>
+```
+
+### Live Regions
+
+Live regions permitem que screen readers anunciem conteúdo dinâmico sem que o usuário precise navegar até ele.
+
+```html
+<!-- aria-live="polite": anuncia quando o screen reader estiver idle -->
+<!-- Uso: atualizações não urgentes (contador de resultados, status) -->
+<div aria-live="polite" aria-atomic="true">
+  23 resultados encontrados
+</div>
+
+<!-- aria-live="assertive": interrompe imediatamente -->
+<!-- Uso: apenas para informações críticas e urgentes -->
+<div aria-live="assertive">
+  Erro de conexão. Tentando reconectar...
+</div>
+
+<!-- role="alert": live region assertiva implícita -->
+<!-- Equivalente a: aria-live="assertive" + aria-atomic="true" -->
+<div role="alert">
+  Sessão expira em 2 minutos.
+</div>
+
+<!-- role="status": live region polite implícita -->
+<!-- Equivalente a: aria-live="polite" + aria-atomic="true" -->
+<div role="status">
+  Arquivo salvo com sucesso.
+</div>
+
+<!-- aria-atomic: true = anuncia todo o conteúdo da região,
+                  false = anuncia apenas o que mudou -->
+
+<!-- aria-relevant: que tipo de mudança anuncia -->
+<!-- additions: novos nós adicionados -->
+<!-- removals: nós removidos -->
+<!-- text: texto modificado -->
+<!-- all: additions + removals + text -->
+<ul aria-live="polite" aria-relevant="additions">
+  <!-- Novas mensagens de chat são anunciadas à medida que chegam -->
+</ul>
+```
+
+```typescript
+// Pattern prático: announcer global para SPAs
+class LiveAnnouncer {
+  private politeRegion: HTMLElement;
+  private assertiveRegion: HTMLElement;
+
+  constructor() {
+    this.politeRegion = this.createRegion('polite');
+    this.assertiveRegion = this.createRegion('assertive');
+  }
+
+  private createRegion(politeness: 'polite' | 'assertive'): HTMLElement {
+    const el = document.createElement('div');
+    el.setAttribute('aria-live', politeness);
+    el.setAttribute('aria-atomic', 'true');
+    // Visualmente escondido, mas acessível a screen readers
+    el.style.cssText = `
+      position: absolute; width: 1px; height: 1px;
+      padding: 0; margin: -1px; overflow: hidden;
+      clip: rect(0, 0, 0, 0); white-space: nowrap;
+      border: 0;
+    `;
+    document.body.appendChild(el);
+    return el;
+  }
+
+  announce(message: string, urgency: 'polite' | 'assertive' = 'polite'): void {
+    const region = urgency === 'assertive'
+      ? this.assertiveRegion
+      : this.politeRegion;
+
+    // Limpar e re-inserir para garantir que o screen reader anuncia
+    region.textContent = '';
+    requestAnimationFrame(() => {
+      region.textContent = message;
+    });
+  }
+}
+
+// Uso
+const announcer = new LiveAnnouncer();
+announcer.announce('23 resultados encontrados');
+announcer.announce('Erro crítico no servidor', 'assertive');
+```
+
+---
+
+## Keyboard Navigation
+
+### Focus Management
+
+O foco é o mecanismo fundamental de navegação por teclado. Um focus management ruim é uma das maiores barreiras de acessibilidade.
+
+```typescript
+// tabindex valores e comportamento
+// tabindex="0"   → entra na tab order natural (posição baseada no DOM order)
+// tabindex="-1"  → removido da tab order, mas focável via JavaScript
+// tabindex="5"   → posição explícita na tab order — NUNCA USE ISSO
+
+// Focar programaticamente
+const heading = document.getElementById('section-title') as HTMLElement;
+heading.setAttribute('tabindex', '-1'); // Permite foco programático
+heading.focus();
+
+// Focus visível: :focus-visible vs :focus
+// :focus         → dispara em TODO tipo de foco (mouse, teclado, programático)
+// :focus-visible → dispara apenas quando o browser detecta que o foco
+//                   é relevante (geralmente: teclado e programático)
+```
+
+```css
+/* Remove o outline padrão e usa :focus-visible para keyboard users */
+:focus {
+  outline: none;
+}
+
+:focus-visible {
+  outline: 3px solid #4f46e5;
+  outline-offset: 2px;
+  border-radius: 2px;
+}
+
+/* Alternativa mais compatível: custom property para focus ring */
+:root {
+  --focus-ring: 3px solid #4f46e5;
+  --focus-ring-offset: 2px;
+}
+
+*:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: var(--focus-ring-offset);
+}
+```
+
+### Roving Tabindex
+
+O roving tabindex é o pattern padrão para grupos de controles (toolbars, tabs, menus) onde apenas **um item** deve estar na tab order por vez, e arrow keys navegam entre os itens.
+
+```typescript
+interface RovingTabindexOptions {
+  container: HTMLElement;
+  selector: string;
+  orientation: 'horizontal' | 'vertical' | 'both';
+  loop?: boolean;
+}
+
+function setupRovingTabindex({
+  container,
+  selector,
+  orientation,
+  loop = true,
+}: RovingTabindexOptions): void {
+  const items = Array.from(container.querySelectorAll(selector)) as HTMLElement[];
+  if (items.length === 0) return;
+
+  // Apenas o primeiro item tem tabindex="0"
+  items.forEach((item, index) => {
+    item.setAttribute('tabindex', index === 0 ? '0' : '-1');
+  });
+
+  container.addEventListener('keydown', (event: KeyboardEvent) => {
+    const currentIndex = items.findIndex(
+      (item) => item === document.activeElement,
+    );
+    if (currentIndex === -1) return;
+
+    let nextIndex: number | null = null;
+
+    const prevKeys = orientation === 'horizontal'
+      ? ['ArrowLeft'] : orientation === 'vertical'
+      ? ['ArrowUp'] : ['ArrowLeft', 'ArrowUp'];
+
+    const nextKeys = orientation === 'horizontal'
+      ? ['ArrowRight'] : orientation === 'vertical'
+      ? ['ArrowDown'] : ['ArrowRight', 'ArrowDown'];
+
+    if (prevKeys.includes(event.key)) {
+      nextIndex = currentIndex - 1;
+      if (nextIndex < 0) nextIndex = loop ? items.length - 1 : 0;
+    } else if (nextKeys.includes(event.key)) {
+      nextIndex = currentIndex + 1;
+      if (nextIndex >= items.length) nextIndex = loop ? 0 : items.length - 1;
+    } else if (event.key === 'Home') {
+      nextIndex = 0;
+    } else if (event.key === 'End') {
+      nextIndex = items.length - 1;
+    }
+
+    if (nextIndex !== null) {
+      event.preventDefault();
+      items[currentIndex].setAttribute('tabindex', '-1');
+      items[nextIndex].setAttribute('tabindex', '0');
+      items[nextIndex].focus();
+    }
+  });
+}
+
+// Uso: tablist com navegação horizontal
+const tablist = document.querySelector('[role="tablist"]') as HTMLElement;
+setupRovingTabindex({
+  container: tablist,
+  selector: '[role="tab"]',
+  orientation: 'horizontal',
+});
+```
+
+### Focus Traps
+
+Focus traps mantém o foco confinado dentro de um container (tipicamente um modal/dialog). O usuário só pode sair fechando o dialog.
+
+```typescript
+function createFocusTrap(container: HTMLElement): {
+  activate: () => void;
+  deactivate: () => void;
+} {
+  const focusableSelectors = [
+    'a[href]',
+    'button:not([disabled])',
+    'input:not([disabled])',
+    'select:not([disabled])',
+    'textarea:not([disabled])',
+    '[tabindex]:not([tabindex="-1"])',
+  ].join(', ');
+
+  let previouslyFocused: HTMLElement | null = null;
+
+  function getFocusableElements(): HTMLElement[] {
+    return Array.from(
+      container.querySelectorAll(focusableSelectors),
+    ) as HTMLElement[];
+  }
+
+  function handleKeyDown(event: KeyboardEvent): void {
+    if (event.key !== 'Tab') return;
+
+    const focusable = getFocusableElements();
+    if (focusable.length === 0) return;
+
+    const first = focusable[0];
+    const last = focusable[focusable.length - 1];
+
+    if (event.shiftKey) {
+      // Shift+Tab no primeiro elemento → vai para o último
+      if (document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      }
+    } else {
+      // Tab no último elemento → vai para o primeiro
+      if (document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    }
+  }
+
+  return {
+    activate() {
+      previouslyFocused = document.activeElement as HTMLElement;
+      container.addEventListener('keydown', handleKeyDown);
+
+      // Focar no primeiro elemento focável do container
+      const focusable = getFocusableElements();
+      if (focusable.length > 0) {
+        focusable[0].focus();
+      }
+    },
+
+    deactivate() {
+      container.removeEventListener('keydown', handleKeyDown);
+      // Restaurar foco para o elemento que abriu o dialog
+      previouslyFocused?.focus();
+    },
+  };
+}
+```
+
+**Inert Attribute** — a forma moderna de bloquear interação com conteúdo atrás de um modal:
+
+```html
+<!-- Quando o dialog está aberto, o conteúdo principal fica inert -->
+<body>
+  <main id="app" inert>
+    <!-- Todo conteúdo aqui: não focável, não clicável, escondido de AT -->
+  </main>
+  <dialog open role="dialog" aria-modal="true" aria-labelledby="dialog-title">
+    <h2 id="dialog-title">Confirmar ação</h2>
+    <p>Tem certeza que deseja continuar?</p>
+    <button>Cancelar</button>
+    <button>Confirmar</button>
+  </dialog>
+</body>
+```
+
+---
+
+## Screen Readers
+
+### Como Funcionam
+
+Screen readers não leem o DOM diretamente. O browser gera uma **accessibility tree** a partir do DOM, e o screen reader consome essa árvore.
+
+```
+DOM (HTML + ARIA)
+     │
+     ▼
+Accessibility Tree (gerada pelo browser)
+  Cada nó contém: Role, Name, State, Properties
+     │
+     ▼
+Platform Accessibility API (OS-level)
+  macOS: NSAccessibility
+  Windows: UIA / MSAA / IAccessible2
+  Linux: ATK/AT-SPI
+     │
+     ▼
+Screen Reader (VoiceOver, NVDA, JAWS, TalkBack)
+  Consome a API e sintetiza fala/braille
+```
+
+### Modos de Navegação
+
+Screen readers operam em diferentes modos:
+
+```
+Browse Mode (Virtual Cursor)
+  - Padrão ao navegar páginas
+  - Arrow keys navegam entre elementos
+  - Atalhos: H (heading), K (link), T (table), F (form field)
+  - O screen reader controla a navegação
+
+Forms Mode (Focus Mode)
+  - Ativado ao entrar em um form control
+  - Tab navega entre form fields
+  - Arrow keys controlam o form control (ex: select, radio)
+  - O browser controla a navegação
+
+Application Mode
+  - Ativado por role="application" (USE COM EXTREMA CAUTELA)
+  - Desabilita quase todos os atalhos do screen reader
+  - Toda interação passa para o JavaScript da página
+  - Apenas para widgets muito customizados (ex: Google Docs)
+```
+
+### Testando com Screen Readers
+
+**VoiceOver (macOS)** — comandos essenciais:
+
+```
+Ativar/Desativar:   Cmd + F5
+Tecla VO:           Control + Option (segure para usar atalhos)
+Navegar:            VO + setas (esquerda/direita para itens, cima/baixo para detalhes)
+Rotor:              VO + U (lista headings, links, landmarks, form controls)
+Ler tudo:           VO + A
+Interagir com:      VO + Shift + seta para baixo (entrar em grupo)
+Parar de interagir: VO + Shift + seta para cima (sair de grupo)
+Web Rotor:          VO + U, depois setas para alternar entre listas
+```
+
+**NVDA (Windows)** — gratuito e o mais usado:
+
+```
+Ativar:              Ctrl + Alt + N
+Navegar:             setas para cima/baixo (browse mode)
+Headings:            H / Shift+H
+Links:               K / Shift+K
+Landmarks:           D / Shift+D
+Form fields:         F / Shift+F
+Lista de elementos:  NVDA + F7
+Speech viewer:       NVDA + F1 (para debug visual)
+```
+
+**Dicas para testar efetivamente**:
+
+1. Desligue o monitor (ou feche os olhos) — força você a entender a experiência real.
+2. Teste o fluxo principal completo, não apenas componentes isolados.
+3. Verifique se os announcements fazem sentido fora de contexto visual.
+4. Confirme que a ordem de leitura segue a lógica visual.
+5. Teste em pelo menos dois screen readers — comportamentos variam.
+
+---
+
+## Color Contrast e Design Visual
+
+### Ratios WCAG
+
+```
+Tipo de conteúdo                    Ratio mínimo (AA)   Ratio mínimo (AAA)
+───────────────────────────────────────────────────────────────────────────
+Texto normal (< 18pt / < 14pt bold) 4.5:1                7:1
+Texto grande (≥ 18pt / ≥ 14pt bold) 3:1                  4.5:1
+UI components (borders, icons)      3:1                  Não aplicável
+Graphical objects                   3:1                  Não aplicável
+```
+
+### Cor Não Pode Ser o Único Indicador
+
+```html
+<!-- RUIM: apenas cor indica o erro -->
+<input type="text" style="border-color: red;" />
+
+<!-- BOM: cor + ícone + texto explicativo -->
+<div class="field field--error">
+  <label for="email">Email</label>
+  <input id="email" type="email" aria-invalid="true" aria-describedby="email-err" />
+  <p id="email-err" class="error-message">
+    <svg aria-hidden="true" class="error-icon"><!-- ícone de erro --></svg>
+    Formato inválido. Use exemplo@dominio.com
+  </p>
+</div>
+```
+
+```css
+/* Dark mode: cuidados com contraste */
+.dark-mode {
+  /* Evite #000 em fundo branco puro — causa "halation" (brilho
+     excessivo nas bordas das letras para pessoas com astigmatismo) */
+  --bg: #1a1a2e;     /* Quase preto, mas não puro */
+  --text: #e0e0e0;   /* Quase branco, mas não puro — ratio ~12:1 */
+}
+
+/* Ferramentas para verificar contraste: */
+/* 1. DevTools: inspecione o elemento → color swatch mostra ratio */
+/* 2. Colour Contrast Analyser (CCA): app desktop gratuito */
+/* 3. axe DevTools: extensão de browser */
+```
+
+---
+
+## Forms Acessíveis
+
+Forms são uma das áreas com mais problemas de acessibilidade. Um formulário acessível combina labels explícitos, associação correta de erros e feedback via live regions.
+
+```html
+<!-- Formulário de cadastro completo e acessível -->
+<form novalidate aria-label="Formulário de cadastro">
+  <!-- Nome completo -->
+  <div class="field">
+    <label for="full-name">
+      Nome completo
+      <span aria-hidden="true" class="required-indicator">*</span>
+    </label>
+    <input id="full-name"
+           type="text"
+           name="fullName"
+           aria-required="true"
+           autocomplete="name"
+           spellcheck="false" />
+  </div>
+
+  <!-- Email com validação -->
+  <div class="field">
+    <label for="signup-email">
+      Email
+      <span aria-hidden="true" class="required-indicator">*</span>
+    </label>
+    <input id="signup-email"
+           type="email"
+           name="email"
+           aria-required="true"
+           aria-describedby="email-hint"
+           autocomplete="email" />
+    <p id="email-hint" class="hint">
+      Usaremos este email para enviar sua confirmação.
+    </p>
+  </div>
+
+  <!-- Senha com requisitos -->
+  <div class="field">
+    <label for="signup-password">
+      Senha
+      <span aria-hidden="true" class="required-indicator">*</span>
+    </label>
+    <input id="signup-password"
+           type="password"
+           name="password"
+           aria-required="true"
+           aria-describedby="password-requirements"
+           autocomplete="new-password"
+           minlength="8" />
+    <div id="password-requirements" class="hint">
+      Mínimo 8 caracteres, incluindo letras e números.
+    </div>
+  </div>
+
+  <!-- Botão de submit -->
+  <button type="submit">Criar conta</button>
+
+  <!-- Live region para erros globais do formulário -->
+  <div role="alert" aria-live="assertive" id="form-errors"></div>
+</form>
+```
+
+```typescript
+// Validação acessível: anunciar erros via live region
+function validateForm(form: HTMLFormElement): boolean {
+  const errors: string[] = [];
+  const formErrors = document.getElementById('form-errors') as HTMLElement;
+
+  // Limpar erros anteriores
+  form.querySelectorAll('[aria-invalid]').forEach((el) => {
+    el.removeAttribute('aria-invalid');
+  });
+  form.querySelectorAll('.error-message').forEach((el) => el.remove());
+
+  // Validar campos
+  const email = form.querySelector('#signup-email') as HTMLInputElement;
+  if (!email.value.includes('@')) {
+    errors.push('Email inválido');
+    showFieldError(email, 'Formato de email inválido. Use exemplo@dominio.com');
+  }
+
+  const password = form.querySelector('#signup-password') as HTMLInputElement;
+  if (password.value.length < 8) {
+    errors.push('Senha muito curta');
+    showFieldError(password, 'A senha deve ter no mínimo 8 caracteres.');
+  }
+
+  // Anunciar erros via live region
+  if (errors.length > 0) {
+    formErrors.textContent = `${errors.length} erro(s) no formulário: ${errors.join(', ')}`;
+
+    // Mover foco para o primeiro campo com erro
+    const firstInvalid = form.querySelector('[aria-invalid="true"]') as HTMLElement;
+    firstInvalid?.focus();
+
+    return false;
+  }
+
+  formErrors.textContent = '';
+  return true;
+}
+
+function showFieldError(input: HTMLInputElement, message: string): void {
+  input.setAttribute('aria-invalid', 'true');
+
+  const errorId = `${input.id}-error`;
+  const errorEl = document.createElement('p');
+  errorEl.id = errorId;
+  errorEl.className = 'error-message';
+  errorEl.textContent = message;
+  input.parentElement?.appendChild(errorEl);
+
+  // Adicionar aria-describedby apontando para o erro
+  const existing = input.getAttribute('aria-describedby') || '';
+  input.setAttribute('aria-describedby', `${existing} ${errorId}`.trim());
+}
+```
+
+---
+
+## Dynamic Content
+
+### Route Changes em SPAs
+
+SPAs não disparam page loads tradicionais, então screen readers não anunciam mudanças de rota automaticamente. Você precisa fazer isso manualmente.
+
+```typescript
+// React: hook para anunciar route changes
+import { useEffect, useRef } from 'react';
+import { useLocation } from 'react-router-dom';
+
+function useRouteAnnouncer(): void {
+  const location = useLocation();
+  const announcerRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    // Criar announcer se não existe
+    if (!announcerRef.current) {
+      const el = document.createElement('div');
+      el.setAttribute('aria-live', 'assertive');
+      el.setAttribute('aria-atomic', 'true');
+      el.setAttribute('role', 'status');
+      el.className = 'sr-only'; // Visually hidden
+      document.body.appendChild(el);
+      announcerRef.current = el;
+    }
+
+    // Anunciar a nova página
+    const pageTitle = document.title;
+    announcerRef.current.textContent = '';
+    requestAnimationFrame(() => {
+      if (announcerRef.current) {
+        announcerRef.current.textContent = `Navegou para: ${pageTitle}`;
+      }
+    });
+
+    // Mover foco para o heading principal ou para o main
+    const heading = document.querySelector('h1') as HTMLElement;
+    if (heading) {
+      heading.setAttribute('tabindex', '-1');
+      heading.focus();
+    }
+  }, [location.pathname]);
+}
+```
+
+### Loading States
+
+```html
+<!-- Skeleton com aria-busy -->
+<div aria-busy="true" aria-label="Carregando lista de produtos">
+  <div class="skeleton-card"></div>
+  <div class="skeleton-card"></div>
+</div>
+
+<!-- Quando o conteúdo carrega, remova aria-busy e anuncie -->
+<div aria-busy="false">
+  <div class="product-card">...</div>
+  <div class="product-card">...</div>
+</div>
+<div role="status">12 produtos carregados.</div>
+
+<!-- Progressbar para operações longas -->
+<div role="progressbar"
+     aria-valuenow="65"
+     aria-valuemin="0"
+     aria-valuemax="100"
+     aria-label="Upload do arquivo: 65%">
+  <div class="progress-fill" style="width: 65%;"></div>
+</div>
+```
+
+---
+
+## Testing Automatizado
+
+### axe-core
+
+O axe-core é o engine de regras de acessibilidade mais usado na indústria. Ele analisa o DOM renderizado contra ~90 regras baseadas em WCAG e best practices.
+
+```typescript
+// jest-axe: testes unitários de acessibilidade
+import { render } from '@testing-library/react';
+import { axe, toHaveNoViolations } from 'jest-axe';
+
+expect.extend(toHaveNoViolations);
+
+describe('LoginForm', () => {
+  test('should have no accessibility violations', async () => {
+    const { container } = render(<LoginForm />);
+    const results = await axe(container);
+    expect(results).toHaveNoViolations();
+  });
+
+  test('should have no violations in error state', async () => {
+    const { container } = render(<LoginForm />);
+
+    // Trigger validation errors
+    const submitButton = container.querySelector('button[type="submit"]');
+    submitButton?.click();
+
+    const results = await axe(container);
+    expect(results).toHaveNoViolations();
+  });
+});
+```
+
+```typescript
+// @axe-core/playwright: testes e2e de acessibilidade
+import { test, expect } from '@playwright/test';
+import AxeBuilder from '@axe-core/playwright';
+
+test.describe('Accessibility', () => {
+  test('homepage should pass axe audit', async ({ page }) => {
+    await page.goto('/');
+
+    const results = await new AxeBuilder({ page })
+      .withTags(['wcag2a', 'wcag2aa', 'wcag22aa'])
+      .analyze();
+
+    expect(results.violations).toEqual([]);
+  });
+
+  test('login flow should be accessible', async ({ page }) => {
+    await page.goto('/login');
+
+    // Verificar acessibilidade da página de login
+    const loginResults = await new AxeBuilder({ page })
+      .withTags(['wcag2aa'])
+      .analyze();
+    expect(loginResults.violations).toEqual([]);
+
+    // Preencher formulário e submeter
+    await page.fill('#email', 'user@example.com');
+    await page.fill('#password', 'password123');
+    await page.click('button[type="submit"]');
+
+    // Verificar acessibilidade após login
+    await page.waitForURL('/dashboard');
+    const dashResults = await new AxeBuilder({ page })
+      .withTags(['wcag2aa'])
+      .analyze();
+    expect(dashResults.violations).toEqual([]);
+  });
+
+  test('keyboard navigation through main flow', async ({ page }) => {
+    await page.goto('/');
+
+    // Verificar skip link
+    await page.keyboard.press('Tab');
+    const skipLink = page.locator('.skip-link');
+    await expect(skipLink).toBeFocused();
+
+    // Navegar para o conteúdo principal
+    await page.keyboard.press('Enter');
+    const main = page.locator('main');
+    await expect(main).toBeVisible();
+  });
+});
+```
+
+### Lighthouse CI
+
+```yaml
+# .lighthouserc.yml
+ci:
+  collect:
+    url:
+      - 'http://localhost:3000/'
+      - 'http://localhost:3000/login'
+      - 'http://localhost:3000/dashboard'
+    numberOfRuns: 3
+  assert:
+    assertions:
+      categories:accessibility:
+        - error
+        - minScore: 0.9  # Score mínimo de 90 para acessibilidade
+  upload:
+    target: temporary-public-storage
+```
+
+### Limitacoes do Testing Automatizado
+
+```
+O que testing automatizado DETECTA (~30-40%):
+  ✓ Imagens sem alt text
+  ✓ Form inputs sem labels
+  ✓ Contraste de cor insuficiente
+  ✓ Missing document language
+  ✓ Duplicate IDs
+  ✓ ARIA attributes inválidos
+  ✓ Heading hierarchy quebrada
+
+O que testing automatizado NÃO DETECTA (~60-70%):
+  ✗ Alt text que não é significativo ("imagem" ou "foto")
+  ✗ Focus order que não faz sentido logicamente
+  ✗ Keyboard operability real (consegue completar o fluxo?)
+  ✗ Screen reader announcements confusos
+  ✗ Conteúdo que só é acessível via hover/mouse
+  ✗ Animações que causam motion sickness
+  ✗ Linguagem complexa demais para o público
+  ✗ Timing insuficiente para completar tarefas
+```
+
+---
+
+## Component Patterns WAI-ARIA
+
+### Tabs
+
+```typescript
+// React: Tab component acessível seguindo WAI-ARIA Authoring Practices
+import { useState, useRef, useCallback, type KeyboardEvent } from 'react';
+
+interface Tab {
+  id: string;
+  label: string;
+  content: React.ReactNode;
+}
+
+interface TabsProps {
+  tabs: Tab[];
+  label: string;
+}
+
+function Tabs({ tabs, label }: TabsProps) {
+  const [activeIndex, setActiveIndex] = useState(0);
+  const tabRefs = useRef<(HTMLButtonElement | null)[]>([]);
+
+  const handleKeyDown = useCallback(
+    (event: KeyboardEvent<HTMLButtonElement>) => {
+      let newIndex: number | null = null;
+
+      switch (event.key) {
+        case 'ArrowRight':
+          newIndex = (activeIndex + 1) % tabs.length;
+          break;
+        case 'ArrowLeft':
+          newIndex = (activeIndex - 1 + tabs.length) % tabs.length;
+          break;
+        case 'Home':
+          newIndex = 0;
+          break;
+        case 'End':
+          newIndex = tabs.length - 1;
+          break;
+        default:
+          return;
+      }
+
+      event.preventDefault();
+      setActiveIndex(newIndex);
+      tabRefs.current[newIndex]?.focus();
+    },
+    [activeIndex, tabs.length],
+  );
+
+  return (
+    <div>
+      <div role="tablist" aria-label={label}>
+        {tabs.map((tab, index) => (
+          <button
+            key={tab.id}
+            ref={(el) => { tabRefs.current[index] = el; }}
+            role="tab"
+            id={`tab-${tab.id}`}
+            aria-selected={index === activeIndex}
+            aria-controls={`panel-${tab.id}`}
+            tabIndex={index === activeIndex ? 0 : -1}
+            onClick={() => setActiveIndex(index)}
+            onKeyDown={handleKeyDown}
+          >
+            {tab.label}
+          </button>
+        ))}
+      </div>
+      {tabs.map((tab, index) => (
+        <div
+          key={tab.id}
+          role="tabpanel"
+          id={`panel-${tab.id}`}
+          aria-labelledby={`tab-${tab.id}`}
+          tabIndex={0}
+          hidden={index !== activeIndex}
+        >
+          {tab.content}
+        </div>
+      ))}
+    </div>
+  );
+}
+```
+
+### Dialog/Modal
+
+```typescript
+// React: Dialog acessível com focus trap e restauração de foco
+import { useEffect, useRef, useCallback, type KeyboardEvent } from 'react';
+
+interface DialogProps {
+  isOpen: boolean;
+  onClose: () => void;
+  title: string;
+  children: React.ReactNode;
+}
+
+function Dialog({ isOpen, onClose, title, children }: DialogProps) {
+  const dialogRef = useRef<HTMLDivElement>(null);
+  const previousFocusRef = useRef<HTMLElement | null>(null);
+
+  const getFocusableElements = useCallback((): HTMLElement[] => {
+    if (!dialogRef.current) return [];
+    return Array.from(
+      dialogRef.current.querySelectorAll<HTMLElement>(
+        'a[href], button:not([disabled]), input:not([disabled]), ' +
+        'select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+      ),
+    );
+  }, []);
+
+  useEffect(() => {
+    if (isOpen) {
+      previousFocusRef.current = document.activeElement as HTMLElement;
+
+      // Tornar o conteudo principal inert
+      const main = document.getElementById('app');
+      if (main) main.setAttribute('inert', '');
+
+      // Focar no dialog
+      requestAnimationFrame(() => {
+        const focusable = getFocusableElements();
+        if (focusable.length > 0) {
+          focusable[0].focus();
+        } else {
+          dialogRef.current?.focus();
+        }
+      });
+    }
+
+    return () => {
+      const main = document.getElementById('app');
+      if (main) main.removeAttribute('inert');
+      previousFocusRef.current?.focus();
+    };
+  }, [isOpen, getFocusableElements]);
+
+  const handleKeyDown = useCallback(
+    (event: KeyboardEvent<HTMLDivElement>) => {
+      if (event.key === 'Escape') {
+        onClose();
+        return;
+      }
+
+      if (event.key !== 'Tab') return;
+
+      const focusable = getFocusableElements();
+      if (focusable.length === 0) return;
+
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+
+      if (event.shiftKey && document.activeElement === first) {
+        event.preventDefault();
+        last.focus();
+      } else if (!event.shiftKey && document.activeElement === last) {
+        event.preventDefault();
+        first.focus();
+      }
+    },
+    [onClose, getFocusableElements],
+  );
+
+  if (!isOpen) return null;
+
+  return (
+    <div className="dialog-backdrop" onClick={onClose}>
+      <div
+        ref={dialogRef}
+        role="dialog"
+        aria-modal="true"
+        aria-labelledby="dialog-title"
+        tabIndex={-1}
+        onKeyDown={handleKeyDown}
+        onClick={(e) => e.stopPropagation()}
+      >
+        <h2 id="dialog-title">{title}</h2>
+        {children}
+        <button onClick={onClose}>Fechar</button>
+      </div>
+    </div>
+  );
+}
+```
+
+### Accordion
+
+```html
+<!-- Accordion pattern WAI-ARIA -->
+<div class="accordion">
+  <h3>
+    <button aria-expanded="true"
+            aria-controls="section1-content"
+            id="section1-header">
+      Seção 1
+    </button>
+  </h3>
+  <div id="section1-content"
+       role="region"
+       aria-labelledby="section1-header">
+    <p>Conteúdo da seção 1.</p>
+  </div>
+
+  <h3>
+    <button aria-expanded="false"
+            aria-controls="section2-content"
+            id="section2-header">
+      Seção 2
+    </button>
+  </h3>
+  <div id="section2-content"
+       role="region"
+       aria-labelledby="section2-header"
+       hidden>
+    <p>Conteúdo da seção 2.</p>
+  </div>
+</div>
+```
+
+### Toast/Alert
+
+```typescript
+// Toast acessível: role="status" para sucesso, role="alert" para erros
+interface Toast {
+  id: string;
+  message: string;
+  type: 'success' | 'error' | 'info';
+}
+
+function ToastContainer({ toasts }: { toasts: Toast[] }) {
+  return (
+    <div className="toast-container" aria-label="Notificações">
+      {toasts.map((toast) => (
+        <div
+          key={toast.id}
+          role={toast.type === 'error' ? 'alert' : 'status'}
+          aria-live={toast.type === 'error' ? 'assertive' : 'polite'}
+          className={`toast toast--${toast.type}`}
+        >
+          <span className="toast-icon" aria-hidden="true">
+            {toast.type === 'success' ? '✓' : toast.type === 'error' ? '✕' : 'ℹ'}
+          </span>
+          <span>{toast.message}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+```
+
+---
+
+## Compliance Checklist
+
+Use esta checklist para auditar um projeto existente. Priorize pela combinação de **alto impacto + baixo esforço**.
+
+```
+PRIORIDADE ALTA (fazer primeiro)
+═══════════════════════════════════════════════════════════════
+□ Todas as imagens informativas têm alt text significativo
+□ Todos os form inputs têm labels associados via <label for="id">
+□ A página tem lang attribute no <html>
+□ Heading hierarchy está correta (h1 → h2 → h3, sem pular)
+□ Color contrast passa WCAG AA (4.5:1 normal, 3:1 large)
+□ Todos os interactive elements são acessíveis via teclado
+□ Focus indicators são visíveis (:focus-visible implementado)
+□ Skip link existe e funciona
+□ Erros de formulário são anunciados e associados aos campos
+□ Touch targets têm no mínimo 24x24px (idealmente 44x44px)
+
+PRIORIDADE MÉDIA (segundo round)
+═══════════════════════════════════════════════════════════════
+□ Landmarks estão definidos: banner, nav, main, contentinfo
+□ Página tem <title> descritivo e único
+□ Links têm texto descritivo (não "clique aqui")
+□ ARIA é usado apenas onde HTML nativo não resolve
+□ aria-live regions existem para conteúdo dinâmico
+□ Videos têm captions
+□ Animações respeitam prefers-reduced-motion
+□ autocomplete está configurado para campos pessoais
+□ Modals implementam focus trap e restauração de foco
+□ Route changes em SPA são anunciados
+
+PRIORIDADE BAIXA (refinamento)
+═══════════════════════════════════════════════════════════════
+□ Drag-and-drop tem alternativa keyboard/pointer
+□ Nenhum conteúdo pisca mais de 3x por segundo
+□ Textos longos têm linguagem simples e clara
+□ Timeout warnings existem e podem ser estendidos
+□ Redundant entry: não pedir mesma info duas vezes
+□ Focus not obscured por sticky headers
+□ Trechos em outro idioma têm lang attribute
+□ Tables têm caption e th com scope
+```
+
+### Ferramentas de Auditoria
+
+| Ferramenta | Tipo | O que faz |
+|------------|------|-----------|
+| axe DevTools | Extensão de browser | Scan automatizado do DOM, integração com DevTools |
+| WAVE | Extensão de browser | Overlay visual de problemas diretamente na página |
+| Accessibility Insights | Extensão de browser (Microsoft) | Guided assessment + fast pass automatizado |
+| Lighthouse | DevTools / CI | Score de acessibilidade 0-100 baseado em axe-core |
+| Pa11y | CLI / CI | Testes automatizados via linha de comando |
+| Colour Contrast Analyser | App desktop | Verificação de contraste com eyedropper |
+
+---
+
+## Exercícios
+
+### Exercício 1 — Auditoria com axe-core
+
+Escolha um site que você usa diariamente. Instale a extensão axe DevTools e execute um scan. Documente: (a) quantas violations foram encontradas, (b) qual a mais crítica e por quê, (c) como você corrigiria as 3 maiores. Execute o scan em pelo menos 3 páginas diferentes do mesmo site e compare os resultados.
+
+### Exercício 2 — Keyboard-only Navigation
+
+Desligue o mouse/trackpad e navegue por 30 minutos usando apenas o teclado em uma aplicação web que você desenvolve. Registre: (a) onde o foco fica preso ou se perde, (b) onde não existe indicador visual de foco, (c) quais ações são impossíveis sem mouse. Crie issues para cada problema encontrado.
+
+### Exercício 3 — Formulário Acessível Completo
+
+Implemente um formulário de checkout com os campos: nome, email, endereço (rua, cidade, estado, CEP), cartão de crédito. Requisitos: (a) todos os campos com labels e autocomplete corretos, (b) validação inline com aria-describedby ligando erros ao campo, (c) resumo de erros anunciado via live region, (d) foco movido para o primeiro campo inválido ao submeter, (e) passe em `jest-axe` com zero violations.
+
+### Exercício 4 — Component Pattern: Tabs + Dialog
+
+Construa uma interface com tabs acessíveis (seguindo o pattern WAI-ARIA) onde cada tab contém uma lista de itens. Ao clicar em um item, abre um dialog modal com detalhes. Requisitos: (a) tabs navegáveis com arrow keys e roving tabindex, (b) dialog com focus trap, Escape para fechar, restauração de foco, (c) conteúdo atrás do dialog fica inert, (d) testes Playwright verificando keyboard navigation end-to-end.
+
+### Exercício 5 — Screen Reader Testing
+
+Ative o VoiceOver (macOS: Cmd+F5) ou NVDA (Windows) e navegue pela aplicação do exercício 4 sem olhar para a tela. Grave a sessão de áudio. Depois, ouça a gravação e documente: (a) o screen reader anunciou todos os roles e states corretamente? (b) a ordem de leitura faz sentido? (c) as live regions anunciaram mudanças dinâmicas? Corrija os problemas encontrados.
+
+---
+
+## Referências
+
+- [WCAG 2.2 — W3C Recommendation](https://www.w3.org/TR/WCAG22/)
+- [WAI-ARIA Authoring Practices 1.2](https://www.w3.org/WAI/ARIA/apg/)
+- [European Accessibility Act — EUR-Lex](https://eur-lex.europa.eu/eli/dir/2019/882/oj)
+- [EN 301 549 — Accessibility requirements for ICT](https://www.etsi.org/deliver/etsi_en/301500_301599/301549/03.02.01_60/en_301549v030201p.pdf)
+- [axe-core — Deque Systems](https://github.com/dequelabs/axe-core)
+- [Inclusive Components — Heydon Pickering](https://inclusive-components.design/)
+- [A11y Project Checklist](https://www.a11yproject.com/checklist/)
+- [WebAIM Million — Annual Accessibility Report](https://webaim.org/projects/million/)
+- [Lei Brasileira de Inclusão (13.146/2015)](https://www.planalto.gov.br/ccivil_03/_ato2015-2018/2015/lei/l13146.htm)

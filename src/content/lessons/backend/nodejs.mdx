@@ -1,0 +1,686 @@
+---
+title: "Node.js — Runtime, Internals e Boas Práticas"
+description: "V8, libuv, Event Loop em profundidade, sistema de módulos, npm, streams com backpressure, cluster, worker threads, error handling idiomático e as práticas que separam código amador de código de produção"
+track: "backend"
+order: 2
+section: "Node.js"
+priority: "high"
+tags: ["nodejs", "runtime", "v8", "libuv", "event-loop", "streams", "cluster", "worker-threads", "npm", "modulos", "error-handling"]
+prerequisites: []
+keyTakeaways:
+  - "Node.js e um runtime JavaScript construido sobre o V8 do Chrome com libuv para I/O assincrono — nao e um framework, e uma plataforma"
+  - "O Event Loop tem 6 fases com ordem fixa — timers, pending, idle/prepare, poll, check, close — e microtasks executam entre cada fase"
+  - "Streams implementam backpressure automaticamente — fundamental para processar dados maiores que a memoria"
+  - "Cluster usa fork() para multiplos processos, Worker Threads compartilham memoria via SharedArrayBuffer"
+  - "ESModules e o padrao moderno, mas CJS ainda domina o ecossistema legado — saiba navegar nos dois"
+  - "Error handling em Node.js exige disciplina: erros operacionais vs erros de programacao, try/catch em async/await, e process.on('uncaughtException')"
+---
+
+## O que e Node.js
+
+Node.js **nao e um framework**. E um **runtime** — um ambiente de execucao para JavaScript fora do browser. Criado por Ryan Dahl em 2009, nasceu da frustracao com o modelo thread-per-request do Apache e da observacao de que a maioria das aplicacoes web gasta a maior parte do tempo esperando I/O (rede, disco, banco de dados), nao executando computacao.
+
+A arquitetura do Node.js e composta por duas pecas fundamentais:
+
+- **V8**: o engine JavaScript do Chrome. Compila JavaScript para codigo de maquina via JIT (Just-In-Time compilation) usando o compilador otimizador TurboFan. Garbage collector geracional (Scavenger para a young generation, Mark-Sweep-Compact para a old generation).
+
+- **libuv**: biblioteca C que implementa o Event Loop, a thread pool e a abstracao de I/O assincrono cross-platform. Usa epoll no Linux, kqueue no macOS e IOCP no Windows.
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    ARQUITETURA NODE.JS                       │
+│                                                             │
+│  ┌───────────────────────────────────────────────────────┐  │
+│  │              Seu Codigo JavaScript/TypeScript          │  │
+│  └──────────────────────────┬────────────────────────────┘  │
+│                              │                              │
+│  ┌───────────────────────────▼───────────────────────────┐  │
+│  │                Node.js Bindings (C++)                  │  │
+│  │  Ponte entre JavaScript e as bibliotecas C nativas    │  │
+│  └────────┬──────────────────────────────┬───────────────┘  │
+│           │                              │                  │
+│  ┌────────▼────────┐           ┌─────────▼──────────────┐  │
+│  │    V8 Engine     │           │        libuv            │  │
+│  │                  │           │                         │  │
+│  │  - JIT compile   │           │  - Event Loop           │  │
+│  │  - Garbage       │           │  - Thread Pool (4)      │  │
+│  │    Collection    │           │  - Async I/O            │  │
+│  │  - Memory mgmt   │           │  - epoll/kqueue/IOCP   │  │
+│  └──────────────────┘           └─────────────────────────┘  │
+│                                                             │
+│  ┌───────────────────────────────────────────────────────┐  │
+│  │           APIs Nativas (C/C++)                         │  │
+│  │  fs, net, http, crypto, zlib, dns, child_process...   │  │
+│  └───────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### Onde Node.js brilha
+
+Node.js e excelente para **aplicacoes I/O-bound**: servidores HTTP, APIs REST/GraphQL, proxies, real-time apps (WebSocket, SSE), ferramentas CLI, scripts de automacao, BFFs (Backend for Frontend). O modelo single-threaded com I/O nao-bloqueante permite lidar com milhares de conexoes simultaneas com pouca memoria.
+
+### Onde Node.js nao brilha
+
+Para **trabalho CPU-bound** — processamento de imagem, criptografia pesada, machine learning, calculos cientificos — Node.js e uma escolha ruim. Uma operacao sincrona pesada bloqueia o Event Loop e trava todas as requisicoes. Existem mitigacoes (worker_threads, child_process), mas se o workload e predominantemente CPU-bound, linguagens como Go, Rust ou Python (com NumPy/PyTorch) sao escolhas mais naturais.
+
+```javascript
+// Por que CPU-bound e problematico em Node.js
+const http = require('http');
+
+const server = http.createServer((req, res) => {
+  if (req.url === '/heavy') {
+    // Bloqueia o Event Loop por varios segundos
+    // TODAS as outras requisicoes ficam paradas esperando
+    const result = fibonacci(45);
+    res.end(`Resultado: ${result}`);
+  } else {
+    res.end('OK');
+  }
+});
+
+function fibonacci(n) {
+  if (n <= 1) return n;
+  return fibonacci(n - 1) + fibonacci(n - 2);
+}
+
+server.listen(3000);
+// Se alguem chama /heavy, NINGUEM mais recebe resposta
+// ate o fibonacci(45) terminar (~7 segundos).
+```
+
+---
+
+## As 6 Fases do Event Loop
+
+O Event Loop e o mecanismo central de concorrencia do Node.js. Implementa um modelo **single-threaded** de execucao baseado em **I/O nao-bloqueante** e **multiplexacao de eventos**. Cada iteracao completa do Event Loop e chamada de **tick**. Dentro de cada tick, o loop percorre 6 fases em ordem fixa. Cada fase possui uma **FIFO queue** de callbacks.
+
+```
+   ┌───────────────────────────────────────────────────┐
+   │                                                   │
+   │   ┌─────────────────────────────────────────┐     │
+   │   │  ★ Microtasks (entre CADA fase):        │     │
+   │   │    1. process.nextTick() queue           │     │
+   │   │    2. Promise microtask queue            │     │
+   │   └─────────────────────────────────────────┘     │
+   │                                                   │
+┌──▼──────────────────────────────┐                    │
+│  1. TIMERS                      │                    │
+│     setTimeout(), setInterval() │                    │
+│     Executa callbacks cujo      │                    │
+│     threshold expirou           │                    │
+└──┬──────────────────────────────┘                    │
+   │  [microtasks]                                     │
+┌──▼──────────────────────────────┐                    │
+│  2. PENDING CALLBACKS            │                    │
+│     Callbacks de I/O adiados     │                    │
+│     do ciclo anterior (ex: erros │                    │
+│     TCP ECONNREFUSED)            │                    │
+└──┬──────────────────────────────┘                    │
+   │  [microtasks]                                     │
+┌──▼──────────────────────────────┐                    │
+│  3. IDLE, PREPARE               │                    │
+│     Uso interno do Node.js      │                    │
+│     (nao expoe callbacks)       │                    │
+└──┬──────────────────────────────┘                    │
+   │  [microtasks]                                     │
+┌──▼──────────────────────────────┐                    │
+│  4. POLL                         │                    │
+│     Busca novos eventos de I/O   │                    │
+│     Executa callbacks de I/O     │                    │
+│     (fs.readFile, net.connect)   │                    │
+│     Pode BLOQUEAR aqui se nao    │                    │
+│     houver timers pendentes      │                    │
+└──┬──────────────────────────────┘                    │
+   │  [microtasks]                                     │
+┌──▼──────────────────────────────┐                    │
+│  5. CHECK                        │                    │
+│     setImmediate() callbacks     │                    │
+│     Sempre roda apos poll        │                    │
+└──┬──────────────────────────────┘                    │
+   │  [microtasks]                                     │
+┌──▼──────────────────────────────┐                    │
+│  6. CLOSE CALLBACKS              │                    │
+│     socket.on('close')           │                    │
+│     server.on('close')           │                    │
+└──┬──────────────────────────────┘                    │
+   │  [microtasks]                                     │
+   └───────────────────────────────────────────────────┘
+```
+
+### Detalhes criticos de cada fase
+
+**Fase TIMERS**: Nao garante execucao **exata** no tempo especificado. O argumento de `setTimeout(cb, ms)` define o **tempo minimo** ate a execucao, nao o tempo exato.
+
+**Fase POLL**: Esta e a fase mais complexa. O loop calcula quanto tempo deve bloquear esperando por I/O, baseado em se ha timers pendentes e se ha callbacks em `setImmediate()`.
+
+**Fase CHECK**: `setImmediate()` e garantido de executar **apos** o poll phase completar.
+
+---
+
+## Microtasks vs Macrotasks
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  PRIORIDADE DE EXECUCAO (maior → menor)                 │
+├─────────────────────────────────────────────────────────┤
+│                                                         │
+│  1. Codigo sincrono (Call Stack)                        │
+│     ↓ (quando Call Stack esvazia)                       │
+│                                                         │
+│  2. process.nextTick() queue        ← MICROTASK         │
+│     ↓ (so avanca quando queue esvazia)                  │
+│                                                         │
+│  3. Promise microtask queue         ← MICROTASK         │
+│     (Promise.then, Promise.catch,                       │
+│      Promise.finally, queueMicrotask)                   │
+│     ↓ (so avanca quando queue esvazia)                  │
+│                                                         │
+│  4. Fase atual do Event Loop        ← MACROTASK         │
+│     (setTimeout, setInterval,                           │
+│      setImmediate, I/O callbacks)                       │
+│                                                         │
+│  IMPORTANTE: passos 2-3 se repetem entre CADA fase      │
+│  e entre CADA callback de macrotask (desde Node 11+)    │
+└─────────────────────────────────────────────────────────┘
+```
+
+```javascript
+// Exercicio de ordem de execucao
+console.log('1');
+setTimeout(() => console.log('2'), 0);
+Promise.resolve().then(() => console.log('3'));
+process.nextTick(() => console.log('4'));
+setImmediate(() => console.log('5'));
+console.log('6');
+
+// Saida: 1, 6, 4, 3, 2, 5
+```
+
+---
+
+## Thread Pool do libuv
+
+O libuv mantem uma thread pool para operacoes que **nao possuem API assincrona nativa no kernel**. Por padrao, essa pool tem **4 threads**.
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  OPERACOES QUE USAM A THREAD POOL                       │
+├─────────────────────────────────────────────────────────┤
+│  fs.*  (todas as operacoes de filesystem)               │
+│  dns.lookup() (usa getaddrinfo() do SO — bloqueante)    │
+│  crypto.* (pbkdf2, scrypt, randomBytes)                 │
+│  zlib.* (deflate, inflate, gzip)                        │
+├─────────────────────────────────────────────────────────┤
+│  OPERACOES QUE USAM KERNEL ASYNC (NAO thread pool)     │
+├─────────────────────────────────────────────────────────┤
+│  TCP/UDP sockets (net, http, https)                     │
+│  DNS resolucao (dns.resolve — via c-ares)               │
+│  Pipes, Sinais (signals), Child process stdio           │
+└─────────────────────────────────────────────────────────┘
+```
+
+```javascript
+// Demonstracao do gargalo da thread pool
+const crypto = require('crypto');
+const start = Date.now();
+
+// UV_THREADPOOL_SIZE=4 (padrao)
+for (let i = 1; i <= 8; i++) {
+  crypto.pbkdf2('senha', 'salt', 100000, 64, 'sha512', () => {
+    console.log(`${i}: ${Date.now() - start}ms`);
+  });
+}
+// Saida: 4 resultados em ~500ms, depois 4 em ~1000ms
+// Para aumentar: UV_THREADPOOL_SIZE=16 node app.js (maximo: 1024)
+```
+
+---
+
+## Sistema de Modulos
+
+Node.js possui dois sistemas de modulos: **CommonJS (CJS)**, que e o original, e **ECMAScript Modules (ESM)**, que e o padrao do JavaScript moderno.
+
+### CommonJS (CJS)
+
+```javascript
+// math.js — exportando com CommonJS
+function soma(a, b) { return a + b; }
+module.exports = { soma };
+
+// app.js — importando com CommonJS
+const { soma } = require('./math');
+const fs = require('fs');
+```
+
+Caracteristicas: sincrono, cacheado apos primeiro `require()`, dinamico (pode ser usado dentro de condicionais), `__dirname` e `__filename` disponiveis.
+
+### ECMAScript Modules (ESM)
+
+```javascript
+// math.mjs — exportando com ESM
+export function soma(a, b) { return a + b; }
+
+// app.mjs — importando com ESM
+import { soma } from './math.mjs';
+import fs from 'node:fs';
+```
+
+Caracteristicas: assincrono, estatico (analise em parse time), suporta `import()` dinamico, sem `__dirname`/`__filename` (use `import.meta.dirname` no Node 21.2+).
+
+### Como o Node.js decide entre CJS e ESM
+
+```
+1. Extensao do arquivo:
+   .mjs  → SEMPRE ESM
+   .cjs  → SEMPRE CJS
+   .js   → depende do package.json mais proximo
+
+2. Campo "type" no package.json:
+   "type": "module"     → .js e tratado como ESM
+   "type": "commonjs"   → .js e tratado como CJS
+   (ausente)            → .js e tratado como CJS
+```
+
+**Recomendacao pratica**: para projetos novos, use `"type": "module"` no package.json e escreva ESM.
+
+---
+
+## npm e Gerenciamento de Pacotes
+
+### Anatomia do package.json
+
+```json
+{
+  "name": "minha-api",
+  "version": "1.2.0",
+  "type": "module",
+  "exports": {
+    ".": {
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.cjs"
+    }
+  },
+  "engines": { "node": ">=20.0.0" },
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "build": "tsup src/index.ts --format cjs,esm --dts",
+    "start": "node dist/index.mjs",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "fastify": "^4.28.0",
+    "zod": "^3.23.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "vitest": "^2.0.0"
+  }
+}
+```
+
+### Semver e Lockfiles
+
+```
+^4.28.0  → >=4.28.0 e <5.0.0  (mais comum)
+~4.28.0  → >=4.28.0 e <4.29.0
+4.28.0   → exatamente 4.28.0
+```
+
+O lockfile (`package-lock.json`, `pnpm-lock.yaml`, `yarn.lock`) trava as versoes exatas de **todas** as dependencias. Sem lockfile, dois `npm install` em momentos diferentes podem gerar `node_modules` com versoes diferentes.
+
+```bash
+# REGRA DE OURO:
+# - SEMPRE commite o lockfile no git
+# - NUNCA commite a pasta node_modules
+# - Em CI, use npm ci (nao npm install)
+```
+
+### pnpm como alternativa
+
+O pnpm usa um content-addressable store global e node_modules com symlinks — strict isolation que impede acessar dependencias nao declaradas.
+
+---
+
+## Streams: Processar Dados sem Explodir Memoria
+
+Streams sao a abstracao fundamental do Node.js para processar dados **incrementalmente**, em pedacos (chunks), sem precisar carregar o conteudo completo na memoria. Um arquivo de 10GB pode ser processado com ~64KB de memoria constante.
+
+### Os Quatro Tipos de Stream
+
+| Tipo | Descricao | Exemplo |
+|------|-----------|---------|
+| **Readable** | Fonte de dados | `fs.createReadStream`, `http.IncomingMessage` |
+| **Writable** | Destino de dados | `fs.createWriteStream`, `http.ServerResponse` |
+| **Transform** | Modifica dados em transito | `zlib.createGzip`, `crypto.createCipher` |
+| **Duplex** | Le e escreve independentemente | `net.Socket`, `tls.TLSSocket` |
+
+### Backpressure
+
+Backpressure impede sua aplicacao de explodir quando o produtor (readable) e mais rapido que o consumidor (writable). `writable.write(chunk)` retorna `false` quando o buffer interno atinge o `highWaterMark`, e o readable deve pausar ate o evento `drain`.
+
+### Pipeline: Sempre Use Pipeline
+
+`.pipe()` nao propaga erros corretamente. Use `pipeline()`:
+
+```javascript
+const { pipeline } = require('node:stream/promises');
+const fs = require('node:fs');
+const zlib = require('node:zlib');
+
+try {
+  await pipeline(
+    fs.createReadStream('data.json'),
+    zlib.createGzip({ level: 9 }),
+    fs.createWriteStream('data.json.gz'),
+  );
+  console.log('Pipeline concluida com sucesso');
+} catch (err) {
+  console.error('Pipeline falhou:', err.message);
+}
+```
+
+### Async Iterators: A Interface Moderna
+
+```javascript
+const fs = require('node:fs');
+const readline = require('node:readline');
+
+const fileStream = fs.createReadStream('access.log');
+const rl = readline.createInterface({ input: fileStream, crlfDelay: Infinity });
+
+for await (const line of rl) {
+  // Processa linha por linha com memoria constante
+}
+```
+
+---
+
+## Cluster: Multi-Processo no Node.js
+
+O Node.js roda single-threaded por padrao. Numa maquina com 8 cores, um processo Node utiliza apenas **um core**. O modulo `cluster` resolve isso criando multiplos processos (workers) que compartilham a mesma porta TCP.
+
+```javascript
+const cluster = require('node:cluster');
+const http = require('node:http');
+const os = require('node:os');
+
+if (cluster.isPrimary) {
+  const numCPUs = os.availableParallelism();
+  for (let i = 0; i < numCPUs; i++) {
+    cluster.fork();
+  }
+
+  cluster.on('exit', (worker, code) => {
+    if (code !== 0) {
+      console.log(`Worker ${worker.id} crash. Reiniciando...`);
+      cluster.fork();
+    }
+  });
+} else {
+  const server = http.createServer((req, res) => {
+    res.writeHead(200);
+    res.end(`Resposta do worker ${process.pid}\n`);
+  });
+  server.listen(3000);
+}
+```
+
+### O Problema do Estado Compartilhado
+
+Workers sao processos **completamente isolados**. Nao compartilham memoria, variaveis globais ou estado. Use Redis para estado compartilhado entre workers.
+
+**Ponto critico:** Dentro de containers orquestrados (Kubernetes, ECS), **nao use cluster mode nem PM2**. O orquestrador ja faz o scaling.
+
+---
+
+## Worker Threads: Paralelismo Real para CPU-Intensive
+
+`cluster` cria processos separados. `worker_threads` cria **threads dentro do mesmo processo**, compartilhando memoria via `SharedArrayBuffer`.
+
+```javascript
+const { Worker, isMainThread, parentPort, workerData } = require('node:worker_threads');
+
+if (isMainThread) {
+  function runHeavyTask(data) {
+    return new Promise((resolve, reject) => {
+      const worker = new Worker(__filename, { workerData: data });
+      worker.on('message', resolve);
+      worker.on('error', reject);
+    });
+  }
+
+  app.post('/register', async (req, res) => {
+    const hash = await runHeavyTask({
+      type: 'hash',
+      password: req.body.password,
+    });
+    res.json({ hash });
+  });
+} else {
+  const bcrypt = require('bcrypt');
+  if (workerData.type === 'hash') {
+    const hash = bcrypt.hashSync(workerData.password, 14);
+    parentPort.postMessage(hash);
+  }
+}
+```
+
+---
+
+## Child Process: exec, execFile, spawn, fork
+
+| Metodo | Shell | Streaming | IPC | Uso ideal |
+|--------|-------|-----------|-----|-----------|
+| `exec` | Sim | Nao (buffer) | Nao | Comandos curtos com output pequeno |
+| `execFile` | Nao | Nao (buffer) | Nao | Executaveis especificos (mais seguro) |
+| `spawn` | Nao* | Sim | Nao | Processos com output grande/continuo |
+| `fork` | Nao | Sim | Sim | Scripts Node.js que precisam de IPC |
+
+**Regra pratica:** Use `spawn` para tudo que nao seja Node.js. Use `fork` para scripts Node.js que precisam trocar mensagens. Evite `exec` com input de usuario (shell injection).
+
+---
+
+## Error Handling Idiomatico
+
+### Erros operacionais vs erros de programacao
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  ERROS OPERACIONAIS                                      │
+│  (esperados, trataveis, parte da logica de negocio)      │
+├─────────────────────────────────────────────────────────┤
+│  - Conexao com banco de dados recusada                   │
+│  - Timeout em requisicao HTTP                            │
+│  - Input do usuario invalido                             │
+│  TRATAMENTO: recuperar, retornar erro ao cliente, retry  │
+├─────────────────────────────────────────────────────────┤
+│  ERROS DE PROGRAMACAO                                    │
+│  (bugs, nunca deveriam acontecer)                        │
+├─────────────────────────────────────────────────────────┤
+│  - TypeError: Cannot read property of undefined          │
+│  - Assertion failure                                     │
+│  TRATAMENTO: logar, crashar, corrigir o codigo           │
+└─────────────────────────────────────────────────────────┘
+```
+
+### Custom Error Classes
+
+```typescript
+export class AppError extends Error {
+  public readonly statusCode: number;
+  public readonly code: string;
+  public readonly isOperational: boolean;
+
+  constructor(message: string, statusCode: number, code: string, isOperational = true) {
+    super(message);
+    this.statusCode = statusCode;
+    this.code = code;
+    this.isOperational = isOperational;
+    Object.setPrototypeOf(this, new.target.prototype);
+    Error.captureStackTrace(this, this.constructor);
+  }
+}
+
+export class NotFoundError extends AppError {
+  constructor(resource: string, id: string) {
+    super(`${resource} com id '${id}' nao encontrado`, 404, 'RESOURCE_NOT_FOUND');
+  }
+}
+```
+
+### Tratamento de erros nao capturados
+
+```typescript
+process.on('unhandledRejection', (reason: unknown) => {
+  logger.fatal({ err: reason }, 'Unhandled Promise Rejection');
+  process.exit(1);
+});
+
+process.on('uncaughtException', (error: Error) => {
+  logger.fatal({ err: error }, 'Uncaught Exception');
+  process.exit(1);
+});
+```
+
+---
+
+## Boas Praticas de Producao
+
+### Graceful Shutdown
+
+```typescript
+async function gracefulShutdown(signal: string) {
+  app.log.info(`Recebido ${signal}. Iniciando shutdown graceful...`);
+
+  const forceExitTimeout = setTimeout(() => {
+    process.exit(1);
+  }, 30_000);
+
+  try {
+    await app.close();
+    await db.$disconnect();
+    await redis.quit();
+    clearTimeout(forceExitTimeout);
+    process.exit(0);
+  } catch (err) {
+    process.exit(1);
+  }
+}
+
+process.on('SIGTERM', () => gracefulShutdown('SIGTERM'));
+process.on('SIGINT', () => gracefulShutdown('SIGINT'));
+```
+
+### Health Checks
+
+```typescript
+// Liveness — "o processo esta vivo?"
+app.get('/health/live', async (request, reply) => {
+  return reply.status(200).send({ status: 'alive' });
+});
+
+// Readiness — "o servico esta pronto para receber trafego?"
+app.get('/health/ready', async (request, reply) => {
+  const checks = { database: false, redis: false };
+  try { await db.$queryRaw`SELECT 1`; checks.database = true; } catch {}
+  try { await redis.ping(); checks.redis = true; } catch {}
+
+  const isReady = Object.values(checks).every(Boolean);
+  return reply.status(isReady ? 200 : 503).send({ status: isReady ? 'ready' : 'not_ready', checks });
+});
+```
+
+### Logging em producao
+
+```typescript
+import pino from 'pino';
+
+const logger = pino({
+  level: env.LOG_LEVEL,
+  transport: env.NODE_ENV === 'development'
+    ? { target: 'pino-pretty', options: { colorize: true } }
+    : undefined,
+  redact: ['req.headers.authorization', 'req.headers.cookie', 'body.password'],
+});
+
+// Uso com contexto estruturado
+logger.info({ userId: user.id, action: 'login' }, 'Usuario autenticado');
+```
+
+### TypeScript
+
+```json
+{
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "strict": true,
+    "outDir": "./dist",
+    "rootDir": "./src"
+  }
+}
+```
+
+---
+
+## Event Loop Starvation: Deteccao e Mitigacao
+
+```javascript
+// Monitoramento do Event Loop em producao
+const { monitorEventLoopDelay } = require('perf_hooks');
+
+const histogram = monitorEventLoopDelay({ resolution: 20 });
+histogram.enable();
+
+setInterval(() => {
+  console.log(`EL delay — min: ${ns2ms(histogram.min)}ms, ` +
+    `max: ${ns2ms(histogram.max)}ms, ` +
+    `p99: ${ns2ms(histogram.percentile(99))}ms`);
+  histogram.reset();
+}, 5000);
+
+function ns2ms(ns) { return (ns / 1e6).toFixed(2); }
+
+// Alertas recomendados:
+// - WARN:  p99 > 100ms
+// - CRIT:  p99 > 500ms
+```
+
+---
+
+## Checklist de Performance para Producao
+
+```
+1. UV_THREADPOOL_SIZE ajustado para a carga de trabalho
+2. Nenhuma operacao sincrona em hot paths
+3. Monitoramento ativo de Event Loop lag
+4. Computacao CPU-intensive isolada (worker_threads ou filas)
+5. DNS caching implementado
+6. Streaming para payloads grandes (pipeline + Transform)
+7. Protecao contra ReDoS (validar input antes de regex)
+```
+
+---
+
+## Comparacao com Outros Modelos de Concorrencia
+
+| Modelo | Linguagem | Trade-offs |
+|--------|-----------|------------|
+| Event Loop (single-threaded) | Node.js | Excelente para I/O-bound. Ruim para CPU-bound. |
+| Thread-per-request | Java (Tomcat) | ~1MB stack por thread. Limite pratico: ~10k threads. |
+| Virtual Threads (Loom) | Java 21+ | ~1KB por thread. Milhoes de threads simultaneas. |
+| Goroutines | Go | ~2KB stack inicial. Channels para comunicacao. |
+| Actor Model | Erlang/Elixir | Processos isolados e leves. Fault tolerance via supervisors. |
+| async/await (Futures) | Rust (tokio) | Zero-cost abstractions. Sem runtime overhead. |
+
+---
+
+## Referencias e Fontes
+
+- **"Designing Data-Intensive Applications"** (Martin Kleppmann) — fundamentos de sistemas distribuidos, I/O e concorrencia
+- **Node.js Documentation** — [nodejs.org/docs](https://nodejs.org/en/docs) — referencia oficial do runtime, APIs e guias
+- **Node.js Event Loop, Timers, and process.nextTick()** — [nodejs.org/en/guides/event-loop-timers-and-nexttick](https://nodejs.org/en/guides/event-loop-timers-and-nexttick/) — guia oficial sobre as fases do Event Loop
+- **libuv Documentation** — [docs.libuv.org](http://docs.libuv.org/) — documentacao da biblioteca de I/O assincrono
+- **V8 Blog** — [v8.dev/blog](https://v8.dev/blog) — artigos tecnicos sobre o engine JavaScript, JIT compilation e otimizacoes
+- **"Node.js Design Patterns"** (Mario Casciaro & Luciano Mammino) — padroes avancados de streams, event-driven architecture e escalabilidade

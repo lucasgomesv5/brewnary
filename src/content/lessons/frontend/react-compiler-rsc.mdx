@@ -1,0 +1,759 @@
+---
+title: "React Compiler e Server Components"
+description: "React Compiler (auto-memoization), Rules of React, Server Components (mental model, serialization boundary), Server Actions, Streaming SSR, Suspense, caching e patterns de composição RSC"
+track: "frontend"
+order: 15
+section: "React"
+priority: "high"
+tags: ["react-compiler", "RSC", "server-components", "server-actions", "streaming-SSR", "suspense", "memoization", "react-19"]
+prerequisites: ["react-internals", "react-estado", "nextjs"]
+keyTakeaways:
+  - "React Compiler analisa estaticamente seu código e insere memoization automaticamente — eliminando a necessidade de useMemo, useCallback e React.memo em ~95% dos casos"
+  - "Server Components executam APENAS no servidor e enviam HTML serializado ao cliente — podem acessar banco de dados, filesystem e APIs diretamente sem API routes"
+  - "RSC vs SSR: SSR renderiza a página inteira como HTML string; RSC renderiza componentes individuais no servidor e os mistura com componentes client no mesmo tree"
+  - "Server Actions transformam forms HTML em mutations type-safe com progressive enhancement — funcionam mesmo sem JavaScript no cliente"
+---
+
+> **Ponto chave:** React Compiler e Server Components representam a maior mudanca arquitetural do React desde hooks. O Compiler elimina memoizacao manual. Server Components redefinem onde cada componente executa, permitindo acesso direto a banco de dados, bundle sizes menores e separacao clara entre logica de dados e interacao.
+
+---
+
+## 1. React Compiler
+
+### 1.1 Como Funciona
+
+O React Compiler e um compilador **ahead-of-time (AOT)** que analisa seu codigo em build time e insere memoizacao automaticamente. O custo de analise e zero em producao.
+
+```
+Pipeline do React Compiler:
+
+Source Code (JSX/TSX)
+       │
+       ▼
+┌──────────────────────────┐
+│   1. PARSE → AST         │  Babel/SWC parseia o código
+└──────────┬───────────────┘
+           ▼
+┌──────────────────────────┐
+│   2. LOWER para HIR      │  Transforma em Intermediate Representation
+│      Identifica:         │  componentes, hooks, expressões, dependências
+└──────────┬───────────────┘
+           ▼
+┌──────────────────────────┐
+│   3. ANÁLISE ESTÁTICA    │  Quais valores mudam entre renders?
+│                          │  Quais expressões dependem de quais inputs?
+└──────────┬───────────────┘
+           ▼
+┌──────────────────────────┐
+│   4. CODEGEN             │  Gera código com memoização automática
+│                          │  de expressões, callbacks e JSX
+└──────────────────────────┘
+```
+
+### 1.2 Antes vs Depois do Compiler
+
+```tsx
+// ANTES: memoização manual em todo lugar
+const ProductCard = memo(({ product, onSelect }: {
+  product: Product;
+  onSelect: (id: string) => void;
+}) => (
+  <div onClick={() => onSelect(product.id)}>
+    <h3>{product.name}</h3>
+    <p>R$ {product.price.toFixed(2)}</p>
+  </div>
+));
+
+const ProductList = ({ products, filter, onSelect }: ProductListProps) => {
+  const filtered = useMemo(
+    () => products.filter(p => p.name.toLowerCase().includes(filter.toLowerCase())),
+    [products, filter]
+  );
+  const stats = useMemo(() => ({
+    total: filtered.length,
+    avgPrice: filtered.reduce((s, p) => s + p.price, 0) / filtered.length,
+  }), [filtered]);
+  const handleSelect = useCallback((id: string) => onSelect(id), [onSelect]);
+
+  return (
+    <div>
+      <p>{stats.total} produtos, média: R$ {stats.avgPrice.toFixed(2)}</p>
+      {filtered.map(p => (
+        <ProductCard key={p.id} product={p} onSelect={handleSelect} />
+      ))}
+    </div>
+  );
+};
+```
+
+```tsx
+// DEPOIS: compiler faz automaticamente — código limpo, mesma performance
+const ProductCard = ({ product, onSelect }: {
+  product: Product;
+  onSelect: (id: string) => void;
+}) => (
+  <div onClick={() => onSelect(product.id)}>
+    <h3>{product.name}</h3>
+    <p>R$ {product.price.toFixed(2)}</p>
+  </div>
+);
+
+const ProductList = ({ products, filter, onSelect }: ProductListProps) => {
+  const filtered = products.filter(p =>
+    p.name.toLowerCase().includes(filter.toLowerCase())
+  );
+  const stats = {
+    total: filtered.length,
+    avgPrice: filtered.reduce((s, p) => s + p.price, 0) / filtered.length,
+  };
+
+  return (
+    <div>
+      <p>{stats.total} produtos, média: R$ {stats.avgPrice.toFixed(2)}</p>
+      {filtered.map(p => (
+        <ProductCard key={p.id} product={p} onSelect={(id) => onSelect(id)} />
+      ))}
+    </div>
+  );
+};
+```
+
+O codigo compilado usa um array de slots de cache interno:
+
+```tsx
+// Output simplificado do compiler:
+const ProductList = ({ products, filter, onSelect }: ProductListProps) => {
+  const $ = _c(5); // 5 slots de cache
+  let filtered;
+  if ($[0] !== products || $[1] !== filter) {
+    filtered = products.filter(p =>
+      p.name.toLowerCase().includes(filter.toLowerCase())
+    );
+    $[0] = products; $[1] = filter; $[2] = filtered;
+  } else { filtered = $[2]; }
+  // ... mesmo padrão para cada expressão
+};
+```
+
+### 1.3 Rules of React
+
+O Compiler **depende** dessas regras para funcionar. Quebre-las e o compiler pula a otimizacao silenciosamente.
+
+```
+1. COMPONENTES E HOOKS DEVEM SER PUROS
+   Mesmo input → mesmo output. Sem side effects durante render.
+
+2. NÃO MUTAR PROPS OU STATE DIRETAMENTE
+   O Compiler usa identidade referencial para invalidar cache.
+
+3. HOOKS SEMPRE NO TOP LEVEL
+   Sem condicionais, loops ou returns antes de hooks.
+
+4. VALORES RETORNADOS POR HOOKS SÃO IMUTÁVEIS
+   Mutar esses valores quebra as assunções do Compiler.
+```
+
+```tsx
+// VIOLAÇÃO: mutação de prop — compiler não otimiza
+const Bad = ({ items }: { items: string[] }) => {
+  items.sort(); // ERRO: mutando prop diretamente
+  return <ul>{items.map(i => <li key={i}>{i}</li>)}</ul>;
+};
+
+// CORRETO: nova referência
+const Good = ({ items }: { items: string[] }) => {
+  const sorted = [...items].sort();
+  return <ul>{sorted.map(i => <li key={i}>{i}</li>)}</ul>;
+};
+```
+
+### 1.4 Adocao Gradual
+
+```bash
+npm install -D eslint-plugin-react-compiler babel-plugin-react-compiler
+```
+
+```js
+// next.config.js
+const nextConfig = {
+  experimental: {
+    reactCompiler: true,
+    // Ou opt-in por arquivo: reactCompiler: { compilationMode: "annotation" }
+  },
+};
+```
+
+```tsx
+// Modo annotation: opt-in com diretiva
+"use memo";
+export function MyComponent({ data }: { data: string[] }) {
+  const processed = data.map(item => item.toUpperCase());
+  return <List items={processed} />;
+}
+```
+
+---
+
+## 2. Server Components (RSC)
+
+### 2.1 Mental Model: Dois Environments
+
+```
+┌──────────────────────────────────────────────────────┐
+│                   SERVIDOR                            │
+│  ┌────────────┐  ┌────────────┐  ┌────────────┐     │
+│  │  Layout    │  │ ProductList│  │  Sidebar   │     │
+│  │  (Server)  │  │  (Server)  │  │  (Server)  │     │
+│  │ Acessa DB  │  │ Acessa DB  │  │ Acessa DB  │     │
+│  └─────┬──────┘  └─────┬──────┘  └────────────┘     │
+│        │  Serialização: RSC Payload                   │
+└────────┼──────────────────────────────────────────────┘
+         ▼
+┌──────────────────────────────────────────────────────┐
+│                   CLIENTE                             │
+│  ┌────────────┐  ┌────────────┐  ┌────────────┐     │
+│  │  Layout    │  │ ProductList│  │ SearchBar  │     │
+│  │ (HTML do   │  │ (HTML do   │  │ (Client)   │     │
+│  │  server)   │  │  server)   │  │ useState   │     │
+│  │  Sem JS!   │  │  Sem JS!   │  │ onClick    │     │
+│  └────────────┘  └────────────┘  └────────────┘     │
+│  Bundle JS: só SearchBar + React runtime             │
+└──────────────────────────────────────────────────────┘
+```
+
+**Server Components** (padrao no App Router): executam so no servidor, acessam DB/filesystem diretamente, zero JS no client.
+
+**Client Components** (`"use client"`): executam no servidor (SSR) E no cliente, necessarios para useState, useEffect, event handlers.
+
+```tsx
+// app/products/page.tsx — Server Component (padrão)
+import { db } from "@/lib/db";
+import { ProductSearch } from "./ProductSearch";
+
+export default async function ProductsPage() {
+  const products = await db.product.findMany({ orderBy: { createdAt: "desc" }, take: 50 });
+  return (
+    <main>
+      <h1>Produtos</h1>
+      <ProductSearch /> {/* Client: interatividade */}
+      <ul>
+        {products.map(p => (
+          <li key={p.id}>{p.name} — R$ {p.price.toFixed(2)}</li>
+        ))}
+      </ul>
+    </main>
+  );
+}
+```
+
+### 2.2 RSC vs SSR
+
+```
+ ASPECTO            │ SSR                     │ RSC
+ ───────────────────┼─────────────────────────┼─────────────────────────
+ O que faz          │ Página inteira → HTML   │ Componentes individuais
+ JS no client       │ TODO (para hidratação)  │ Só Client Components
+ Hidratação         │ Página inteira          │ Só Client Components
+ Acesso a dados     │ getServerSideProps      │ Direto no componente
+ Bundle size        │ Todos no bundle         │ Server excluídos
+
+Na prática, Next.js App Router usa AMBOS:
+  1. Server Components renderizam no servidor (RSC)
+  2. Client Components também SSR no servidor
+  3. HTML completo enviado ao browser
+  4. Apenas Client Components são hidratados
+```
+
+### 2.3 Serialization Boundary
+
+Tudo que cruza a fronteira Server → Client precisa ser serializavel.
+
+```tsx
+// ✅ Pode cruzar: strings, numbers, booleans, arrays, objects, Date, Map, Set, Promises
+// ❌ Não pode: functions, classes, DOM elements, Symbols, closures
+
+// ERRO:
+async function ServerParent() {
+  return <ClientChild onFilter={(item) => item.active} />; // ❌ function
+}
+
+// CORRETO: passar dados serializáveis ou Server Actions
+async function ServerParent() {
+  async function handleSubmit(formData: FormData) {
+    "use server"; // ✅ Server Action — serializada como referência
+  }
+  return <ClientChild data={await fetchData()} onSubmit={handleSubmit} />;
+}
+```
+
+### 2.4 Composicao Server + Client
+
+Pattern central: **Server Components como containers, Client Components como leafs interativos**.
+
+```tsx
+// Pattern: passing Server Components as children de Client Components
+// app/layout.tsx (Server)
+import { Sidebar } from "./Sidebar";
+import { InteractiveLayout } from "./InteractiveLayout";
+
+export default async function Layout({ children }: { children: React.ReactNode }) {
+  const user = await getCurrentUser();
+  return (
+    <InteractiveLayout sidebar={<Sidebar user={user} />}>
+      {children}
+    </InteractiveLayout>
+  );
+}
+
+// InteractiveLayout.tsx (Client — controla collapse/expand)
+"use client";
+import { useState } from "react";
+
+export function InteractiveLayout({ sidebar, children }: {
+  sidebar: React.ReactNode;
+  children: React.ReactNode;
+}) {
+  const [collapsed, setCollapsed] = useState(false);
+  return (
+    <div className="flex">
+      <aside className={collapsed ? "w-16" : "w-64"}>
+        <button onClick={() => setCollapsed(!collapsed)}>Toggle</button>
+        {sidebar} {/* JSX do server — já renderizado, sem JS extra */}
+      </aside>
+      <main className="flex-1">{children}</main>
+    </div>
+  );
+}
+```
+
+---
+
+## 3. Server Actions
+
+### 3.1 Conceito
+
+Server Actions sao funcoes que executam no servidor, invocadas pelo cliente. Substituem API routes para mutations.
+
+```tsx
+// app/actions/user.ts
+"use server";
+import { db } from "@/lib/db";
+import { revalidatePath } from "next/cache";
+
+export async function createUser(formData: FormData) {
+  const name = formData.get("name") as string;
+  await db.user.create({ data: { name } });
+  revalidatePath("/users");
+}
+
+// app/users/page.tsx (Server Component)
+import { createUser } from "./actions";
+export default function Page() {
+  return (
+    <form action={createUser}> {/* Progressive enhancement: funciona sem JS */}
+      <input name="name" />
+      <button type="submit">Create</button>
+    </form>
+  );
+}
+```
+
+### 3.2 Optimistic Updates e Form Hooks
+
+```tsx
+// TodoItem.tsx — Client Component com optimistic update
+"use client";
+import { useOptimistic, useTransition } from "react";
+import { toggleTodo } from "./actions";
+
+export function TodoItem({ todo }: { todo: Todo }) {
+  const [isPending, startTransition] = useTransition();
+  const [optimisticTodo, setOptimisticTodo] = useOptimistic(
+    todo,
+    (current, newCompleted: boolean) => ({ ...current, completed: newCompleted })
+  );
+
+  function handleToggle() {
+    startTransition(async () => {
+      setOptimisticTodo(!optimisticTodo.completed); // UI atualiza imediatamente
+      await toggleTodo(todo.id); // Depois envia ao servidor
+    });
+  }
+
+  return (
+    <li className={isPending ? "opacity-50" : ""}>
+      <input type="checkbox" checked={optimisticTodo.completed} onChange={handleToggle} />
+      <span className={optimisticTodo.completed ? "line-through" : ""}>
+        {optimisticTodo.title}
+      </span>
+    </li>
+  );
+}
+```
+
+```tsx
+// TodoForm.tsx — useActionState + useFormStatus
+"use client";
+import { useActionState } from "react";
+import { useFormStatus } from "react-dom";
+import { createTodo } from "./actions";
+
+function SubmitButton() {
+  const { pending } = useFormStatus();
+  return <button type="submit" disabled={pending}>{pending ? "Salvando..." : "Adicionar"}</button>;
+}
+
+export function TodoForm() {
+  const [state, formAction] = useActionState(createTodo, { error: null });
+  return (
+    <form action={formAction}>
+      <input name="title" required />
+      <SubmitButton />
+      {state.error && <p className="text-red-500">{state.error}</p>}
+    </form>
+  );
+}
+```
+
+### 3.3 Seguranca
+
+Server Actions sao **endpoints POST publicos**. Valide tudo.
+
+```tsx
+"use server";
+import { auth } from "@/lib/auth";
+import { z } from "zod";
+
+const Schema = z.object({ name: z.string().min(2).max(100) });
+
+export async function updateProfile(formData: FormData) {
+  // 1. Autenticação
+  const session = await auth();
+  if (!session?.user?.id) throw new Error("Unauthorized");
+
+  // 2. Validação com Zod
+  const parsed = Schema.safeParse({ name: formData.get("name") });
+  if (!parsed.success) return { errors: parsed.error.flatten().fieldErrors };
+
+  // 3. Autorização — usa ID da sessão, NUNCA do form
+  await db.user.update({ where: { id: session.user.id }, data: parsed.data });
+  revalidatePath("/profile");
+  return { errors: null };
+}
+
+// ⚠️ PERIGO: closures serializam valores capturados
+export default async function Page() {
+  const secret = process.env.SECRET_KEY;
+  async function leakyAction() {
+    "use server";
+    console.log(secret); // ← VAZAMENTO! Secret serializado no RSC payload
+  }
+  async function safeAction() {
+    "use server";
+    const key = process.env.SECRET_KEY; // ✅ Lido dentro da action
+  }
+  return <form action={safeAction}><button>Submit</button></form>;
+}
+```
+
+---
+
+## 4. Streaming SSR e Suspense
+
+### 4.1 Como Streaming Funciona
+
+```
+SEM Streaming:
+  Servidor: [espera DB 1] [espera DB 2] [gera HTML] → envia tudo
+  Cliente:  [              esperando...             ] [renderiza]
+
+COM Streaming:
+  Servidor: [gera shell] → envia   [DB 1 pronto] → envia   [DB 2] → envia
+  Cliente:  [shell visível]         [+ conteúdo 1]           [+ conteúdo 2]
+
+  1. Servidor envia shell (header, nav, skeletons) → browser renderiza
+  2. Suspense boundary #1 resolve → <script> substitui skeleton
+  3. Suspense boundary #2 resolve → atualiza sem page reload
+  4. Stream completo
+```
+
+```tsx
+// app/feed/page.tsx — Streaming com Suspense
+import { Suspense } from "react";
+
+export default function FeedPage() {
+  return (
+    <div className="grid grid-cols-12 gap-6">
+      <main className="col-span-8">
+        <Suspense fallback={<FeedSkeleton />}>
+          <Feed /> {/* ~200ms */}
+        </Suspense>
+      </main>
+      <aside className="col-span-4">
+        <Suspense fallback={<TrendingSkeleton />}>
+          <TrendingSidebar /> {/* ~500ms */}
+        </Suspense>
+        <Suspense fallback={<RecsSkeleton />}>
+          <Recommendations /> {/* ~800ms */}
+        </Suspense>
+      </aside>
+    </div>
+  );
+}
+// Feed aparece primeiro, Trending depois, Recommendations por último
+```
+
+### 4.2 Selective Hydration
+
+Componentes dentro de Suspense sao hidratados independentemente. Se o usuario interagir com um componente antes da hidratacao, o React **prioriza** a hidratacao desse componente e re-dispara o evento.
+
+---
+
+## 5. Caching em RSC
+
+### 5.1 Camadas de Cache (Next.js)
+
+```
+┌──────────────────────────────────────────────────────────┐
+│  1. REQUEST MEMOIZATION — per-request, mesmo fetch = 1x  │
+│  2. DATA CACHE — persistente entre requests (fetch)       │
+│  3. FULL ROUTE CACHE — HTML + RSC payload pré-renderizado │
+│  4. ROUTER CACHE — client-side, segmentos visitados       │
+└──────────────────────────────────────────────────────────┘
+```
+
+### 5.2 Controlando o Cache
+
+```tsx
+// Time-based revalidation
+const data = await fetch(url, { next: { revalidate: 3600 } });
+
+// Sem cache
+const data = await fetch(url, { cache: "no-store" });
+
+// Tag para invalidação on-demand
+const data = await fetch(url, { next: { tags: ["products"] } });
+
+// Invalidação em Server Actions
+"use server";
+import { revalidatePath, revalidateTag } from "next/cache";
+export async function createProduct(formData: FormData) {
+  await db.product.create({ data: { /* ... */ } });
+  revalidateTag("products");   // invalida fetches com tag
+  revalidatePath("/products"); // invalida route cache
+}
+
+// Para funções sem fetch (acesso direto ao DB)
+import { unstable_cache } from "next/cache";
+const getCachedProducts = unstable_cache(
+  async (category: string) => db.product.findMany({ where: { category } }),
+  ["products"],
+  { revalidate: 3600, tags: ["products"] }
+);
+```
+
+---
+
+## 6. Data Fetching Patterns
+
+### 6.1 Colocated Fetching e Waterfalls
+
+```tsx
+// ❌ WATERFALL: sequencial
+async function ProductPage({ id }: { id: string }) {
+  const product = await getProduct(id);           // 200ms
+  const reviews = await getReviews(product.id);   // 300ms (espera)
+  const related = await getRelated(product.categoryId); // 200ms (espera)
+  // Total: 700ms
+}
+
+// ✅ PARALLEL: Promise.all
+async function ProductPage({ id }: { id: string }) {
+  const product = await getProduct(id); // 200ms (necessário primeiro)
+  const [reviews, related] = await Promise.all([
+    getReviews(product.id),
+    getRelated(product.categoryId),
+  ]); // max(300, 200) = 300ms → Total: 500ms
+}
+
+// ✅ MELHOR: Suspense — cada componente busca e streama independente
+function ProductPage({ id }: { id: string }) {
+  return (
+    <div>
+      <Suspense fallback={<ProductSkeleton />}>
+        <ProductDetails id={id} />
+      </Suspense>
+      <Suspense fallback={<ReviewsSkeleton />}>
+        <Reviews productId={id} />
+      </Suspense>
+      <Suspense fallback={<RelatedSkeleton />}>
+        <RelatedProducts productId={id} />
+      </Suspense>
+    </div>
+  );
+}
+```
+
+### 6.2 Preload Pattern
+
+```tsx
+import { cache } from "react";
+
+export const getUser = cache(async (id: string) => {
+  return db.user.findUnique({ where: { id } });
+});
+
+export function preloadUser(id: string) {
+  void getUser(id); // Inicia fetch sem esperar resultado
+}
+
+// Na page: preload → processamento → await (resultado já pronto)
+export default async function UserPage({ params }: { params: { id: string } }) {
+  preloadUser(params.id);
+  // ... imports dinâmicos, etc.
+  const user = await getUser(params.id); // dedup: mesma chamada
+  return <UserProfile user={user} />;
+}
+```
+
+---
+
+## 7. Migration Guide: Client-Only para RSC
+
+```
+Passo 1: Identificar componentes sem interatividade → Server Components
+Passo 2: Mover data fetching de useEffect → async Server Components
+Passo 3: Substituir API routes por Server Actions para mutations
+Passo 4: "use client" apenas onde necessário (useState, onClick, etc.)
+Passo 5: Envolver async components em Suspense para streaming
+```
+
+```tsx
+// ANTES: Client-Only Dashboard
+"use client";
+export default function Dashboard() {
+  const [data, setData] = useState(null);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => { fetch("/api/dashboard").then(r => r.json()).then(setData).finally(() => setLoading(false)); }, []);
+  if (loading) return <Spinner />;
+  return (
+    <div>
+      <MetricsCards metrics={data.metrics} />
+      <TopProductsChart products={data.topProducts} />
+    </div>
+  );
+}
+// Problemas: 100% JS no client, waterfall HTML→JS→fetch, spinner full-page
+```
+
+```tsx
+// DEPOIS: RSC Dashboard
+// app/dashboard/page.tsx (Server Component)
+import { Suspense } from "react";
+export default function DashboardPage() {
+  return (
+    <div>
+      <Suspense fallback={<MetricsSkeleton />}><MetricsCards /></Suspense>
+      <Suspense fallback={<ChartSkeleton />}><TopProducts /></Suspense>
+    </div>
+  );
+}
+
+// MetricsCards.tsx (Server — zero JS)
+export async function MetricsCards() {
+  const [revenue, users] = await Promise.all([
+    db.order.aggregate({ _sum: { total: true } }),
+    db.user.count(),
+  ]);
+  return <div>Revenue: R$ {revenue._sum.total?.toLocaleString()} | Users: {users}</div>;
+}
+
+// TopProductsChart.tsx (Client — só o chart envia JS)
+"use client";
+import { BarChart, Bar, XAxis, YAxis } from "recharts";
+export function TopProductsChart({ products }: { products: Product[] }) {
+  return <BarChart data={products}><XAxis dataKey="name" /><YAxis /><Bar dataKey="sales" /></BarChart>;
+}
+```
+
+```
+Resultado:  Bundle -75% | FCP 1800ms→200ms | LCP 2500ms→400ms | API routes: 0
+```
+
+---
+
+## 8. Exercicios
+
+### Exercicio 1: Rules of React
+
+Identifique todas as violacoes e explique por que o Compiler nao otimizaria:
+
+```tsx
+let globalCounter = 0;
+function ProblematicComponent({ items, onUpdate }) {
+  globalCounter++;
+  if (items.length > 0) { const [selected, setSelected] = useState(null); }
+  items.sort((a, b) => a.name.localeCompare(b.name));
+  const ref = useRef({ count: 0 });
+  ref.current.count = globalCounter;
+  return <ul>{items.map((item, i) => <li key={i} onClick={() => onUpdate(item)}>{item.name}</li>)}</ul>;
+}
+```
+
+### Exercicio 2: Server vs Client
+
+Classifique cada componente como **Server** ou **Client** e justifique:
+
+1. Header com logo e navegacao estatica
+2. SearchBar com input controlado e autocomplete
+3. BlogPost que renderiza markdown de um CMS
+4. CommentForm com validacao e submit
+5. ThemeToggle (dark/light mode)
+6. ProductList que busca dados do banco
+7. ImageCarousel com swipe gestures
+
+### Exercicio 3: Server Action Segura
+
+Implemente `deleteComment` que: valida autenticacao, verifica ownership ou admin, deleta, revalida cache do post, retorna erro tipado.
+
+### Exercicio 4: Streaming Otimizado
+
+Queries: `getProduct(id)` 50ms, `getReviews(productId)` 300ms, `getRelatedProducts(categoryId)` 200ms, `getSellerInfo(sellerId)` 100ms. Estruture Suspense boundaries para: menor TTFB, conteudo critico primeiro, reviews e relacionados progressivos.
+
+### Exercicio 5: Migracao
+
+Migre este componente para RSC com Suspense e acesso direto ao banco:
+
+```tsx
+"use client";
+export default function UserProfile({ userId }: { userId: string }) {
+  const [user, setUser] = useState(null);
+  const [posts, setPosts] = useState([]);
+  const [loading, setLoading] = useState(true);
+  useEffect(() => {
+    Promise.all([
+      fetch(`/api/users/${userId}`).then(r => r.json()),
+      fetch(`/api/users/${userId}/posts`).then(r => r.json()),
+    ]).then(([u, p]) => { setUser(u); setPosts(p); setLoading(false); });
+  }, [userId]);
+  if (loading) return <Spinner />;
+  return (
+    <div>
+      <h1>{user.name}</h1>
+      <p>{user.bio}</p>
+      <button onClick={() => setFollowing(!following)}>Follow</button>
+      {posts.map(post => <PostCard key={post.id} post={post} />)}
+    </div>
+  );
+}
+```
+
+---
+
+## 9. Referencias e Fontes
+
+- **React Official Documentation** — https://react.dev — Documentacao oficial com guias sobre Server Components, Server Actions e React Compiler
+- **Next.js App Router Documentation** — https://nextjs.org/docs/app — Guias sobre caching, data fetching, streaming e Server Actions
+- **React Compiler RFC** — https://github.com/reactjs/react.dev/pull/6771 — Motivacao, design e detalhes de implementacao do Compiler
+- **"RSC From Scratch"** — Dan Abramov — Implementacao de Server Components do zero para entender o protocolo wire
+- **"Making Sense of React Server Components"** — Josh W. Comeau — Mental model de Server vs Client Components com diagramas praticos

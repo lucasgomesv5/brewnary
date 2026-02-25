@@ -1,0 +1,506 @@
+---
+title: "Índices, Performance e o Problema N+1"
+description: "Como índices funcionam internamente (B-Tree, Hash, GIN, GiST, BRIN), EXPLAIN ANALYZE, índices compostos, o problema N+1, DataLoader e estratégias de otimização de queries"
+track: "backend"
+order: 10
+section: "Banco de Dados"
+priority: "high"
+tags: ["sql", "banco-de-dados", "indices", "performance", "b-tree", "postgresql", "n-plus-1", "dataloader", "explain"]
+prerequisites: ["sql-modelagem"]
+keyTakeaways:
+  - "Indices sao estruturas auxiliares que trocam espaco em disco e custo de escrita por velocidade de leitura — B-Trees permitem busca O(log n) em vez de Full Table Scan O(n)"
+  - "Use EXPLAIN ANALYZE para verificar se sua query esta usando indices corretamente e entender o custo real de execucao"
+  - "Em indices compostos a ordem das colunas importa — a leftmost prefix rule determina quais queries podem usar o indice"
+  - "O problema N+1 ocorre quando um loop dispara uma query por iteracao — resolva com JOIN, batch loading (WHERE IN) ou DataLoader"
+  - "Cada tipo de indice (B-Tree, Hash, GIN, GiST, BRIN) resolve um dominio diferente de problemas"
+---
+
+## Indices — Estruturas Auxiliares de Busca
+
+Um indice de banco de dados e uma **estrutura de dados separada** que mantem uma copia ordenada (ou organizada) de um subconjunto de colunas de uma tabela, com ponteiros de volta para as rows completas. A ideia fundamental: **trocar espaco em disco e custo de escrita por velocidade de leitura**.
+
+Sem indice, qualquer query que filtre dados precisa fazer um **Sequential Scan** (ou Full Table Scan) — ler cada pagina de dados da tabela do inicio ao fim. Com um indice B-Tree na coluna filtrada, o banco desce 3-4 niveis de uma arvore balanceada e le apenas as paginas necessarias.
+
+```sql
+-- Sem indice: Sequential Scan — le TODAS as paginas da tabela
+EXPLAIN ANALYZE SELECT * FROM users WHERE email = 'lucas@empresa.com';
+--  Seq Scan on users  (cost=0.00..185432.00 rows=1 width=124)
+--  Execution Time: 823.456 ms
+
+CREATE INDEX idx_users_email ON users (email);
+
+-- Com indice: Index Scan — desce a B-Tree e le ponteiro direto
+EXPLAIN ANALYZE SELECT * FROM users WHERE email = 'lucas@empresa.com';
+--  Index Scan using idx_users_email on users  (cost=0.43..8.45 rows=1 width=124)
+--  Execution Time: 0.048 ms
+```
+
+A diferenca: **823 ms vs 0.048 ms** — quase 20.000x mais rapido. Mas essa melhoria nao vem de graca. Cada indice ocupa espaco em disco, consome memoria no buffer pool, e **cada INSERT, UPDATE ou DELETE na tabela precisa atualizar todos os indices afetados**.
+
+---
+
+## B-Tree — A Estrutura Padrao
+
+O B-Tree (Balanced Tree) e o tipo de indice padrao em praticamente todos os bancos de dados relacionais. Uma BST (Binary Search Tree) tem fanout 2 e altura ~23 para 10M rows. O B-Tree resolve isso com **fanout alto** (~500): cada no interno cabe em uma pagina de disco (8 KB) e a altura para 10 milhoes de rows e apenas **3 niveis**.
+
+```
+Nivel 0 (raiz):     [  50  |  150  |  300  |  500  |  ... ]
+                     /       |        |        |        \
+Nivel 1 (interno):  [10|25|40] [60|80|120] [160|200|280] ...
+                    / | | \    / | | \      / | | \
+Nivel 2 (folhas): [1,2,..,9] [11,12,..,24] [26,27,..,39] ...
+                    ↕           ↕              ↕
+              (ponteiros para heap pages / ctid no PostgreSQL)
+```
+
+**Nos folha** sao ligados entre si em uma **doubly linked list**, o que permite range scans eficientes sem precisar voltar a raiz.
+
+| Rows na tabela | Altura B-Tree (fanout ~500) | Paginas de indice |
+|---|---|---|
+| 1.000 | 1 | ~2 |
+| 100.000 | 2 | ~200 |
+| 10.000.000 | 3 | ~40.000 |
+| 1.000.000.000 | 4 | ~8.000.000 |
+
+Na pratica, os niveis superiores ficam permanentemente em cache no buffer pool. Para tabelas com bilhoes de rows, uma busca por chave exata faz **1-2 leituras de disco**.
+
+---
+
+## Clustered vs Non-Clustered Index
+
+### Heap Table (Non-Clustered — padrao no PostgreSQL)
+
+No PostgreSQL, a tabela e uma **heap** — rows armazenadas em qualquer ordem. O indice aponta para a localizacao fisica via `ctid`. Um **Index Scan** envolve dois passos: descer a B-Tree para encontrar o `ctid`, depois ir ate a heap page para ler a row completa.
+
+### Index-Organized Table (Clustered — padrao no MySQL/InnoDB)
+
+No MySQL/InnoDB, a **primary key e um clustered index** — os dados sao fisicamente armazenados **dentro** da B-Tree, ordenados pela PK. Indices secundarios armazenam a PK nas folhas, exigindo um **double lookup**. Isso torna a escolha da PK no InnoDB **critica** — PKs grandes (UUIDs de 16 bytes) inflam todos os indices secundarios.
+
+```sql
+-- PostgreSQL: CLUSTER reordena a heap segundo um indice (one-time)
+CLUSTER users USING idx_users_created_at;
+```
+
+---
+
+## Indices Compostos e a Leftmost Prefix Rule
+
+Um indice composto e uma B-Tree onde a chave e a **concatenacao** das colunas especificadas. A ordem das colunas define a hierarquia de ordenacao.
+
+O indice `(A, B, C)` pode ser usado para queries que filtram:
+- `A` sozinho
+- `A` e `B`
+- `A`, `B` e `C`
+
+**Nao pode** ser usado para queries que filtram apenas `B`, `C` ou `B e C` (sem `A`).
+
+```sql
+-- Dado o indice (status, created_at, customer_id):
+
+-- Usa o indice (prefixo completo):
+SELECT * FROM orders WHERE status = 'shipped'
+  AND created_at > '2025-01-01' AND customer_id = 42;
+
+-- Usa o indice (prefixo parcial):
+SELECT * FROM orders WHERE status = 'pending'
+  AND created_at BETWEEN '2025-06-01' AND '2025-06-30';
+
+-- NAO usa o indice (pula a primeira coluna):
+SELECT * FROM orders WHERE created_at > '2025-01-01';
+```
+
+### Covering Index (Index-Only Scan)
+
+Se **todas** as colunas necessarias estao no indice, o banco nao precisa acessar a heap:
+
+```sql
+CREATE INDEX idx_orders_cover ON orders (status, created_at) INCLUDE (total, customer_id);
+
+EXPLAIN ANALYZE
+SELECT status, created_at, total, customer_id
+FROM orders WHERE status = 'pending' AND created_at > '2025-01-01';
+--  Index Only Scan using idx_orders_cover on orders
+--    Heap Fetches: 0    ← zero acessos a heap!
+```
+
+---
+
+## Hash Index
+
+O(1) para equality lookups, mas **nao suporta range queries** (`>`, `<`, `BETWEEN`), `ORDER BY`, ou `LIKE 'prefix%'`.
+
+```sql
+CREATE INDEX idx_sessions_token ON sessions USING hash (token);
+
+-- Funciona (equality):
+SELECT * FROM sessions WHERE token = 'abc123def456';
+
+-- NAO funciona (range):
+SELECT * FROM sessions WHERE token > 'abc';
+```
+
+Na pratica, B-Tree cobre 95% dos casos.
+
+---
+
+## GIN — Generalized Inverted Index
+
+Para valores com **multiplos elementos** — arrays, JSONB, full-text search:
+
+```sql
+-- Full-Text Search
+CREATE INDEX idx_articles_search ON articles USING gin (search_vector);
+
+-- JSONB Queries
+CREATE INDEX idx_events_data ON events USING gin (data jsonb_path_ops);
+SELECT * FROM events WHERE data @> '{"type": "purchase", "source": "mobile"}';
+
+-- Array Containment
+CREATE INDEX idx_products_tags ON products USING gin (tags);
+SELECT * FROM products WHERE tags @> ARRAY['organico', 'vegano'];
+```
+
+Custo: insercoes significativamente mais lentas que B-Tree.
+
+---
+
+## GiST — Generalized Search Tree
+
+Base para indexacao de dados geoespaciais (PostGIS), range types e nearest-neighbor search:
+
+```sql
+CREATE INDEX idx_stores_location ON stores USING gist (location);
+
+-- Encontre lojas dentro de 5 km
+SELECT name FROM stores
+WHERE ST_DWithin(location, ST_MakePoint(-46.6339, -23.5507)::geography, 5000);
+
+-- KNN: 10 lojas mais proximas
+SELECT name, location <-> ST_MakePoint(-46.6339, -23.5507)::geometry AS dist
+FROM stores
+ORDER BY location <-> ST_MakePoint(-46.6339, -23.5507)::geometry
+LIMIT 10;
+```
+
+---
+
+## BRIN — Block Range Index
+
+**Extremamente compacto** para dados naturalmente correlacionados com a ordem fisica:
+
+```sql
+CREATE INDEX idx_logs_created_at ON logs USING brin (created_at);
+-- 264 KB para indexar 60 GB de dados (vs 10 GB para B-Tree equivalente)
+```
+
+---
+
+## Partial Indexes e Expression Indexes
+
+```sql
+-- Partial: indexa apenas um subconjunto das rows
+CREATE INDEX idx_orders_pending ON orders (created_at)
+  WHERE status = 'pending';
+-- ~50x menor que um indice em toda a tabela
+
+-- Expression: indexa o resultado de uma expressao
+CREATE INDEX idx_users_email_lower ON users (LOWER(email));
+-- A expressao na query deve corresponder exatamente a expressao no indice
+```
+
+---
+
+## Estrategias de Scan
+
+| Seletividade | Estrategia | Motivo |
+|---|---|---|
+| < ~1-5% das rows | Index Scan | Poucas rows, random I/O aceitavel |
+| ~5-20% das rows | Bitmap Scan | Converte random I/O em sequential |
+| > ~20% das rows | Sequential Scan | Mais barato ler tudo em sequencia |
+
+---
+
+## EXPLAIN ANALYZE — Leitura do Query Plan
+
+```sql
+EXPLAIN (ANALYZE, BUFFERS, FORMAT TEXT)
+SELECT o.id, o.total, c.name
+FROM orders o
+JOIN customers c ON c.id = o.customer_id
+WHERE o.status = 'pending'
+  AND o.created_at > '2025-01-01'
+ORDER BY o.created_at DESC
+LIMIT 20;
+```
+
+**Como ler:**
+- **cost=0.87..234.56**: custo estimado (startup..total)
+- **actual time=0.052..0.198**: tempo real em milissegundos
+- **rows=20**: numero real de rows retornadas
+- **loops=20**: quantas vezes o no foi executado
+- **Buffers: shared hit=28**: paginas lidas do cache; `shared read` indicaria disco
+
+**Red flags:**
+- `Seq Scan` em tabela grande com filtro seletivo
+- `rows=1` estimado mas `actual rows=100000` — rode `ANALYZE tabela`
+- `Sort Method: external merge Disk` — sort estourou `work_mem`
+- `Nested Loop` com `loops=1000000` — possivel N+1 no nivel do banco
+
+---
+
+## O Problema N+1
+
+O N+1 e o problema de performance mais comum em aplicacoes que usam ORMs. Acontece quando o codigo executa **1 query para buscar uma lista** e depois **N queries adicionais** para buscar dados relacionados.
+
+```javascript
+// N+1: 1 query + 100 queries = 101 round-trips ao banco
+const users = await db.query('SELECT * FROM users LIMIT 100');
+
+for (const user of users) {
+  const orders = await db.query(
+    'SELECT * FROM orders WHERE user_id = $1', [user.id]
+  );
+  user.orders = orders;
+}
+// 101 queries x ~2ms = ~200ms
+// Com JOIN ou batch: 1-2 queries x ~5ms = ~10ms
+```
+
+### Por que e tao comum?
+
+O N+1 e efeito colateral do **lazy loading** — a estrategia padrao da maioria dos ORMs. O problema e insidioso porque funciona corretamente, nao aparece em testes (com poucos registros), mas escala linearmente em producao.
+
+### Deteccao
+
+```sql
+-- Identificar queries repetitivas (sinal de N+1):
+SELECT query, calls, mean_exec_time, total_exec_time
+FROM pg_stat_statements
+ORDER BY calls DESC
+LIMIT 20;
+```
+
+---
+
+## Solucoes para N+1
+
+### Solucao 1: Eager Loading com JOIN
+
+```javascript
+const results = await db.query(`
+  SELECT u.id AS user_id, u.name, u.email,
+         o.id AS order_id, o.total, o.status
+  FROM users u
+  LEFT JOIN orders o ON o.user_id = u.id
+  WHERE u.active = true
+`);
+
+// Hidratar em memoria com Map
+const usersMap = new Map();
+for (const row of results) {
+  if (!usersMap.has(row.user_id)) {
+    usersMap.set(row.user_id, { id: row.user_id, name: row.name, orders: [] });
+  }
+  if (row.order_id) {
+    usersMap.get(row.user_id).orders.push({ id: row.order_id, total: row.total });
+  }
+}
+```
+
+### Solucao 2: Batch Loading com WHERE IN
+
+```javascript
+const users = await db.query('SELECT * FROM users WHERE active = true LIMIT 100');
+const userIds = users.map(u => u.id);
+const orders = await db.query(
+  'SELECT * FROM orders WHERE user_id = ANY($1)', [userIds]
+);
+
+// Agrupar em memoria: O(n) com Map
+const ordersByUserId = new Map();
+for (const order of orders) {
+  if (!ordersByUserId.has(order.user_id)) {
+    ordersByUserId.set(order.user_id, []);
+  }
+  ordersByUserId.get(order.user_id).push(order);
+}
+// 2 queries em vez de 101
+```
+
+### Solucao 3: DataLoader Pattern
+
+O **DataLoader** (Facebook) resolve N+1 com **batching automatico + caching por request**:
+
+```typescript
+import DataLoader from 'dataloader';
+
+const orderLoader = new DataLoader<string, Order[]>(async (userIds) => {
+  const orders = await db.query(
+    'SELECT * FROM orders WHERE user_id = ANY($1)', [userIds]
+  );
+
+  const ordersByUserId = new Map<string, Order[]>();
+  for (const order of orders) {
+    if (!ordersByUserId.has(order.user_id)) {
+      ordersByUserId.set(order.user_id, []);
+    }
+    ordersByUserId.get(order.user_id)!.push(order);
+  }
+
+  // Deve retornar na MESMA ORDEM dos IDs de entrada
+  return userIds.map(id => ordersByUserId.get(id) || []);
+});
+
+// Cada .load() NAO dispara uma query imediatamente
+// O DataLoader acumula todos os .load() do mesmo tick
+const user1Orders = await orderLoader.load('user_1');
+const user2Orders = await orderLoader.load('user_2');
+// → UMA query com WHERE user_id IN ('user_1', 'user_2')
+```
+
+---
+
+## Solucoes por ORM
+
+### Prisma
+
+```typescript
+const users = await prisma.user.findMany({
+  include: {
+    orders: {
+      where: { status: 'completed' },
+      orderBy: { createdAt: 'desc' },
+      take: 10,
+    },
+  },
+});
+// Prisma gera 2 queries (batch loading automatico)
+```
+
+### Sequelize
+
+```typescript
+const users = await User.findAll({
+  include: [{
+    model: Order,
+    as: 'orders',
+    separate: true,  // Batch loading em vez de JOIN
+  }],
+});
+```
+
+### TypeORM
+
+```typescript
+const users = await userRepository
+  .createQueryBuilder('user')
+  .leftJoinAndSelect('user.orders', 'order', 'order.status = :status', {
+    status: 'completed',
+  })
+  .where('user.active = :active', { active: true })
+  .getMany();
+```
+
+---
+
+## GraphQL N+1: O Problema Amplificado
+
+Em GraphQL, cada campo e resolvido independentemente, amplificando o N+1:
+
+```typescript
+// Sem DataLoader: 601 queries para 1 request HTTP!
+// Com DataLoader: 3 queries (users + orders batch + items batch)
+
+const resolvers = {
+  User: {
+    orders: (user, _, { loaders }) => loaders.order.load(user.id),
+  },
+};
+
+// Context factory: novo DataLoader por request
+const context = ({ req }) => ({
+  loaders: {
+    order: new DataLoader(async (userIds) => {
+      const orders = await db.query(
+        'SELECT * FROM orders WHERE user_id = ANY($1)', [userIds]
+      );
+      return userIds.map(id => orders.filter(o => o.user_id === id));
+    }),
+  },
+});
+```
+
+---
+
+## Problemas de Indices
+
+### Write Amplification
+
+Cada indice precisa ser atualizado em **cada operacao de escrita**. Uma tabela com 8 indices transforma cada INSERT em ~9 escritas.
+
+```sql
+-- Indices com idx_scan = 0 sao candidatos para remocao
+SELECT indexrelname, idx_scan, idx_tup_read
+FROM pg_stat_user_indexes
+WHERE schemaname = 'public'
+ORDER BY idx_scan ASC;
+```
+
+### Index Bloat
+
+```sql
+-- Estimar bloat com pgstattuple:
+CREATE EXTENSION IF NOT EXISTS pgstattuple;
+SELECT * FROM pgstatindex('idx_orders_status_date');
+-- empty_pages alto = bloat
+
+-- Solucao: REINDEX CONCURRENTLY (PostgreSQL 12+)
+REINDEX INDEX CONCURRENTLY idx_orders_status_date;
+```
+
+### HOT Updates no PostgreSQL
+
+HOT (Heap-Only Tuple): UPDATE que **nao modifica colunas indexadas** pode atualizar in-place sem tocar em indices.
+
+```sql
+SELECT relname, n_tup_upd, n_tup_hot_upd,
+       CASE WHEN n_tup_upd > 0
+            THEN round(100.0 * n_tup_hot_upd / n_tup_upd, 1)
+            ELSE 0 END AS hot_pct
+FROM pg_stat_user_tables WHERE relname = 'users';
+
+-- fillfactor menor que 100 reserva espaco para HOT updates
+ALTER TABLE users SET (fillfactor = 90);
+```
+
+---
+
+## Quando NAO Indexar
+
+- **Tabelas pequenas (< ~10.000 rows):** Seq Scan e mais rapido que descer uma B-Tree.
+- **Colunas com baixa cardinalidade:** indice em `status` com 3 valores raramente e usado. **Excecao:** partial index.
+- **Workloads write-heavy:** tabelas de logs, eventos, metricas. Considere BRIN ou nenhum indice.
+- **Colunas frequentemente atualizadas:** cada update atualiza o indice e impede HOT updates.
+
+---
+
+## Resumo de Tipos de Indice
+
+| Tipo | Melhor para | Operadores | Tamanho | Custo de escrita |
+|---|---|---|---|---|
+| **B-Tree** | Igualdade, range, ORDER BY, LIKE 'prefix%' | `=  <  >  <=  >=  BETWEEN  IN  IS NULL` | Medio | Medio |
+| **Hash** | Apenas igualdade exata | `=` | Medio | Baixo |
+| **GIN** | Full-text, JSONB, arrays | `@@  @>  ?  ?&  ?\|  &&` | Grande | Alto |
+| **GiST** | Geoespacial, ranges, nearest-neighbor | `&&  @>  <@  <->  ~=` | Medio | Medio |
+| **BRIN** | Dados naturalmente ordenados, tabelas enormes | `<  <=  =  >=  >` | Minimo | Minimo |
+
+---
+
+## Referencias e Fontes
+
+- **"Designing Data-Intensive Applications"** (Martin Kleppmann) — Cap. 3: Storage and Retrieval — cobertura aprofundada de B-Trees, LSM-Trees e estruturas de indice
+- **"Use The Index, Luke"** — [use-the-index-luke.com](https://use-the-index-luke.com/) — guia completo e gratuito sobre indexacao SQL
+- **PostgreSQL Documentation: Indexes** — [postgresql.org/docs/current/indexes.html](https://www.postgresql.org/docs/current/indexes.html) — referencia oficial sobre todos os tipos de indice
+- **PostgreSQL Documentation: EXPLAIN** — [postgresql.org/docs/current/using-explain.html](https://www.postgresql.org/docs/current/using-explain.html) — guia oficial para leitura de query plans
+- **DataLoader (GitHub)** — [github.com/graphql/dataloader](https://github.com/graphql/dataloader) — implementacao de referencia do Facebook para batching e caching
+- **Node.js official documentation** — [nodejs.org/docs](https://nodejs.org/docs) — referencia para o Event Loop e como DataLoader interage com microtasks

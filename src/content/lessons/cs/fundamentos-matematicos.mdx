@@ -1,0 +1,1347 @@
+---
+title: "Fundamentos Matemáticos para Ciência da Computação"
+description: "Lógica booleana, álgebra, sistemas numéricos, operações bitwise, IEEE 754, combinatória, probabilidade, logaritmos, séries, aritmética modular e o Master Theorem — toda a matemática essencial para análise de algoritmos e design de sistemas"
+track: "cs"
+order: 1
+section: "Fundamentos"
+priority: "high"
+tags: ["lógica", "matemática", "logaritmos", "combinatória", "probabilidade", "aritmética-modular", "master-theorem", "bitwise"]
+prerequisites: []
+keyTakeaways:
+  - "Álgebra booleana e De Morgan simplificam condições complexas no código"
+  - "IEEE 754 explica por que 0.1 + 0.2 !== 0.3 — nunca use float para dinheiro"
+  - "Operações bitwise são O(1) e fundamentais para flags, masks e hashing"
+  - "log₂(n) aparece em todo algoritmo que divide o problema pela metade"
+  - "Combinatória quantifica o espaço de busca de algoritmos brute-force"
+  - "Probabilidade discreta e valor esperado são essenciais para análise de algoritmos randomizados"
+  - "O Master Theorem resolve recorrências T(n) = aT(n/b) + f(n) em três casos diretos"
+  - "Aritmética modular é a base de hashing, criptografia RSA e circular buffers"
+---
+
+# Fundamentos Matemáticos para Ciência da Computação
+
+Esta lição consolida toda a matemática que sustenta ciência da computação: lógica, aritmética binária, operações bitwise, ponto flutuante, conjuntos, combinatória, probabilidade, indução, grafos, logaritmos, séries, aritmética modular e recorrências. Não é teoria abstrata — cada conceito tem aplicação direta no código que você escreve diariamente e na análise de algoritmos que você projeta.
+
+---
+
+## 1. Lógica Booleana e Álgebra
+
+### 1.1 Proposições e Conectivos
+
+Uma **proposição** é uma sentença declarativa com exatamente um valor-verdade: **verdadeiro** (V, 1, `true`) ou **falso** (F, 0, `false`).
+
+| Conectivo | Símbolo | Nome | JS/TS |
+|---|---|---|---|
+| Negação | ¬P | NOT | `!p` |
+| Conjunção | P ∧ Q | AND | `p && q` |
+| Disjunção | P ∨ Q | OR | `p \|\| q` |
+| Condicional | P → Q | Implicação | — |
+| Bicondicional | P ↔ Q | Se e somente se | `===` (para booleanos) |
+| Disjunção exclusiva | P ⊕ Q | XOR | `p !== q` (para booleanos) |
+
+A **implicação** (P → Q) é **falsa apenas quando P é verdadeiro e Q é falso**. Isso significa que `false → qualquer_coisa` é sempre verdadeiro (vacuous truth). O tipo `never` em TypeScript é habitado por zero valores, então qualquer afirmação sobre ele é vacuamente verdadeira.
+
+### 1.2 Tabelas-Verdade
+
+Para n variáveis, temos 2ⁿ linhas. Tabela completa para P e Q:
+
+| P | Q | ¬P | P ∧ Q | P ∨ Q | P → Q | P ↔ Q | P ⊕ Q |
+|---|---|---|---|---|---|---|---|
+| V | V | F | V | V | V | V | F |
+| V | F | F | F | V | F | F | V |
+| F | V | V | F | V | V | F | V |
+| F | F | V | F | F | V | V | F |
+
+Note que P → Q é equivalente a ¬P ∨ Q — a definição material da implicação.
+
+```typescript
+type TruthRow = { vars: boolean[]; result: boolean };
+
+function generateTruthTable(
+  numVars: number,
+  expression: (...args: boolean[]) => boolean
+): TruthRow[] {
+  const rows: TruthRow[] = [];
+  const totalRows = 1 << numVars; // 2^n usando shift
+
+  for (let i = 0; i < totalRows; i++) {
+    const vars: boolean[] = [];
+    for (let j = numVars - 1; j >= 0; j--) {
+      vars.push(Boolean((i >> j) & 1));
+    }
+    rows.push({ vars, result: expression(...vars) });
+  }
+  return rows;
+}
+
+// Verificar que (P → Q) ↔ (¬P ∨ Q) é tautologia
+const table = generateTruthTable(2, (p, q) => {
+  const implication = !p || q;
+  const equivalent = !p || q;
+  return implication === equivalent;
+});
+console.log(table.every(row => row.result)); // true
+```
+
+### 1.3 Leis Fundamentais da Álgebra Booleana
+
+```
+Identidade:       A ∧ 1 = A          A ∨ 0 = A
+Dominação:        A ∧ 0 = 0          A ∨ 1 = 1
+Idempotência:     A ∧ A = A          A ∨ A = A
+Complemento:      A ∧ ¬A = 0         A ∨ ¬A = 1
+Dupla negação:    ¬(¬A) = A
+Comutatividade:   A ∧ B = B ∧ A      A ∨ B = B ∨ A
+Associatividade:  (A∧B)∧C = A∧(B∧C)  (A∨B)∨C = A∨(B∨C)
+Distributividade: A∧(B∨C) = (A∧B)∨(A∧C)
+                  A∨(B∧C) = (A∨B)∧(A∨C)
+Absorção:         A ∧ (A ∨ B) = A    A ∨ (A ∧ B) = A
+```
+
+### 1.4 Leis de De Morgan
+
+```
+¬(A ∧ B) = ¬A ∨ ¬B
+¬(A ∨ B) = ¬A ∧ ¬B
+```
+
+Generalizadas para n variáveis:
+
+```
+¬(A₁ ∧ A₂ ∧ ... ∧ Aₙ) = ¬A₁ ∨ ¬A₂ ∨ ... ∨ ¬Aₙ
+¬(A₁ ∨ A₂ ∨ ... ∨ Aₙ) = ¬A₁ ∧ ¬A₂ ∧ ... ∧ ¬Aₙ
+```
+
+### 1.5 Simplificação de Condições no Código
+
+```typescript
+// Antes — condição difícil de ler:
+if (!(user.isAdmin && user.isActive) || (user.isAdmin && !user.isActive)) {
+  revokeAccess();
+}
+
+// Simplificação: ¬(A ∧ B) ∨ (A ∧ ¬B) = ¬(A ∧ B) = ¬A ∨ ¬B
+if (!user.isAdmin || !user.isActive) {
+  revokeAccess();
+}
+```
+
+```typescript
+// (A ∨ B) ∧ (A ∨ ¬B) = A ∨ (B ∧ ¬B) = A ∨ 0 = A
+if ((isReady || hasPermission) && (isReady || !hasPermission)) {
+  proceed();
+}
+// Equivalente a:
+if (isReady) {
+  proceed();
+}
+```
+
+---
+
+## 2. Sistemas Numéricos e Aritmética Binária
+
+### 2.1 Representação Posicional
+
+Todo sistema de base **b** representa N como: `N = dₙ · bⁿ + dₙ₋₁ · bⁿ⁻¹ + ... + d₁ · b¹ + d₀ · b⁰`
+
+| Base | Nome | Dígitos | Prefixo JS |
+|---|---|---|---|
+| 2 | Binário | 0, 1 | `0b` |
+| 8 | Octal | 0–7 | `0o` |
+| 10 | Decimal | 0–9 | (nenhum) |
+| 16 | Hexadecimal | 0–9, A–F | `0x` |
+
+Como 8 = 2³ e 16 = 2⁴, cada dígito octal corresponde a 3 bits e cada hex a 4 bits, tornando a conversão binário↔octal↔hex direta.
+
+```typescript
+const n = 237;
+console.log(n.toString(2));    // "11101101"
+console.log(n.toString(16));   // "ed"
+
+// Literais numéricos
+const bin = 0b11101101; // 237
+const oct = 0o355;      // 237
+const hex = 0xED;       // 237
+```
+
+**Cores CSS** — aplicação direta de hex e bitwise:
+
+```typescript
+function hexToRGB(hex: string): [number, number, number] {
+  const n = parseInt(hex.replace("#", ""), 16);
+  return [
+    (n >> 16) & 0xFF,  // Red
+    (n >> 8) & 0xFF,   // Green
+    n & 0xFF           // Blue
+  ];
+}
+console.log(hexToRGB("#1A2B3C")); // [26, 43, 60]
+```
+
+### 2.2 Complemento a Dois
+
+Para representar negativos em n bits, o MSB tem peso **-2ⁿ⁻¹**. Para n = 8 bits, o intervalo é **[-128, +127]**. Fórmula geral: **[-2ⁿ⁻¹, 2ⁿ⁻¹ - 1]**.
+
+Algoritmo para -X: inverta todos os bits e some 1.
+
+```
+ 42₁₀ = 00101010₂
+Inversão: 11010101
+    + 1:  11010110   ← -42 em complemento a dois
+```
+
+Subtração via complemento a dois: A − B = A + (−B). O hardware só precisa de um circuito somador.
+
+### 2.3 Overflow
+
+Overflow ocorre quando o resultado excede o intervalo representável. Em JavaScript, operações bitwise truncam para int32:
+
+```typescript
+console.log(0x7FFFFFFF | 0);       //  2147483647 (MAX_INT32)
+console.log((0x7FFFFFFF + 1) | 0); // -2147483648 (overflow! wraps para MIN_INT32)
+```
+
+Detecção formal: `overflow = (A[n-1] == B[n-1]) && (resultado[n-1] != A[n-1])`.
+
+---
+
+## 3. Operações Bitwise
+
+Executadas em **O(1)** pelo hardware — um único ciclo de clock.
+
+### 3.1 Operadores Fundamentais
+
+```typescript
+// AND (&): bit é 1 somente se ambos forem 1
+0b1100 & 0b1010  // 0b1000 (8)
+
+// OR (|): bit é 1 se pelo menos um for 1
+0b1100 | 0b1010  // 0b1110 (14)
+
+// XOR (^): bit é 1 se os bits forem diferentes
+0b1100 ^ 0b1010  // 0b0110 (6)
+
+// NOT (~): inverte todos os bits
+~0b00001100      // em int32: -13
+
+// Left shift (<<): multiplica por 2ⁿ
+0b0001 << 3      // 0b1000 (8)
+
+// Right shift (>>): divide por 2ⁿ (arithmetic, preserva sinal)
+0b1000 >> 2      // 0b0010 (2)
+
+// Unsigned right shift (>>>): preenche com 0
+(-1 >>> 0)       // 4294967295 (0xFFFFFFFF)
+```
+
+### 3.2 Bit Manipulation Idioms
+
+```typescript
+// Verificar par/ímpar — O(1)
+const isEven = (n: number): boolean => (n & 1) === 0;
+
+// Verificar potência de 2
+const isPowerOf2 = (n: number): boolean => n > 0 && (n & (n - 1)) === 0;
+
+// Population count (Brian Kernighan's algorithm)
+function popcount(n: number): number {
+  let count = 0;
+  while (n) {
+    n &= n - 1; // Remove o bit setado mais à direita
+    count++;
+  }
+  return count;
+}
+
+// XOR swap
+let a = 5, b = 3;
+a ^= b; b ^= a; a ^= b;
+// a = 3, b = 5
+
+// Lowest set bit
+const lowestBit = (n: number): number => n & (-n);
+```
+
+### 3.3 Sistema de Flags e Permissões
+
+```typescript
+// Permissões Unix — cada categoria tem 3 bits: rwx
+const PERM = {
+  OWNER_R: 0o400, OWNER_W: 0o200, OWNER_X: 0o100,
+  GROUP_R: 0o040, GROUP_W: 0o020, GROUP_X: 0o010,
+  OTHER_R: 0o004, OTHER_W: 0o002, OTHER_X: 0o001,
+} as const;
+
+// chmod 755
+const chmod755 =
+  PERM.OWNER_R | PERM.OWNER_W | PERM.OWNER_X |
+  PERM.GROUP_R | PERM.GROUP_X |
+  PERM.OTHER_R | PERM.OTHER_X;
+
+function hasPermission(mode: number, perm: number): boolean {
+  return (mode & perm) === perm;
+}
+
+// Adicionar: OR       — chmod755 | PERM.GROUP_W → "775"
+// Remover:  AND NOT   — chmod755 & ~PERM.OTHER_X → "754"
+// Toggle:   XOR       — chmod755 ^ PERM.OWNER_W → "555"
+```
+
+### 3.4 Bitmask para Feature Flags
+
+```typescript
+const enum Feature {
+  DarkMode    = 1 << 0,
+  BetaAccess  = 1 << 1,
+  AdminPanel  = 1 << 2,
+  Analytics   = 1 << 3,
+  ExportCSV   = 1 << 4,
+}
+
+class FeatureFlags {
+  constructor(private flags: number = 0) {}
+
+  enable(feature: Feature): void { this.flags |= feature; }
+  disable(feature: Feature): void { this.flags &= ~feature; }
+  toggle(feature: Feature): void { this.flags ^= feature; }
+  has(feature: Feature): boolean { return (this.flags & feature) === feature; }
+
+  hasAll(...features: Feature[]): boolean {
+    const mask = features.reduce((m, f) => m | f, 0);
+    return (this.flags & mask) === mask;
+  }
+
+  hasAny(...features: Feature[]): boolean {
+    const mask = features.reduce((m, f) => m | f, 0);
+    return (this.flags & mask) !== 0;
+  }
+
+  serialize(): number { return this.flags; }
+  static deserialize(n: number): FeatureFlags { return new FeatureFlags(n); }
+}
+```
+
+### 3.5 Hashing com XOR
+
+```typescript
+// Encontrar o número único (todos os outros aparecem 2x)
+function findUnique(nums: number[]): number {
+  return nums.reduce((acc, n) => acc ^ n, 0);
+}
+console.log(findUnique([2, 3, 5, 3, 2])); // 5
+
+// Encontrar os DOIS números únicos em O(n) tempo, O(1) espaço
+function findTwoUnique(nums: number[]): [number, number] {
+  const xorAll = nums.reduce((acc, n) => acc ^ n, 0);
+  const diffBit = xorAll & (-xorAll);
+
+  let group1 = 0, group2 = 0;
+  for (const n of nums) {
+    if (n & diffBit) group1 ^= n;
+    else group2 ^= n;
+  }
+  return [group1, group2];
+}
+console.log(findTwoUnique([1, 2, 3, 1, 2, 5])); // [3, 5]
+```
+
+---
+
+## 4. IEEE 754 e Ponto Flutuante
+
+### 4.1 Estrutura do Double (64 bits)
+
+```
+| 1 bit sinal | 11 bits expoente | 52 bits mantissa |
+```
+
+Valor: `(-1)^S × 2^(E - 1023) × (1 + M/2^52)`.
+
+### 4.2 Por que 0.1 + 0.2 !== 0.3
+
+0.1 em binário é dízima periódica: `0.0001100110011...₂`. O hardware arredonda para 52 bits de mantissa.
+
+```typescript
+console.log(0.1 + 0.2);             // 0.30000000000000004
+console.log(0.1 + 0.2 === 0.3);     // false
+
+// Solução 1: comparação com epsilon
+function floatEqual(a: number, b: number, eps = Number.EPSILON): boolean {
+  return Math.abs(a - b) < eps;
+}
+
+// Solução 2: aritmética inteira (NUNCA use float para dinheiro)
+const precoEmCentavos = 1999; // R$ 19,99
+const desconto = 500;         // R$ 5,00
+const total = precoEmCentavos - desconto; // 1499 = R$ 14,99 — exato!
+```
+
+### 4.3 Valores Especiais
+
+```typescript
+console.log(1 / 0);          // Infinity
+console.log(0 / 0);          // NaN
+console.log(NaN === NaN);    // false — use Number.isNaN()
+
+console.log(Number.MAX_SAFE_INTEGER);  // 2^53 - 1 = 9007199254740991
+console.log(9007199254740992 === 9007199254740993); // true (!) — use BigInt
+
+console.log(-0 === 0);             // true (!)
+console.log(Object.is(-0, 0));     // false
+```
+
+### 4.4 Armadilhas Práticas
+
+```typescript
+// Loop infinito com float:
+for (let x = 0.0; x !== 1.0; x += 0.1) { /* NUNCA TERMINA */ }
+
+// Correto — controle com inteiro:
+for (let i = 0; i < 10; i++) {
+  const x = i / 10;
+}
+```
+
+---
+
+## 5. Teoria dos Conjuntos e Lógica de Predicados
+
+### 5.1 Operações de Conjuntos
+
+```
+União:         A ∪ B = { x | x ∈ A  ∨  x ∈ B }
+Interseção:    A ∩ B = { x | x ∈ A  ∧  x ∈ B }
+Diferença:     A \ B = { x | x ∈ A  ∧  x ∉ B }
+Dif. simétrica: A △ B = (A \ B) ∪ (B \ A)
+```
+
+De Morgan para conjuntos: `(A ∪ B)ᶜ = Aᶜ ∩ Bᶜ` e `(A ∩ B)ᶜ = Aᶜ ∪ Bᶜ`.
+
+```typescript
+function union<T>(a: Set<T>, b: Set<T>): Set<T> {
+  return new Set([...a, ...b]);
+}
+
+function intersection<T>(a: Set<T>, b: Set<T>): Set<T> {
+  return new Set([...a].filter(x => b.has(x)));
+}
+
+function difference<T>(a: Set<T>, b: Set<T>): Set<T> {
+  return new Set([...a].filter(x => !b.has(x)));
+}
+
+// Exemplo: permissões em comum entre roles
+const adminPerms = new Set(["read", "write", "delete", "manage_users"]);
+const editorPerms = new Set(["read", "write", "publish"]);
+console.log(intersection(adminPerms, editorPerms)); // Set {"read", "write"}
+```
+
+### 5.2 Conjuntos em SQL e TypeScript
+
+```sql
+SELECT * FROM tabela_a UNION SELECT * FROM tabela_b;      -- ∪
+SELECT * FROM tabela_a INTERSECT SELECT * FROM tabela_b;  -- ∩
+SELECT * FROM tabela_a EXCEPT SELECT * FROM tabela_b;     -- \
+```
+
+```typescript
+// Union type: A | B — mais valores possíveis
+type StringOrNumber = string | number;
+
+// Intersection type: A & B — mais restrições
+type Entity = { id: string } & { name: string }; // { id: string; name: string }
+```
+
+### 5.3 Quantificadores (Lógica de Predicados)
+
+- **∀x P(x)** — "Para todo x, P(x)". Mapeamento: `.every()`
+- **∃x P(x)** — "Existe x tal que P(x)". Mapeamento: `.some()`
+
+Negação: `¬(∀x P(x)) ≡ ∃x ¬P(x)` e `¬(∃x P(x)) ≡ ∀x ¬P(x)`.
+
+```typescript
+const users = [
+  { name: "Alice", age: 30, active: true },
+  { name: "Bob", age: 17, active: true },
+  { name: "Carol", age: 25, active: false },
+];
+
+// ∀x (age(x) ≥ 18)
+const allAdults = users.every(u => u.age >= 18); // false
+
+// ∃x (active(x) ∧ age(x) < 18)
+const hasActiveMinor = users.some(u => u.active && u.age < 18); // true
+
+// Implicação: ∀x (active(x) → age(x) ≥ 18)  ≡  ∀x (¬active(x) ∨ age(x) ≥ 18)
+const allActiveAreAdults = users.every(u => !u.active || u.age >= 18); // false
+```
+
+---
+
+## 6. Combinatória e Probabilidade
+
+### 6.1 Princípios de Contagem
+
+**Regra do Produto**: k etapas com n₁, n₂, ..., nₖ opções → n₁ · n₂ · ... · nₖ total.
+
+Senha de 8 chars com 36 opções (a-z + 0-9): 36⁸ ≈ 2.8 × 10¹². Com 72 opções (+ maiúsculas + símbolos): 72⁸ ≈ 7.2 × 10¹⁴ — aumento de 256×.
+
+**Regra da Soma**: k maneiras mutuamente exclusivas → n₁ + n₂ + ... + nₖ.
+
+### 6.2 Permutações e Combinações
+
+**Permutações** (arranjos ordenados): `P(n, r) = n! / (n - r)!`
+
+**Permutações com repetição**: `n! / (n₁! · n₂! · ... · nₖ!)`. Ex: "MISSISSIPPI" → 11! / (1! · 4! · 4! · 2!) = 34.650.
+
+**Combinações** (seleções não-ordenadas): `C(n, r) = n! / (r! · (n - r)!)`
+
+Identidades fundamentais:
+
+```
+C(n, r) = C(n, n - r)                          [simetria]
+C(n, r) = C(n-1, r-1) + C(n-1, r)             [recorrência de Pascal]
+∑ᵣ₌₀ⁿ C(n, r) = 2ⁿ                             [total de subconjuntos]
+```
+
+A identidade ∑ C(n, r) = 2ⁿ explica por que algoritmos que enumeram todos os subconjuntos são O(2ⁿ).
+
+### 6.3 Triângulo de Pascal
+
+```
+n=0:                    1
+n=1:                  1   1
+n=2:                1   2   1
+n=3:              1   3   3   1
+n=4:            1   4   6   4   1
+n=5:          1   5  10  10   5   1
+```
+
+**Teorema Binomial**: `(a + b)ⁿ = ∑ᵣ₌₀ⁿ C(n, r) · aⁿ⁻ʳ · bʳ`
+
+Caminhos em grid m × n (só direita/baixo): C(m+n, m).
+
+```typescript
+/**
+ * C(n, r) via Triângulo de Pascal — O(n·r) tempo, O(r) espaço.
+ * Evita overflow de fatorial usando apenas somas.
+ */
+function binomial(n: number, r: number): number {
+  if (r < 0 || r > n) return 0;
+  if (r === 0 || r === n) return 1;
+  if (r > n - r) r = n - r;
+
+  const dp = new Array(r + 1).fill(0);
+  dp[0] = 1;
+
+  for (let i = 1; i <= n; i++) {
+    for (let j = Math.min(i, r); j > 0; j--) {
+      dp[j] = dp[j] + dp[j - 1];
+    }
+  }
+  return dp[r];
+}
+
+console.log(binomial(52, 5));  // 2598960 (mãos de poker)
+```
+
+### 6.4 Geração de Permutações e Combinações
+
+```typescript
+function permutations<T>(arr: T[]): T[][] {
+  const result: T[][] = [];
+
+  function backtrack(start: number): void {
+    if (start === arr.length) {
+      result.push([...arr]);
+      return;
+    }
+    for (let i = start; i < arr.length; i++) {
+      [arr[start], arr[i]] = [arr[i], arr[start]];
+      backtrack(start + 1);
+      [arr[start], arr[i]] = [arr[i], arr[start]];
+    }
+  }
+
+  backtrack(0);
+  return result;
+}
+
+function combinations<T>(arr: T[], r: number): T[][] {
+  const result: T[][] = [];
+
+  function backtrack(start: number, current: T[]): void {
+    if (current.length === r) {
+      result.push([...current]);
+      return;
+    }
+    const remaining = arr.length - start;
+    const needed = r - current.length;
+    if (remaining < needed) return;
+
+    for (let i = start; i < arr.length; i++) {
+      current.push(arr[i]);
+      backtrack(i + 1, current);
+      current.pop();
+    }
+  }
+
+  backtrack(0, []);
+  return result;
+}
+
+console.log(combinations([1, 2, 3, 4], 2));
+// [[1,2], [1,3], [1,4], [2,3], [2,4], [3,4]]
+```
+
+### 6.5 Birthday Paradox
+
+Em n pessoas com 365 dias possíveis, a probabilidade de pelo menos duas terem o mesmo aniversário:
+
+| n | P(colisão) |
+|---|---|
+| 23 | **50.7%** |
+| 50 | 97.0% |
+| 70 | 99.9% |
+
+**Forma geral**: Para n itens em m slots: `P(colisão) ≈ 1 - e^(-n²/(2m))`. Colisão 50% após ~√(π·m/2) ≈ 1.177√m inserções.
+
+**Hash Tables**: m = 1.000.000 slots → primeira colisão após ~1.177 inserções. Estratégias de resolução de colisão **não são opcionais**.
+
+```typescript
+function birthdayParadoxSimulation(
+  slots: number,
+  trials: number = 100_000
+): { avgInsertions: number; theoretical: number } {
+  let totalInsertions = 0;
+
+  for (let t = 0; t < trials; t++) {
+    const seen = new Set<number>();
+    let n = 0;
+    while (true) {
+      const slot = Math.floor(Math.random() * slots);
+      if (seen.has(slot)) break;
+      seen.add(slot);
+      n++;
+    }
+    totalInsertions += n;
+  }
+
+  return {
+    avgInsertions: totalInsertions / trials,
+    theoretical: Math.sqrt((Math.PI * slots) / 2),
+  };
+}
+```
+
+### 6.6 Valor Esperado e Análise do Quicksort
+
+O **valor esperado** E[X] = ∑ₓ x · P(X = x). A propriedade crucial é a **linearidade da esperança**: E[X + Y] = E[X] + E[Y], mesmo para variáveis dependentes.
+
+**Quicksort randomizado**: Defina Xᵢⱼ = 1 se elementos i e j são comparados. Dois elementos com ranks i e j são comparados sse um deles é o primeiro pivot escolhido entre rank i,...,j. Probabilidade: 2/(j - i + 1).
+
+```
+E[X] = ∑ᵢ<ⱼ 2/(j-i+1) ≤ ∑ᵢ₌₁ⁿ 2·Hₙ = 2n·Hₙ ≈ 2n·ln(n) = O(n log n)
+```
+
+### 6.7 Distribuições Importantes em CS
+
+| Distribuição | E[X] | Aplicação |
+|---|---|---|
+| Bernoulli(p) | p | Sucesso/falha de uma operação |
+| Binomial(n, p) | np | Erros em n pacotes |
+| Geométrica(p) | 1/p | Tentativas até primeiro sucesso (retry) |
+| Uniforme(1, n) | (n+1)/2 | Seleção de pivot no quicksort |
+| Poisson(λ) | λ | Requests em um intervalo |
+
+A geométrica é especialmente útil: se cada tentativa tem probabilidade p de sucesso, espera-se 1/p tentativas. Aparece em hashing (probes até slot vazio), retries e skip lists.
+
+### 6.8 Probabilidade Condicional e Bayes
+
+```
+P(A|B) = P(A ∩ B) / P(B)
+P(A|B) = P(B|A) · P(A) / P(B)    [Teorema de Bayes]
+```
+
+**Base rate fallacy**: Taxa de defeitos 1%, teste com 95% acurácia e 3% falsos positivos → P(defeito|positivo) ≈ 24.2%. Alarmes em produção com baixa taxa de falhas terão alta proporção de falsos positivos.
+
+---
+
+## 7. Indução Matemática
+
+### 7.1 Indução Fraca
+
+Para provar P(n) ∀n ≥ n₀: (1) **Base**: P(n₀) verdadeiro. (2) **Passo**: P(k) → P(k+1).
+
+**Exemplo**: ∑ᵢ₌₁ⁿ i = n(n+1)/2.
+
+**Base** (n = 1): 1 = 1·2/2. **Passo**: ∑ᵢ₌₁ᵏ⁺¹ i = k(k+1)/2 + (k+1) = (k+1)(k+2)/2.
+
+### 7.2 Indução Forte
+
+Assume P(j) para **todo** j com n₀ ≤ j ≤ k, prova P(k+1). Necessária quando P(k+1) depende de valores anteriores a k.
+
+**Fundamental da Aritmética**: Todo n ≥ 2 é primo ou produto de primos. Se k+1 não é primo, k+1 = a · b com 2 ≤ a, b ≤ k, ambos primos/produtos de primos pela hipótese.
+
+### 7.3 Indução Estrutural
+
+Estende para estruturas recursivas. **Teorema**: árvore binária com n nós internos tem n + 1 folhas.
+
+**Por que importa**: Decision trees para ordenar n elementos precisam de ≥ n! folhas, logo altura ≥ log₂(n!) = Ω(n log n).
+
+### 7.4 Prova de Correção: Binary Search
+
+```typescript
+/**
+ * Invariante: se target está em arr, então target está em arr[lo..hi].
+ *
+ * Base: lo=0, hi=arr.length-1 — array inteiro, trivialmente vale.
+ * Passo: Se arr[mid] < target → target ∉ arr[lo..mid] → lo = mid+1.
+ *        Se arr[mid] > target → target ∉ arr[mid..hi] → hi = mid-1.
+ * Terminação: (hi - lo) diminui em ≥1 a cada iteração.
+ */
+function binarySearch(arr: number[], target: number): number {
+  let lo = 0;
+  let hi = arr.length - 1;
+
+  while (lo <= hi) {
+    const mid = lo + Math.floor((hi - lo) / 2);
+    if (arr[mid] === target) return mid;
+    if (arr[mid] < target) lo = mid + 1;
+    else hi = mid - 1;
+  }
+  return -1;
+}
+```
+
+### 7.5 Prova de Correção: Merge Sort
+
+```typescript
+/**
+ * Indução forte sobre n = arr.length.
+ * Base: n ≤ 1 → já ordenado.
+ * Passo: left e right têm tamanho < n → ordenados pela hipótese.
+ *        merge combina dois arrays ordenados → resultado ordenado.
+ */
+function mergeSort(arr: number[]): number[] {
+  if (arr.length <= 1) return arr;
+  const mid = Math.floor(arr.length / 2);
+  const left = mergeSort(arr.slice(0, mid));
+  const right = mergeSort(arr.slice(mid));
+  return merge(left, right);
+}
+
+function merge(left: number[], right: number[]): number[] {
+  const result: number[] = [];
+  let i = 0, j = 0;
+  while (i < left.length && j < right.length) {
+    if (left[i] <= right[j]) result.push(left[i++]);
+    else result.push(right[j++]);
+  }
+  while (i < left.length) result.push(left[i++]);
+  while (j < right.length) result.push(right[j++]);
+  return result;
+}
+```
+
+---
+
+## 8. Relações, Funções e Pigeonhole
+
+### 8.1 Relações de Equivalência
+
+Uma relação **reflexiva**, **simétrica** e **transitiva** é uma relação de equivalência. Induz uma **partição** em classes de equivalência.
+
+Exemplos: congruência módulo n, "mesmo tipo estrutural" em TypeScript, "mesmo componente conexo" em grafos.
+
+### 8.2 Union-Find (Disjoint Sets)
+
+Mantém partição dinâmica com **Find** (representante da classe) e **Union** (fundir classes). Com path compression + union by rank: O(α(n)) amortizado — efetivamente O(1).
+
+```typescript
+class UnionFind {
+  private parent: number[];
+  private rank: number[];
+  private _components: number;
+
+  constructor(n: number) {
+    this.parent = Array.from({ length: n }, (_, i) => i);
+    this.rank = new Array(n).fill(0);
+    this._components = n;
+  }
+
+  find(x: number): number {
+    if (this.parent[x] !== x) {
+      this.parent[x] = this.find(this.parent[x]); // Path compression
+    }
+    return this.parent[x];
+  }
+
+  union(x: number, y: number): boolean {
+    const rootX = this.find(x);
+    const rootY = this.find(y);
+    if (rootX === rootY) return false;
+
+    if (this.rank[rootX] < this.rank[rootY]) {
+      this.parent[rootX] = rootY;
+    } else if (this.rank[rootX] > this.rank[rootY]) {
+      this.parent[rootY] = rootX;
+    } else {
+      this.parent[rootY] = rootX;
+      this.rank[rootX]++;
+    }
+    this._components--;
+    return true;
+  }
+
+  connected(x: number, y: number): boolean {
+    return this.find(x) === this.find(y);
+  }
+
+  get components(): number { return this._components; }
+}
+```
+
+### 8.3 Ordem Parcial e Ordenação Topológica
+
+Relação **reflexiva**, **antissimétrica** e **transitiva** → ordem parcial (poset). DAGs definem ordens parciais; ordenação topológica lineariza.
+
+Aplicações: resolução de dependências (npm, make), escalonamento, serialização de transações.
+
+### 8.4 Pigeonhole Principle
+
+Se **n + 1 objetos** em **n caixas**, pelo menos uma caixa tem ≥ 2 objetos. Generalizado: **n objetos** em **k caixas** → pelo menos ⌈n/k⌉ em alguma caixa.
+
+**Hash tables**: m + 1 chaves em m slots → colisão inevitável, independente da função hash. Toda implementação **precisa** de estratégia de resolução de colisões.
+
+```typescript
+/**
+ * Encontra duplicado em array de n+1 inteiros no range [1, n].
+ * Pelo Pigeonhole, duplicado SEMPRE existe.
+ * Floyd's cycle detection: O(n) tempo, O(1) espaço.
+ */
+function findDuplicate(nums: number[]): number {
+  let slow = nums[0];
+  let fast = nums[0];
+
+  do {
+    slow = nums[slow];
+    fast = nums[nums[fast]];
+  } while (slow !== fast);
+
+  slow = nums[0];
+  while (slow !== fast) {
+    slow = nums[slow];
+    fast = nums[fast];
+  }
+  return slow;
+}
+```
+
+**Roteamento de rede**: Pacote que visita n+1 nós em rede de n nós está em loop. Base do TTL em pacotes IP.
+
+---
+
+## 9. Grafos: Base Teórica
+
+### 9.1 Definição Formal
+
+G = (V, E): V = conjunto de vértices, E = conjunto de arestas. Não-direcionado: arestas são conjuntos \{u, v\}. Direcionado: pares ordenados (u, v).
+
+### 9.2 Grau e Handshaking Lemma
+
+O grau δ(v) é o número de arestas incidentes em v. Em digrafos: grau de entrada δ⁻(v) e de saída δ⁺(v).
+
+**Handshaking Lemma**: `∑ᵥ δ(v) = 2|E|`. Corolário: número de vértices com grau ímpar é sempre par.
+
+### 9.3 Conectividade
+
+Grafo conexo: caminho entre todo par de vértices. Mínimo n - 1 arestas para conectar n vértices. Para digrafos: fortemente conexo (caminho bidirecional) vs fracamente conexo.
+
+### 9.4 Grafos Bipartidos
+
+V particionado em U e W, toda aresta conecta U a W. **Teorema**: bipartido ⟺ sem ciclos ímpares.
+
+```typescript
+function isBipartite(
+  adjList: Map<number, number[]>
+): { setA: Set<number>; setB: Set<number> } | null {
+  const color = new Map<number, 0 | 1>();
+  const setA = new Set<number>();
+  const setB = new Set<number>();
+
+  for (const startNode of adjList.keys()) {
+    if (color.has(startNode)) continue;
+    const queue: number[] = [startNode];
+    color.set(startNode, 0);
+    setA.add(startNode);
+
+    while (queue.length > 0) {
+      const node = queue.shift()!;
+      const nodeColor = color.get(node)!;
+      const neighborColor: 0 | 1 = nodeColor === 0 ? 1 : 0;
+
+      for (const neighbor of adjList.get(node) ?? []) {
+        if (!color.has(neighbor)) {
+          color.set(neighbor, neighborColor);
+          (neighborColor === 0 ? setA : setB).add(neighbor);
+          queue.push(neighbor);
+        } else if (color.get(neighbor) === nodeColor) {
+          return null; // Ciclo ímpar → não bipartido
+        }
+      }
+    }
+  }
+  return { setA, setB };
+}
+```
+
+### 9.5 Árvores
+
+Grafo conexo acíclico. Duas de três propriedades implicam a terceira: (1) conexo, (2) acíclico, (3) |E| = |V| - 1.
+
+Propriedades: caminho único entre quaisquer dois vértices; remoção de qualquer aresta desconecta; adição de aresta cria ciclo.
+
+### 9.6 Planaridade e Fórmula de Euler
+
+Grafo planar: pode ser desenhado sem cruzamento de arestas. **Euler**: `V - E + F = 2`. Corolário: `E ≤ 3V - 6`.
+
+K₅ (E=10, 3·5-6=9) e K₃,₃ (E=9, 2·6-4=8) não são planares. **Kuratowski**: planar ⟺ sem subdivisão de K₅ ou K₃,₃.
+
+### 9.7 Coloração de Grafos
+
+k-coloração: função c: V → \{1,...,k\} com c(u) ≠ c(v) para adjacentes. Número cromático χ(G) = menor k.
+
+| Classe | χ(G) |
+|---|---|
+| Árvore (≥ 1 aresta) | 2 |
+| Ciclo par | 2 |
+| Ciclo ímpar | 3 |
+| Grafo planar | ≤ 4 (Teorema das 4 Cores) |
+
+**Register allocation em compiladores**: grafo de interferência (variáveis vivas simultaneamente como arestas) → k-coloração (k = registradores).
+
+### 9.8 Grafos Eulerianos e Hamiltonianos
+
+| | Euleriano | Hamiltoniano |
+|---|---|---|
+| Visita | Cada **aresta** 1× | Cada **vértice** 1× |
+| Condição | Todo vértice grau par | NP-completo |
+| Complexidade | O(E) | NP-completo |
+
+---
+
+## 10. Logaritmos e Crescimento
+
+### 10.1 Definição
+
+`log_b(x) = y ⟺ b^y = x`. Em CS, log sem base especificada assume base 2.
+
+### 10.2 Propriedades Fundamentais
+
+```
+Produto:     log_b(x · y)  = log_b(x) + log_b(y)
+Potência:    log_b(x^k)    = k · log_b(x)
+Mudança de base: log_b(x) = log_a(x) / log_a(b)
+```
+
+**Mudança de base**: qualquer logaritmo difere de outro por constante multiplicativa. Em Big O: `O(log₂ n) = O(log₃ n) = O(ln n) = O(log n)`.
+
+### 10.3 Por Que log₂ Domina
+
+Cada divisão pela metade consome "um passo de log₂": `n → n/2 → n/4 → ... → 1` em k = log₂(n) passos.
+
+| Estrutura/Algoritmo | Por que log₂ |
+|---|---|
+| Binary search | Divide array pela metade |
+| Merge sort | Divide pela metade a cada nível |
+| Árvore binária balanceada | Altura = log₂(n) |
+| B-Tree (ordem m) | Altura = log_m(n) |
+
+Número de dígitos de n na base b: `⌊log_b(n)⌋ + 1`. Armazenar n requer O(log n) bits.
+
+```typescript
+function floorLog2(n: number): number {
+  if (n <= 0) throw new Error("log₂ indefinido para n ≤ 0");
+  let log = 0;
+  let value = n;
+  while (value > 1) {
+    value >>= 1;
+    log++;
+  }
+  return log;
+}
+```
+
+### 10.4 Hierarquia de Crescimento
+
+```
+O(1) ⊂ O(log log n) ⊂ O(log n) ⊂ O(√n) ⊂ O(n) ⊂ O(n log n) ⊂ O(n²) ⊂ O(n³) ⊂ O(2ⁿ) ⊂ O(n!) ⊂ O(nⁿ)
+```
+
+| n | log₂(n) | n | n·log₂(n) | n² | 2ⁿ |
+|---|---|---|---|---|---|
+| 10 | 3.3 | 10 | 33 | 100 | 1.024 |
+| 20 | 4.3 | 20 | 86 | 400 | 1.048.576 |
+| 100 | 6.6 | 100 | 664 | 10.000 | 1.27 × 10³⁰ |
+
+Se 1 operação = 1 ns: n² = 10⁴ → 10 μs. 2⁴⁰ ≈ 10¹² → ~17 min. 2¹⁰⁰ ≈ 10³⁰ → ~4 × 10¹³ anos.
+
+### 10.5 Identidades para Análise
+
+```
+log₂(n!) ≈ n log₂(n) - n log₂(e)    [Stirling]
+```
+
+Isso prova o lower bound Ω(n log n) para ordenação por comparação: n! permutações, cada comparação divide por 2, mínimo log₂(n!) comparações.
+
+**Exponenciais**: 2ⁿ = número de subconjuntos de n elementos. Domina qualquer polinômio.
+
+```typescript
+/** Gera todos os subconjuntos usando bitmask */
+function powerSet<T>(arr: T[]): T[][] {
+  const n = arr.length;
+  const total = 1 << n;
+  const subsets: T[][] = [];
+
+  for (let mask = 0; mask < total; mask++) {
+    const subset: T[] = [];
+    for (let i = 0; i < n; i++) {
+      if (mask & (1 << i)) subset.push(arr[i]);
+    }
+    subsets.push(subset);
+  }
+  return subsets;
+}
+```
+
+---
+
+## 11. Séries e Somatórios
+
+### 11.1 Série Aritmética
+
+```
+∑ᵢ₌₁ⁿ i = n(n+1)/2 = O(n²)
+```
+
+Explica por que dois loops aninhados `for i in 0..n; for j in 0..i` são O(n²).
+
+```typescript
+function nestedLoop(n: number): number {
+  let count = 0;
+  for (let i = 0; i < n; i++) {
+    for (let j = 0; j <= i; j++) count++;
+  }
+  return count; // n(n+1)/2
+}
+```
+
+Soma de quadrados: `∑ i² = n(n+1)(2n+1)/6 = Θ(n³)`. Soma de cubos: `∑ i³ = [n(n+1)/2]² = Θ(n⁴)`.
+
+### 11.2 Série Geométrica
+
+```
+∑ᵢ₌₀ᵏ aⁱ = (aᵏ⁺¹ - 1) / (a - 1)    para a ≠ 1
+```
+
+**Caso a = 2**: `∑ᵢ₌₀ᵏ 2ⁱ = 2ᵏ⁺¹ - 1`. Explica o custo amortizado O(1) de dynamic arrays que dobram:
+
+```typescript
+/**
+ * Custo total de cópias: 1 + 2 + 4 + ... + 2^k = 2^(k+1) - 1 < 2n.
+ * Amortizado: 2n/n = O(1).
+ */
+function simulateDynamicArray(n: number): { totalCopies: number; amortized: number } {
+  let capacity = 1, size = 0, totalCopies = 0;
+  for (let i = 0; i < n; i++) {
+    if (size === capacity) {
+      totalCopies += capacity;
+      capacity *= 2;
+    }
+    size++;
+  }
+  return { totalCopies, amortized: totalCopies / n };
+}
+console.log(simulateDynamicArray(1_000_000));
+// { totalCopies: 1048575, amortized: ~1.05 }
+```
+
+**Série infinita (|a| < 1)**: `∑ᵢ₌₀^∞ aⁱ = 1/(1-a)`. Hash table com load factor α: probes esperados = 1/(1-α).
+
+### 11.3 Série Harmônica
+
+```
+H(n) = ∑ᵢ₌₁ⁿ 1/i = ln(n) + γ + O(1/n)    onde γ ≈ 0.5772
+```
+
+H(n) = Θ(log n). Onde aparece:
+
+| Contexto | Fórmula |
+|---|---|
+| Quicksort (caso médio) | ~2n·H(n) ≈ 1.39·n·log₂(n) |
+| Coupon collector | E[tentativas] = n·H(n) |
+| Skip list altura | O(log n) |
+
+```typescript
+function harmonicSeries(n: number): number {
+  let sum = 0;
+  for (let i = 1; i <= n; i++) sum += 1 / i;
+  return sum;
+}
+```
+
+### 11.4 Tabela Resumo de Somatórios
+
+| Somatório | Forma fechada | Onde aparece |
+|---|---|---|
+| ∑ᵢ₌₁ⁿ i | n(n+1)/2 | Dois loops aninhados |
+| ∑ᵢ₌₁ⁿ i² | n(n+1)(2n+1)/6 | Bubble sort analysis |
+| ∑ᵢ₌₀ᵏ 2ⁱ | 2ᵏ⁺¹ - 1 | Dynamic array resizes |
+| ∑ᵢ₌₁ⁿ 1/i | ≈ ln(n) + γ | Quicksort, coupon collector |
+| ∑ᵢ₌₁ⁿ 1/2ⁱ | 1 - 1/2ⁿ → 1 | Série convergente |
+
+---
+
+## 12. Aritmética Modular
+
+### 12.1 Definição
+
+```
+a ≡ b (mod m)  ⟺  m | (a - b)  ⟺  mesmo resto quando divididos por m
+```
+
+### 12.2 Propriedades
+
+A aritmética modular preserva soma, subtração e multiplicação:
+
+```
+(a + b) mod m = ((a mod m) + (b mod m)) mod m
+(a × b) mod m = ((a mod m) × (b mod m)) mod m
+```
+
+Pode-se aplicar `mod` em qualquer ponto intermediário sem alterar o resultado final — essencial para evitar overflow.
+
+```typescript
+// CORRETO: aplica mod em cada passo
+function safeModProduct(a: bigint, b: bigint, m: bigint): bigint {
+  return ((a % m) * (b % m)) % m;
+}
+```
+
+**Divisão NÃO é preservada diretamente** — requer inverso modular.
+
+### 12.3 Inverso Modular
+
+`a · a⁻¹ ≡ 1 (mod m)`. Existe sse gcd(a, m) = 1.
+
+```typescript
+function extendedGcd(a: bigint, b: bigint): { gcd: bigint; x: bigint; y: bigint } {
+  if (b === 0n) return { gcd: a, x: 1n, y: 0n };
+  const { gcd, x: x1, y: y1 } = extendedGcd(b, a % b);
+  return { gcd, x: y1, y: x1 - (a / b) * y1 };
+}
+
+function modInverse(a: bigint, m: bigint): bigint {
+  const { gcd, x } = extendedGcd(a, m);
+  if (gcd !== 1n) throw new Error(`Inverso não existe: gcd(${a}, ${m}) = ${gcd}`);
+  return ((x % m) + m) % m;
+}
+```
+
+### 12.4 Pequeno Teorema de Fermat
+
+Se p é primo e gcd(a, p) = 1: `a^(p-1) ≡ 1 (mod p)`. Corolário: `a⁻¹ ≡ a^(p-2) (mod p)`.
+
+```typescript
+/**
+ * Exponenciação modular rápida — O(log exp) multiplicações.
+ * Essencial para RSA e hashing.
+ */
+function fastPow(base: bigint, exp: bigint, mod: bigint): bigint {
+  if (mod === 1n) return 0n;
+  let result = 1n;
+  base = base % mod;
+  while (exp > 0n) {
+    if (exp & 1n) result = (result * base) % mod;
+    exp >>= 1n;
+    base = (base * base) % mod;
+  }
+  return result;
+}
+
+function modInverseFermat(a: bigint, p: bigint): bigint {
+  return fastPow(a, p - 2n, p);
+}
+```
+
+### 12.5 Aplicações
+
+**Hashing (Division Method + Polynomial Rolling Hash)**:
+
+```typescript
+function polynomialHash(s: string, mod = 1_000_000_007, base = 31): number {
+  let hash = 0, power = 1;
+  for (let i = 0; i < s.length; i++) {
+    hash = (hash + (s.charCodeAt(i) - 96) * power) % mod;
+    power = (power * base) % mod;
+  }
+  return hash;
+}
+```
+
+**Circular Buffers**:
+
+```typescript
+class CircularBuffer<T> {
+  private buffer: (T | undefined)[];
+  private head = 0;
+  private tail = 0;
+  private count = 0;
+
+  constructor(private capacity: number) {
+    this.buffer = new Array(capacity);
+  }
+
+  enqueue(item: T): void {
+    if (this.count === this.capacity) throw new Error("Buffer cheio");
+    this.buffer[this.tail] = item;
+    this.tail = (this.tail + 1) % this.capacity; // Wrap-around
+    this.count++;
+  }
+
+  dequeue(): T {
+    if (this.count === 0) throw new Error("Buffer vazio");
+    const item = this.buffer[this.head]!;
+    this.head = (this.head + 1) % this.capacity; // Wrap-around
+    this.count--;
+    return item;
+  }
+}
+```
+
+**RSA (visão de alto nível)**:
+
+```
+1. Primos p, q → n = p·q, φ(n) = (p-1)(q-1)
+2. e coprimo com φ(n) → chave pública (n, e)
+3. d = e⁻¹ mod φ(n) → chave privada (n, d)
+4. Cifrar: C = M^e mod n.  Decifrar: M = C^d mod n.
+```
+
+```typescript
+function rsaDemo(): void {
+  const p = 61n, q = 53n;
+  const n = p * q;                  // 3233
+  const phi = (p - 1n) * (q - 1n); // 3120
+  const e = 17n;
+  const d = modInverse(e, phi);
+
+  const message = 42n;
+  const encrypted = fastPow(message, e, n);
+  const decrypted = fastPow(encrypted, d, n);
+  console.log(`Decifrada: ${decrypted}, correto: ${decrypted === message}`);
+}
+```
+
+---
+
+## 13. Recorrências e Master Theorem
+
+### 13.1 Forma Geral
+
+```
+T(n) = aT(n/b) + f(n)
+```
+
+- `a` = número de subproblemas (a ≥ 1)
+- `n/b` = tamanho de cada subproblema (b > 1)
+- `f(n)` = custo de dividir + combinar
+
+### 13.2 Árvore de Recursão
+
+**Merge sort** — T(n) = 2T(n/2) + cn:
+
+```
+Nível 0:  cn                      → custo cn
+Nível 1:  cn/2 + cn/2             → custo cn
+...
+Nível k:  2ᵏ nós de cn/2ᵏ cada   → custo cn
+Nível log₂n: n folhas de c cada   → custo cn
+
+Altura: log₂(n). Custo por nível: cn. Total: cn · log₂(n) = O(n log n).
+```
+
+**Karatsuba** — T(n) = 3T(n/2) + cn:
+
+```
+Nível k: 3ᵏ nós, custo (3/2)ᵏ · cn → cresce → dominado pelas folhas.
+Folhas: 3^(log₂ n) = n^(log₂ 3) ≈ n^1.585.
+```
+
+### 13.3 Os Três Casos do Master Theorem
+
+```
+T(n) = aT(n/b) + Θ(nᵈ)
+c_crit = log_b(a)
+
+Caso 1: d < c_crit  →  T(n) = Θ(n^(log_b(a)))    [folhas dominam]
+Caso 2: d = c_crit  →  T(n) = Θ(nᵈ · log n)      [níveis iguais]
+Caso 3: d > c_crit  →  T(n) = Θ(nᵈ)              [raiz domina]
+```
+
+**Binary Search**: a=1, b=2, d=0. c_crit=0. d = c_crit → Caso 2 → Θ(log n).
+
+**Merge Sort**: a=2, b=2, d=1. c_crit=1. d = c_crit → Caso 2 → Θ(n log n).
+
+**Karatsuba**: a=3, b=2, d=1. c_crit≈1.585. d < c_crit → Caso 1 → Θ(n^1.585).
+
+**Strassen**: a=7, b=2, d=2. c_crit≈2.807. d < c_crit → Caso 1 → Θ(n^2.807).
+
+```typescript
+function masterTheorem(a: number, b: number, d: number): string {
+  const cCrit = Math.log(a) / Math.log(b);
+  const EPS = 1e-9;
+
+  if (d < cCrit - EPS) {
+    return `Caso 1: Θ(n^(log_${b}(${a})) ≈ n^${cCrit.toFixed(3)})`;
+  }
+  if (d > cCrit + EPS) {
+    return `Caso 3: Θ(n^${d})`;
+  }
+  return d === 0 ? "Caso 2: Θ(log n)" : `Caso 2: Θ(n^${d} · log n)`;
+}
+```
+
+### 13.4 Tabela de Recorrências Clássicas
+
+| Recorrência | Solução | Algoritmo |
+|---|---|---|
+| T(n) = T(n/2) + O(1) | O(log n) | Binary search |
+| T(n) = T(n-1) + O(1) | O(n) | Linear scan recursivo |
+| T(n) = 2T(n/2) + O(1) | O(n) | Percurso de árvore |
+| T(n) = 2T(n/2) + O(n) | O(n log n) | Merge sort |
+| T(n) = T(n-1) + O(n) | O(n²) | Selection/insertion sort |
+| T(n) = 2T(n-1) + O(1) | O(2ⁿ) | Hanoi, Fibonacci ingênuo |
+| T(n) = 3T(n/2) + O(n) | O(n^1.585) | Karatsuba |
+| T(n) = 7T(n/2) + O(n²) | O(n^2.807) | Strassen |
+| T(n) = T(n/2) + O(n) | O(n) | Select (mediana) |
+| T(n) = T(√n) + O(1) | O(log log n) | van Emde Boas |
+
+### 13.5 Quando o Master Theorem NÃO Se Aplica
+
+1. **Subproblemas desiguais**: T(n) = T(n/3) + T(2n/3) + O(n) → árvore de recursão ou Akra-Bazzi.
+2. **f(n) não-polinomial**: T(n) = 2T(n/2) + n log n → versão estendida dá Θ(n log²n).
+3. **Subtração em vez de divisão**: T(n) = T(n-1) + O(n) → soma direta: O(n²).
+4. **Argumento não é n/b**: T(n) = T(√n) + O(1) → substituição m = log n → S(m) = S(m/2) + O(1) → O(log log n).
+
+---
+
+## Referências
+
+- **Introduction to Algorithms (CLRS)** — Cormen, Leiserson, Rivest, Stein. Capítulos 3-4 (Growth of Functions, Divide-and-Conquer), Apêndice A (Somatórios), Cap. 31 (Number Theory)
+- **Concrete Mathematics** — Graham, Knuth, Patashnik. O texto definitivo sobre matemática discreta para CS
+- **Mathematics for Computer Science** — Lehman, Leighton, Meyer. [Disponível gratuitamente via MIT OCW](https://ocw.mit.edu/courses/6-042j-mathematics-for-computer-science-fall-2010/)
+- **Discrete Mathematics and Its Applications** — Kenneth Rosen. Referência completa para matemática discreta
+- **The Art of Computer Programming, Vol. 1** — Donald Knuth. Capítulo 1 (Fundamental Algorithms) para análise matemática rigorosa

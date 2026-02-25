@@ -1,0 +1,1361 @@
+---
+title: "Design de APIs Avançado"
+description: "API versioning, pagination (cursor vs offset vs keyset), rate limiting (token bucket, sliding window), idempotency keys, bulk operations, webhooks, backward compatibility e API observability"
+track: "backend"
+order: 27
+section: "APIs"
+priority: "high"
+tags: ["API-design", "rate-limiting", "pagination", "idempotency", "versioning", "webhooks", "OpenAPI", "backward-compatibility"]
+prerequisites: ["rest-apis"]
+keyTakeaways:
+  - "Cursor-based pagination é superior para datasets mutáveis: não sofre de offset drift e tem performance O(1) via index seek vs O(n) do OFFSET"
+  - "Token bucket é o algoritmo de rate limiting mais flexível: permite bursts controlados enquanto mantém taxa média — Redis + Lua script garante atomicidade distribuída"
+  - "Idempotency keys transformam qualquer operação em idempotente: o cliente envia um UUID único por request e o servidor retorna o resultado cacheado em caso de retry"
+  - "Backward compatibility é contrato: só adicione campos (nunca remova), use sunset headers para deprecação, e trate a API pública como superfície de contrato imutável"
+---
+
+## API Versioning Strategies
+
+Versionar uma API é aceitar que a interface vai mudar. A questão não é _se_, mas _como_ comunicar essas mudanças aos consumidores sem quebrar integrações existentes. Existem quatro abordagens principais, cada uma com trade-offs distintos.
+
+### URL Path Versioning
+
+A abordagem mais comum e mais visível. O número da versão faz parte da URL:
+
+```
+GET /v1/users/42
+GET /v2/users/42
+```
+
+O servidor mantém ambas as versões ativas simultaneamente. Cada versão pode apontar para controllers separados ou para o mesmo controller com branching interno.
+
+```typescript
+// Router com versioning por path — Express
+import { Router } from 'express';
+import { getUserV1, getUserV2 } from './controllers/users';
+
+const v1 = Router();
+v1.get('/users/:id', getUserV1);  // Retorna { name, email }
+
+const v2 = Router();
+v2.get('/users/:id', getUserV2);  // Retorna { name, email, profile: { avatar, bio } }
+
+app.use('/v1', v1);
+app.use('/v2', v2);
+```
+
+**Prós**: extremamente explícito, fácil de documentar, caching funciona naturalmente (URLs diferentes = cache entries diferentes), fácil de rotear no API gateway.
+
+**Contras**: proliferação de rotas, clientes precisam mudar URLs para migrar, sugere que toda a API muda de versão quando só um endpoint mudou.
+
+### Header Versioning
+
+A versão viaja no header `Accept` usando media types customizados:
+
+```http
+GET /users/42 HTTP/1.1
+Accept: application/vnd.brewnary.v2+json
+```
+
+```typescript
+// Middleware de extração de versão via Accept header
+function extractVersion(req: Request, res: Response, next: NextFunction) {
+  const accept = req.headers.accept || '';
+  const match = accept.match(/application\/vnd\.brewnary\.v(\d+)\+json/);
+  req.apiVersion = match ? parseInt(match[1]) : 1; // Default: v1
+  next();
+}
+
+// Controller unificado com branching por versão
+async function getUser(req: Request, res: Response) {
+  const user = await userService.findById(req.params.id);
+  if (req.apiVersion >= 2) {
+    return res.json({ ...user, profile: await profileService.get(user.id) });
+  }
+  return res.json({ name: user.name, email: user.email });
+}
+```
+
+**Prós**: URL limpa e estável, versão é um detalhe de negociação (como deveria ser em REST puro), permite versionar endpoints individualmente.
+
+**Contras**: menos visível, mais difícil de testar no browser, caching requer `Vary: Accept`, documentação mais complexa.
+
+### Query Parameter Versioning
+
+```
+GET /users/42?version=2
+```
+
+Simples e pragmática. Google usa esta abordagem em várias APIs. Porém, query parameters são semanticamente para filtros e não para negociação de contrato.
+
+### Content Negotiation
+
+Extensão do header versioning usando media types padrão:
+
+```http
+GET /users/42 HTTP/1.1
+Accept: application/json; version=2
+```
+
+Funciona, mas não é amplamente suportado por ferramentas de geração de SDKs.
+
+### Quando NÃO Versionar
+
+Nem toda mudança precisa de versão nova. **Additive changes** (mudanças aditivas) são backward-compatible por definição:
+
+- Adicionar um novo campo ao response
+- Adicionar um novo endpoint
+- Adicionar um novo query parameter opcional
+- Adicionar um novo valor a um enum (se o cliente ignora valores desconhecidos)
+
+Use feature flags para mudanças comportamentais que não alteram o contrato:
+
+```typescript
+// Feature flag em vez de versão nova
+async function listUsers(req: Request, res: Response) {
+  const users = await userService.list();
+  if (req.featureFlags.includes('enhanced-search')) {
+    // Lógica de busca melhorada — ativada por flag, não por versão
+  }
+  res.json(users);
+}
+```
+
+### Tabela Comparativa
+
+```
+Critério          | URL Path    | Header     | Query Param | Content Neg.
+──────────────────┼─────────────┼────────────┼─────────────┼─────────────
+Visibilidade      | Alta        | Baixa      | Média       | Baixa
+Caching           | Trivial     | Vary header| Trivial     | Vary header
+Gateway routing   | Simples     | Complexo   | Simples     | Complexo
+REST purity       | Baixa       | Alta       | Baixa       | Alta
+Tooling support   | Excelente   | Bom        | Bom         | Limitado
+Adoção no mercado | Muito alta  | Média      | Alta        | Baixa
+──────────────────┴─────────────┴────────────┴─────────────┴─────────────
+Recomendação: URL path para APIs públicas, header para APIs internas.
+```
+
+---
+
+## Pagination Patterns
+
+Toda API que retorna coleções precisa de paginação. A escolha do padrão afeta performance, UX e corretude em cenários de dados mutáveis.
+
+### Offset-Based: LIMIT/OFFSET
+
+A abordagem mais intuitiva. O cliente pede "me dê 20 itens a partir do item 40":
+
+```sql
+SELECT * FROM products ORDER BY created_at DESC LIMIT 20 OFFSET 40;
+```
+
+```typescript
+// Endpoint com offset pagination
+app.get('/products', async (req, res) => {
+  const page = Math.max(1, parseInt(req.query.page as string) || 1);
+  const limit = Math.min(100, parseInt(req.query.limit as string) || 20);
+  const offset = (page - 1) * limit;
+
+  const [products, total] = await Promise.all([
+    db.query('SELECT * FROM products ORDER BY created_at DESC LIMIT $1 OFFSET $2', [limit, offset]),
+    db.query('SELECT COUNT(*) FROM products'),
+  ]);
+
+  res.json({
+    data: products.rows,
+    pagination: {
+      page,
+      limit,
+      total: parseInt(total.rows[0].count),
+      totalPages: Math.ceil(parseInt(total.rows[0].count) / limit),
+    },
+  });
+});
+```
+
+**Problema 1 — Offset drift**: se um item é inserido enquanto o cliente pagina, o mesmo item pode aparecer duas vezes em páginas consecutivas, ou um item pode ser pulado. Em feeds de alta frequência (timeline, logs), isto é inaceitável.
+
+**Problema 2 — Performance**: `OFFSET 100000` faz o banco ler e descartar 100.000 rows antes de retornar as 20 que interessam. A complexidade é O(n) no valor do offset. Em tabelas com milhões de registros, páginas distantes do início ficam progressivamente mais lentas.
+
+**Quando usar**: admin dashboards, relatórios, datasets estáticos onde a UX de "ir para página X" é necessária e a performance de offsets grandes é aceitável.
+
+### Cursor-Based Pagination
+
+O cursor é um ponteiro opaco que identifica a posição exata na coleção. O cliente não sabe o que está dentro do cursor — apenas o envia de volta para obter a próxima página.
+
+```typescript
+// Cursor encode/decode — base64 de timestamp+id garante unicidade e ordenação
+interface CursorPayload {
+  createdAt: string;  // ISO 8601
+  id: string;
+}
+
+function encodeCursor(payload: CursorPayload): string {
+  return Buffer.from(JSON.stringify(payload)).toString('base64url');
+}
+
+function decodeCursor(cursor: string): CursorPayload {
+  try {
+    return JSON.parse(Buffer.from(cursor, 'base64url').toString('utf8'));
+  } catch {
+    throw new ApiError(400, 'Invalid cursor format');
+  }
+}
+
+// Endpoint com cursor pagination
+app.get('/products', async (req, res) => {
+  const limit = Math.min(100, parseInt(req.query.limit as string) || 20);
+  const after = req.query.after as string | undefined;
+
+  let query = 'SELECT * FROM products';
+  const params: any[] = [limit + 1]; // +1 para detectar se há próxima página
+
+  if (after) {
+    const cursor = decodeCursor(after);
+    query += ` WHERE (created_at, id) < ($2, $3)`;
+    params.push(cursor.createdAt, cursor.id);
+  }
+
+  query += ' ORDER BY created_at DESC, id DESC LIMIT $1';
+
+  const result = await db.query(query, params);
+  const hasNextPage = result.rows.length > limit;
+  const items = hasNextPage ? result.rows.slice(0, limit) : result.rows;
+
+  const lastItem = items[items.length - 1];
+
+  res.json({
+    data: items,
+    pagination: {
+      hasNextPage,
+      endCursor: lastItem
+        ? encodeCursor({ createdAt: lastItem.created_at, id: lastItem.id })
+        : null,
+    },
+  });
+});
+```
+
+A query `WHERE (created_at, id) < ($2, $3)` usa um **row value comparison** que é resolvido por um index composto em `(created_at DESC, id DESC)`. O banco faz um index seek direto para a posição do cursor — complexidade O(1) independentemente de quantos itens existem antes.
+
+```sql
+-- Index que suporta a cursor pagination
+CREATE INDEX idx_products_cursor ON products (created_at DESC, id DESC);
+```
+
+**Trade-off**: o cliente não pode "pular para a página 37". Cursor pagination é sequencial por natureza — ideal para feeds infinitos, timelines, listagens com scroll infinito.
+
+### Keyset Pagination
+
+Variante simplificada do cursor quando se ordena por uma coluna monotonicamente crescente (tipicamente o `id` auto-increment ou UUID v7):
+
+```sql
+-- Primeira página
+SELECT * FROM products ORDER BY id ASC LIMIT 20;
+
+-- Próximas páginas: WHERE id > último_id
+SELECT * FROM products WHERE id > 'last-seen-id' ORDER BY id ASC LIMIT 20;
+```
+
+Mais simples que cursor-based (não precisa de encode/decode), mesma performance O(1). A limitação é que funciona melhor com ordenação natural por uma coluna única e crescente. Se precisar ordenar por `created_at` (que pode ter duplicatas), precisa da abordagem de cursor composto.
+
+### Tabela Comparativa de Pagination
+
+```
+Critério           | Offset      | Cursor       | Keyset
+───────────────────┼─────────────┼──────────────┼────────────
+Performance        | O(n) offset | O(1) seek    | O(1) seek
+Dados mutáveis     | Drift       | Consistente  | Consistente
+"Ir para página X" | Sim         | Não          | Não
+Implementação      | Trivial     | Moderada     | Simples
+Ordenação flexível | Sim         | Sim          | Limitada
+Total count        | Fácil       | Caro/evitar  | Caro/evitar
+Uso ideal          | Dashboards  | Feeds/mobile | IDs sequenciais
+```
+
+---
+
+## Rate Limiting
+
+Rate limiting protege a API contra abuso, garante fair usage entre consumidores e previne cascading failures. A escolha do algoritmo determina o comportamento em cenários de burst e a precisão do controle.
+
+### Fixed Window
+
+Divide o tempo em janelas fixas (ex: 1 minuto) e conta requests por janela. Ao iniciar uma nova janela, o contador reseta.
+
+```
+Janela 1 (00:00-01:00): ████████░░ 80/100
+Janela 2 (01:00-02:00): ██░░░░░░░░ 20/100
+
+Problema — burst na borda:
+Janela 1: ...░░░░████████ 80 requests nos últimos 10s
+Janela 2: ████████░░░░... 80 requests nos primeiros 10s
+→ 160 requests em 20 segundos com limite de 100/min
+```
+
+### Sliding Window Log
+
+Armazena o timestamp de cada request. Para verificar o limite, conta quantos timestamps existem dentro da janela deslizante.
+
+```typescript
+// Sliding window log — preciso mas caro em memória
+async function slidingWindowLog(
+  redis: Redis,
+  key: string,
+  windowMs: number,
+  maxRequests: number,
+): Promise<{ allowed: boolean; remaining: number }> {
+  const now = Date.now();
+  const windowStart = now - windowMs;
+
+  const pipe = redis.pipeline();
+  pipe.zremrangebyscore(key, 0, windowStart); // Remove timestamps expirados
+  pipe.zadd(key, now, `${now}-${Math.random()}`); // Adiciona timestamp atual
+  pipe.zcard(key); // Conta timestamps na janela
+  pipe.expire(key, Math.ceil(windowMs / 1000)); // TTL de segurança
+
+  const results = await pipe.exec();
+  const count = results![2][1] as number;
+
+  return {
+    allowed: count <= maxRequests,
+    remaining: Math.max(0, maxRequests - count),
+  };
+}
+```
+
+Preciso, mas cada request armazena um membro no sorted set. Com 10.000 requests/minuto por usuário, são 10.000 entradas por key no Redis.
+
+### Sliding Window Counter
+
+Aproximação eficiente que combina o contador da janela anterior com o da janela atual, ponderados pelo tempo decorrido:
+
+```
+Janela anterior (completa): 84 requests
+Janela atual (40% decorrida): 36 requests
+Estimativa: 84 * 0.6 + 36 = 86.4 → arredonda para 86
+```
+
+Dois contadores por key em vez de N timestamps. Margem de erro máxima de ~1%, aceitável para a maioria dos casos.
+
+### Token Bucket
+
+O algoritmo mais flexível e amplamente adotado. Um bucket tem capacidade máxima de N tokens. Tokens são adicionados a uma taxa constante. Cada request consome um token. Se o bucket está vazio, o request é rejeitado.
+
+A elegância do token bucket é que permite **bursts controlados**: se o bucket está cheio (ninguém fez requests por um tempo), o cliente pode fazer N requests instantâneos. Depois disso, fica limitado à taxa de refill.
+
+```
+Capacidade: 10 tokens | Refill: 2 tokens/segundo
+
+t=0s: [██████████] 10 tokens → burst de 10 requests instantâneos
+t=0s: [░░░░░░░░░░]  0 tokens → bloqueado
+t=1s: [██░░░░░░░░]  2 tokens → 2 tokens adicionados
+t=2s: [████░░░░░░]  4 tokens → 2 tokens adicionados
+...
+```
+
+#### Token Bucket com Redis + Lua Script
+
+A implementação distribuída precisa de atomicidade. `MULTI/EXEC` (transactions Redis) não serve para operações read-then-write porque o valor lido pode mudar entre o READ e o EXEC. Lua scripts executam atomicamente no Redis — nenhum outro comando é processado durante a execução do script.
+
+```typescript
+// Token Bucket — Redis + Lua (atômico e distribuído)
+const TOKEN_BUCKET_SCRIPT = `
+  local key = KEYS[1]
+  local capacity = tonumber(ARGV[1])
+  local refillRate = tonumber(ARGV[2])  -- tokens por segundo
+  local now = tonumber(ARGV[3])         -- timestamp em ms
+  local requested = tonumber(ARGV[4])   -- tokens a consumir (geralmente 1)
+
+  local bucket = redis.call('HMGET', key, 'tokens', 'lastRefill')
+  local tokens = tonumber(bucket[1])
+  local lastRefill = tonumber(bucket[2])
+
+  -- Inicializar bucket se não existe
+  if tokens == nil then
+    tokens = capacity
+    lastRefill = now
+  end
+
+  -- Calcular tokens a adicionar desde o último refill
+  local elapsed = (now - lastRefill) / 1000  -- converter para segundos
+  local newTokens = math.floor(elapsed * refillRate)
+  tokens = math.min(capacity, tokens + newTokens)
+
+  -- Atualizar lastRefill apenas se tokens foram adicionados
+  if newTokens > 0 then
+    lastRefill = now
+  end
+
+  -- Tentar consumir tokens
+  local allowed = 0
+  if tokens >= requested then
+    tokens = tokens - requested
+    allowed = 1
+  end
+
+  -- Salvar estado
+  redis.call('HMSET', key, 'tokens', tokens, 'lastRefill', lastRefill)
+  redis.call('EXPIRE', key, math.ceil(capacity / refillRate) * 2)
+
+  return { allowed, tokens }
+`;
+
+interface RateLimitResult {
+  allowed: boolean;
+  remaining: number;
+  limit: number;
+  resetAt: number;
+}
+
+async function tokenBucketCheck(
+  redis: Redis,
+  identifier: string,  // user_id, api_key, IP
+  capacity: number,
+  refillRate: number,
+): Promise<RateLimitResult> {
+  const key = `ratelimit:${identifier}`;
+  const now = Date.now();
+
+  const [allowed, remaining] = await redis.eval(
+    TOKEN_BUCKET_SCRIPT,
+    1,
+    key,
+    capacity,
+    refillRate,
+    now,
+    1, // 1 token por request
+  ) as [number, number];
+
+  return {
+    allowed: allowed === 1,
+    remaining,
+    limit: capacity,
+    resetAt: now + Math.ceil((capacity - remaining) / refillRate) * 1000,
+  };
+}
+```
+
+### Leaky Bucket
+
+Variação onde requests entram no bucket e são processados a uma taxa constante. Se o bucket enche, novos requests são descartados. A diferença para o token bucket é que a saída é **sempre constante** — não há bursts. Útil para APIs que precisam de throughput previsível.
+
+### Rate Limiting Headers
+
+Todo response de uma API com rate limiting deve incluir headers informativos:
+
+```http
+HTTP/1.1 200 OK
+X-RateLimit-Limit: 100          # Limite da janela
+X-RateLimit-Remaining: 73       # Requests restantes
+X-RateLimit-Reset: 1706886400   # Unix timestamp do reset
+
+# Quando o limite é excedido:
+HTTP/1.1 429 Too Many Requests
+Retry-After: 30                  # Segundos até poder tentar novamente
+X-RateLimit-Limit: 100
+X-RateLimit-Remaining: 0
+X-RateLimit-Reset: 1706886400
+```
+
+```typescript
+// Middleware Express para rate limiting headers
+function rateLimitMiddleware(capacity: number, refillRate: number) {
+  return async (req: Request, res: Response, next: NextFunction) => {
+    const identifier = req.user?.id || req.ip;
+    const result = await tokenBucketCheck(redis, identifier, capacity, refillRate);
+
+    res.set('X-RateLimit-Limit', String(result.limit));
+    res.set('X-RateLimit-Remaining', String(result.remaining));
+    res.set('X-RateLimit-Reset', String(Math.ceil(result.resetAt / 1000)));
+
+    if (!result.allowed) {
+      const retryAfter = Math.ceil((result.resetAt - Date.now()) / 1000);
+      res.set('Retry-After', String(retryAfter));
+      return res.status(429).json({
+        type: 'https://api.brewnary.dev/errors/rate-limit-exceeded',
+        title: 'Rate limit exceeded',
+        status: 429,
+        detail: `Limite de ${capacity} requests excedido. Tente novamente em ${retryAfter}s.`,
+        retryAfter,
+      });
+    }
+
+    next();
+  };
+}
+
+// Aplicação: limites diferentes por tier
+app.use('/api', rateLimitMiddleware(100, 10));           // Default: 100 burst, 10/s
+app.use('/api/search', rateLimitMiddleware(20, 2));      // Search: mais restritivo
+app.use('/api/admin', rateLimitMiddleware(1000, 100));   // Admin: mais permissivo
+```
+
+### Estratégias de Identificação
+
+Quem está sendo limitado faz diferença:
+
+- **Per-IP**: simples, mas clientes atrás de NAT/proxy compartilham IP
+- **Per-API-Key**: justo para B2B, cada integração tem seu limite
+- **Per-User**: autenticado, o mais preciso para SaaS
+- **Per-Endpoint**: endpoints caros (search, export) com limites menores
+- **Combinado**: per-user com floor per-IP para requests não autenticados
+
+---
+
+## API Gateway Patterns
+
+O API gateway é a porta de entrada única para todos os microserviços. Centraliza cross-cutting concerns que seriam duplicados em cada serviço.
+
+### Responsabilidades Centralizadas
+
+```
+Cliente → [API Gateway] → Serviço A
+                        → Serviço B
+                        → Serviço C
+
+O gateway cuida de:
+  ┌─────────────────────────────────────────┐
+  │ Routing          (path/header-based)    │
+  │ Authentication   (JWT validation)       │
+  │ Rate Limiting    (por user/key/IP)      │
+  │ Request Transform (add headers, rewrite)│
+  │ Response Transform (filter fields)      │
+  │ Circuit Breaker  (proteção cascading)   │
+  │ Caching          (GET responses)        │
+  │ Logging/Metrics  (centralizado)         │
+  │ CORS             (preflight handling)   │
+  │ SSL Termination  (TLS no edge)          │
+  └─────────────────────────────────────────┘
+```
+
+### BFF — Backend for Frontend
+
+Quando diferentes clientes (web SPA, mobile app, smart TV) precisam de dados diferentes, um único gateway genérico força compromissos. O padrão BFF cria um gateway por tipo de cliente:
+
+```typescript
+// BFF Web — agrega dados de múltiplos serviços para o dashboard SPA
+app.get('/bff/web/dashboard', async (req, res) => {
+  const [user, orders, notifications] = await Promise.all([
+    userService.getProfile(req.userId),
+    orderService.getRecent(req.userId, { limit: 10, includeItems: true }),
+    notificationService.getUnread(req.userId),
+  ]);
+
+  // Resposta moldada exatamente para o que o frontend precisa
+  res.json({
+    user: { name: user.name, avatar: user.avatarUrl },
+    recentOrders: orders.map(o => ({ id: o.id, total: o.total, status: o.status })),
+    unreadCount: notifications.length,
+  });
+});
+
+// BFF Mobile — dados otimizados para bandwidth limitada
+app.get('/bff/mobile/dashboard', async (req, res) => {
+  const user = await userService.getProfile(req.userId);
+  // Mobile não precisa de orders no dashboard
+  res.json({
+    name: user.name,
+    avatar: user.thumbnailUrl, // Thumbnail menor para mobile
+    unread: await notificationService.countUnread(req.userId),
+  });
+});
+```
+
+### Comparação de Soluções
+
+```
+Feature            | AWS API GW  | Kong          | Envoy
+───────────────────┼─────────────┼───────────────┼──────────────
+Deployment         | Managed     | Self/Cloud    | Self-hosted
+Rate Limiting      | Built-in    | Plugin        | Filter
+Auth               | Cognito/JWT | Plugin        | ext_authz
+Observability      | CloudWatch  | Prometheus    | Built-in
+Customização       | Limitada    | Lua plugins   | WASM/C++
+Latência adicionada| ~10-30ms    | ~1-5ms        | ~0.5-2ms
+Custo              | Pay-per-req | Open source*  | Open source
+Melhor para        | AWS-native  | Multi-cloud   | Service mesh
+```
+
+---
+
+## Idempotency Keys
+
+### O Problema
+
+O cliente faz um POST para criar um pagamento. O servidor processa com sucesso, mas o response se perde no caminho (timeout de rede). O cliente não sabe se o pagamento foi criado ou não. Se fizer retry, pode criar um pagamento duplicado. Se não fizer, o pagamento pode não ter sido criado.
+
+```
+Cliente                          Servidor
+  │─── POST /payments ──────────→│  ✓ Pagamento criado
+  │                               │
+  │←── 201 Created ──────────────│  ✗ Response perdido (timeout)
+  │     (nunca chega)             │
+  │                               │
+  │─── POST /payments ──────────→│  ? Duplicado ou retry legítimo?
+```
+
+### A Solução: Idempotency-Key Header
+
+O cliente gera um UUID único por operação e o envia no header `Idempotency-Key`. O servidor usa essa key para deduplicar:
+
+```typescript
+// Middleware de idempotency — Express/Fastify
+import { Redis } from 'ioredis';
+import crypto from 'node:crypto';
+
+interface IdempotencyRecord {
+  statusCode: number;
+  headers: Record<string, string>;
+  body: unknown;
+  completedAt: string;
+}
+
+const IDEMPOTENCY_TTL = 86400; // 24 horas
+
+function idempotencyMiddleware(redis: Redis) {
+  return async (req: Request, res: Response, next: NextFunction) => {
+    // Apenas para métodos não-idempotentes
+    if (['GET', 'HEAD', 'OPTIONS', 'DELETE', 'PUT'].includes(req.method)) {
+      return next();
+    }
+
+    const idempotencyKey = req.headers['idempotency-key'] as string;
+    if (!idempotencyKey) {
+      return res.status(400).json({
+        type: 'https://api.brewnary.dev/errors/missing-idempotency-key',
+        title: 'Idempotency-Key header is required for POST requests',
+        status: 400,
+      });
+    }
+
+    const redisKey = `idempotency:${req.user.id}:${idempotencyKey}`;
+
+    // Verificar se já existe resultado para esta key
+    const existing = await redis.get(redisKey);
+    if (existing) {
+      const record: IdempotencyRecord = JSON.parse(existing);
+      Object.entries(record.headers).forEach(([k, v]) => res.set(k, v));
+      res.set('X-Idempotent-Replayed', 'true');
+      return res.status(record.statusCode).json(record.body);
+    }
+
+    // Tentar adquirir lock (prevenir requests concorrentes com mesma key)
+    const lockKey = `${redisKey}:lock`;
+    const lockAcquired = await redis.set(lockKey, '1', 'EX', 60, 'NX');
+    if (!lockAcquired) {
+      return res.status(409).json({
+        type: 'https://api.brewnary.dev/errors/idempotency-conflict',
+        title: 'A request with this idempotency key is currently being processed',
+        status: 409,
+      });
+    }
+
+    // Interceptar o response para capturar e armazenar o resultado
+    const originalJson = res.json.bind(res);
+    res.json = function (body: unknown) {
+      const record: IdempotencyRecord = {
+        statusCode: res.statusCode,
+        headers: {
+          'content-type': res.getHeader('content-type') as string || 'application/json',
+        },
+        body,
+        completedAt: new Date().toISOString(),
+      };
+
+      // Salvar resultado e liberar lock (fire-and-forget)
+      redis.pipeline()
+        .set(redisKey, JSON.stringify(record), 'EX', IDEMPOTENCY_TTL)
+        .del(lockKey)
+        .exec();
+
+      return originalJson(body);
+    };
+
+    next();
+  };
+}
+
+// Uso
+app.post('/payments', idempotencyMiddleware(redis), createPayment);
+```
+
+O padrão segue a referência da API do Stripe. A key é scoped por usuário (`req.user.id`) para evitar colisões entre clientes diferentes. O TTL de 24h garante que retries tardios ainda funcionem, mas keys antigas são limpas automaticamente.
+
+O lock com `SET NX` previne race conditions quando dois requests com a mesma key chegam simultaneamente — o segundo recebe 409 Conflict em vez de processar em paralelo.
+
+---
+
+## Bulk Operations
+
+APIs que processam um item por request forçam o cliente a fazer N requests para N itens. Bulk endpoints reduzem overhead de rede, connection setup e round-trips.
+
+### Batch Endpoint
+
+```typescript
+// POST /users/batch — criar múltiplos usuários de uma vez
+interface BulkCreateRequest {
+  items: Array<{ name: string; email: string; role: string }>;
+}
+
+interface BulkItemResult {
+  index: number;
+  status: 'success' | 'error';
+  data?: User;
+  error?: { code: string; message: string };
+}
+
+app.post('/users/batch', async (req: Request, res: Response) => {
+  const { items } = req.body as BulkCreateRequest;
+
+  if (items.length > 100) {
+    return res.status(400).json({
+      title: 'Batch limit exceeded',
+      detail: 'Maximum 100 items per batch request',
+    });
+  }
+
+  const results: BulkItemResult[] = await Promise.allSettled(
+    items.map((item, index) =>
+      userService.create(item)
+        .then(user => ({ index, status: 'success' as const, data: user }))
+        .catch(err => ({
+          index,
+          status: 'error' as const,
+          error: { code: err.code, message: err.message },
+        }))
+    )
+  ).then(settled =>
+    settled.map(result => result.status === 'fulfilled' ? result.value : result.reason)
+  );
+
+  const hasErrors = results.some(r => r.status === 'error');
+  const allErrors = results.every(r => r.status === 'error');
+
+  // 207 Multi-Status para sucesso parcial
+  const statusCode = allErrors ? 422 : hasErrors ? 207 : 201;
+
+  res.status(statusCode).json({
+    results,
+    summary: {
+      total: items.length,
+      succeeded: results.filter(r => r.status === 'success').length,
+      failed: results.filter(r => r.status === 'error').length,
+    },
+  });
+});
+```
+
+### Async Processing para Bulk Pesado
+
+Quando o bulk é grande demais para processar de forma síncrona (import de CSV com 50.000 linhas), use processamento assíncrono:
+
+```typescript
+// POST /imports — iniciar import assíncrono
+app.post('/imports', async (req, res) => {
+  const importJob = await importService.create({
+    userId: req.user.id,
+    fileUrl: req.body.fileUrl,
+    type: req.body.type,
+  });
+
+  // Enfileirar job para processamento background
+  await queue.add('process-import', { jobId: importJob.id });
+
+  // 202 Accepted: "recebi, vou processar"
+  res.status(202).json({
+    id: importJob.id,
+    status: 'pending',
+    statusUrl: `/imports/${importJob.id}`,
+    estimatedCompletionAt: new Date(Date.now() + 300_000).toISOString(),
+  });
+});
+
+// GET /imports/:id — polling do status
+app.get('/imports/:id', async (req, res) => {
+  const job = await importService.getById(req.params.id);
+
+  res.json({
+    id: job.id,
+    status: job.status, // pending | processing | completed | failed
+    progress: {
+      total: job.totalRows,
+      processed: job.processedRows,
+      succeeded: job.succeededRows,
+      failed: job.failedRows,
+      percentage: Math.round((job.processedRows / job.totalRows) * 100),
+    },
+    errors: job.status === 'completed' ? job.errors.slice(0, 100) : undefined,
+    resultUrl: job.status === 'completed' ? job.resultFileUrl : undefined,
+  });
+});
+```
+
+---
+
+## API Security Deep Dive
+
+### CORS — Cross-Origin Resource Sharing
+
+Browsers bloqueiam requests cross-origin por padrão (Same-Origin Policy). CORS é o mecanismo que permite exceções controladas.
+
+```typescript
+// Configuração CORS — NÃO use cors({ origin: '*' }) em produção
+import cors from 'cors';
+
+app.use(cors({
+  origin: (origin, callback) => {
+    const allowedOrigins = [
+      'https://app.brewnary.dev',
+      'https://admin.brewnary.dev',
+    ];
+    if (!origin || allowedOrigins.includes(origin)) {
+      callback(null, true);
+    } else {
+      callback(new Error('Blocked by CORS'));
+    }
+  },
+  methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE'],
+  allowedHeaders: ['Content-Type', 'Authorization', 'Idempotency-Key'],
+  credentials: true,  // Permite cookies cross-origin
+  maxAge: 86400,       // Cache preflight por 24h
+}));
+```
+
+Requests com `credentials: true` exigem origin específica (não pode ser `*`) e o response precisa de `Access-Control-Allow-Credentials: true`. Preflight requests (OPTIONS) acontecem automaticamente para requests "não simples" (com headers customizados, métodos além de GET/POST, ou content-type diferente de form-urlencoded).
+
+### Input Validation com Zod
+
+Validar input em cada endpoint é a primeira linha de defesa. Zod permite definir schemas TypeScript-first com inferência automática de tipos:
+
+```typescript
+import { z } from 'zod';
+
+const CreateProductSchema = z.object({
+  name: z.string().min(1).max(200),
+  price: z.number().positive().max(999999.99),
+  category: z.enum(['ipa', 'stout', 'lager', 'wheat', 'sour']),
+  abv: z.number().min(0).max(67.5), // Recordista mundial: 67.5%
+  description: z.string().max(5000).optional(),
+  tags: z.array(z.string().max(50)).max(20).optional(),
+});
+
+type CreateProductInput = z.infer<typeof CreateProductSchema>;
+
+// Middleware genérico de validação
+function validate<T>(schema: z.ZodSchema<T>) {
+  return (req: Request, res: Response, next: NextFunction) => {
+    const result = schema.safeParse(req.body);
+    if (!result.success) {
+      return res.status(400).json({
+        type: 'https://api.brewnary.dev/errors/validation',
+        title: 'Validation Error',
+        status: 400,
+        errors: result.error.issues.map(issue => ({
+          path: issue.path.join('.'),
+          message: issue.message,
+          code: issue.code,
+        })),
+      });
+    }
+    req.validatedBody = result.data;
+    next();
+  };
+}
+
+app.post('/products', validate(CreateProductSchema), createProduct);
+```
+
+---
+
+## OpenAPI e Contract-First Development
+
+Contract-first inverte o fluxo: em vez de escrever código e gerar documentação, você define o contrato (OpenAPI spec) primeiro e gera código a partir dele.
+
+### OpenAPI 3.1 Spec
+
+```yaml
+# openapi.yaml — contrato da API
+openapi: '3.1.0'
+info:
+  title: Brewnary API
+  version: '2.0.0'
+paths:
+  /products:
+    get:
+      operationId: listProducts
+      summary: Listar produtos com cursor pagination
+      parameters:
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+            default: 20
+        - name: after
+          in: query
+          description: Cursor para a próxima página
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Lista de produtos
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [data, pagination]
+                properties:
+                  data:
+                    type: array
+                    items:
+                      $ref: '#/components/schemas/Product'
+                  pagination:
+                    $ref: '#/components/schemas/CursorPagination'
+    post:
+      operationId: createProduct
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateProduct'
+      responses:
+        '201':
+          description: Produto criado
+components:
+  schemas:
+    Product:
+      type: object
+      required: [id, name, price, category]
+      properties:
+        id:
+          type: string
+          format: uuid
+        name:
+          type: string
+          maxLength: 200
+        price:
+          type: number
+          minimum: 0
+        category:
+          type: string
+          enum: [ipa, stout, lager, wheat, sour]
+    CursorPagination:
+      type: object
+      required: [hasNextPage]
+      properties:
+        hasNextPage:
+          type: boolean
+        endCursor:
+          type: string
+          nullable: true
+```
+
+### Validação de Contrato em Testes
+
+```typescript
+// Pratt testing: garantir que a implementação segue a spec
+import { OpenAPIValidator } from 'express-openapi-validator';
+
+// Middleware que valida requests E responses contra a spec
+app.use(
+  OpenAPIValidator.middleware({
+    apiSpec: './openapi.yaml',
+    validateRequests: true,
+    validateResponses: true, // Crucial: valida que o servidor retorna o que promete
+  }),
+);
+```
+
+Ferramentas como **Redocly** e **Stoplight Studio** permitem editar specs visualmente. **openapi-typescript** gera tipos TypeScript diretamente da spec, garantindo type-safety end-to-end.
+
+---
+
+## Backward Compatibility
+
+A API pública é um contrato. Quebrá-lo significa quebrar o código dos clientes. As regras são simples na teoria e difíceis na prática.
+
+### Regras de Ouro
+
+1. **Só adicione, nunca remova** campos do response
+2. **Novos campos devem ter defaults** — nunca torne obrigatório algo que era opcional
+3. **Novos endpoints** são sempre safe
+4. **Novos query parameters** opcionais são sempre safe
+5. **Nunca mude o tipo** de um campo existente (string para number)
+6. **Nunca mude a semântica** de um campo existente
+
+### Evolução Segura: Exemplo Prático
+
+```typescript
+// v1 — Lançamento original
+{
+  "id": "prod-001",
+  "name": "West Coast IPA",
+  "price": 15.90
+}
+
+// v1.1 — Adição segura: novo campo opcional com default
+{
+  "id": "prod-001",
+  "name": "West Coast IPA",
+  "price": 15.90,
+  "currency": "BRL"       // ← NOVO: clientes existentes ignoram
+}
+
+// v1.2 — Adição segura: campo deprecado + campo novo
+{
+  "id": "prod-001",
+  "name": "West Coast IPA",
+  "price": 15.90,          // ← Deprecado (mas ainda funciona)
+  "currency": "BRL",
+  "pricing": {             // ← NOVO: estrutura mais rica
+    "amount": 1590,        // centavos (sem floating point)
+    "currency": "BRL",
+    "formatted": "R$ 15,90"
+  }
+}
+```
+
+### Deprecation Strategy com Sunset Header
+
+A RFC 8594 define o header `Sunset` para comunicar a data de desativação de um recurso:
+
+```typescript
+// Middleware de deprecation warning
+function deprecated(sunsetDate: string, alternativeUrl: string) {
+  return (req: Request, res: Response, next: NextFunction) => {
+    res.set('Sunset', new Date(sunsetDate).toUTCString());
+    res.set('Deprecation', 'true');
+    res.set('Link', `<${alternativeUrl}>; rel="successor-version"`);
+    next();
+  };
+}
+
+// Aplicação: endpoint v1 com sunset em 6 meses
+app.get('/v1/users/:id',
+  deprecated('2026-09-01', '/v2/users/:id'),
+  getUserV1,
+);
+```
+
+O response inclui:
+
+```http
+HTTP/1.1 200 OK
+Sunset: Tue, 01 Sep 2026 00:00:00 GMT
+Deprecation: true
+Link: </v2/users/42>; rel="successor-version"
+```
+
+Clientes bem implementados monitoram esses headers e alertam suas equipes antes do sunset.
+
+### Breaking Changes: Quando Inevitável
+
+Quando uma breaking change é absolutamente necessária:
+
+1. Comunicar com **meses** de antecedência (emails, changelogs, dashboard)
+2. Disponibilizar a nova versão **em paralelo** com a antiga
+3. Adicionar `Sunset` header à versão antiga
+4. Monitorar tráfego na versão antiga — contactar clientes que não migraram
+5. Após o sunset, retornar `410 Gone` com link para a nova versão
+
+---
+
+## Webhooks
+
+Webhooks invertem o fluxo: em vez do cliente fazer polling, o servidor notifica o cliente quando eventos ocorrem.
+
+### Design de Webhooks
+
+```typescript
+// Evento de webhook — estrutura padronizada
+interface WebhookEvent {
+  id: string;            // UUID do evento (para deduplicação no receiver)
+  type: string;          // order.created, payment.completed, etc.
+  createdAt: string;     // ISO 8601
+  data: unknown;         // Payload do evento
+  apiVersion: string;    // Versão da API que gerou o evento
+}
+
+// Registro de webhook pelo cliente
+interface WebhookSubscription {
+  id: string;
+  url: string;           // HTTPS endpoint do cliente
+  events: string[];      // ['order.created', 'payment.*']
+  secret: string;        // HMAC secret para assinatura
+  active: boolean;
+}
+```
+
+### Assinatura HMAC-SHA256
+
+Cada webhook é assinado com HMAC-SHA256 usando um secret compartilhado. O receiver verifica a assinatura para garantir que o payload não foi adulterado e veio do servidor legítimo.
+
+```typescript
+import crypto from 'node:crypto';
+
+// Sender: assinar e enviar webhook
+async function sendWebhook(
+  subscription: WebhookSubscription,
+  event: WebhookEvent,
+): Promise<void> {
+  const payload = JSON.stringify(event);
+  const timestamp = Math.floor(Date.now() / 1000);
+  const signatureInput = `${timestamp}.${payload}`;
+
+  const signature = crypto
+    .createHmac('sha256', subscription.secret)
+    .update(signatureInput)
+    .digest('hex');
+
+  const response = await fetch(subscription.url, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'X-Webhook-Id': event.id,
+      'X-Webhook-Timestamp': String(timestamp),
+      'X-Webhook-Signature': `sha256=${signature}`,
+    },
+    body: payload,
+    signal: AbortSignal.timeout(30_000), // 30s timeout
+  });
+
+  if (!response.ok) {
+    throw new WebhookDeliveryError(response.status, await response.text());
+  }
+}
+
+// Receiver: verificar assinatura
+function verifyWebhookSignature(
+  payload: string,
+  timestamp: string,
+  signature: string,
+  secret: string,
+): boolean {
+  // Proteção contra replay attacks: rejeitar timestamps > 5 minutos
+  const age = Math.floor(Date.now() / 1000) - parseInt(timestamp);
+  if (age > 300) {
+    throw new Error('Webhook timestamp too old (possible replay attack)');
+  }
+
+  const expected = crypto
+    .createHmac('sha256', secret)
+    .update(`${timestamp}.${payload}`)
+    .digest('hex');
+
+  // Comparação timing-safe para prevenir timing attacks
+  return crypto.timingSafeEqual(
+    Buffer.from(signature.replace('sha256=', '')),
+    Buffer.from(expected),
+  );
+}
+
+// Express endpoint para receber webhooks
+app.post('/webhooks/brewnary', express.raw({ type: 'application/json' }), (req, res) => {
+  const payload = req.body.toString();
+  const timestamp = req.headers['x-webhook-timestamp'] as string;
+  const signature = req.headers['x-webhook-signature'] as string;
+
+  try {
+    const valid = verifyWebhookSignature(payload, timestamp, signature, WEBHOOK_SECRET);
+    if (!valid) {
+      return res.status(401).json({ error: 'Invalid signature' });
+    }
+
+    const event: WebhookEvent = JSON.parse(payload);
+
+    // Processar de forma assíncrona para retornar 200 rapidamente
+    webhookQueue.add('process-webhook', event);
+
+    res.status(200).json({ received: true });
+  } catch (err) {
+    res.status(400).json({ error: (err as Error).message });
+  }
+});
+```
+
+### Retry com Exponential Backoff
+
+Delivery at-least-once significa que o sender retenta em caso de falha. Exponential backoff evita sobrecarregar o receiver:
+
+```typescript
+// Retry schedule: 1min, 5min, 30min, 2h, 12h, 24h
+const RETRY_DELAYS = [60, 300, 1800, 7200, 43200, 86400]; // segundos
+
+async function deliverWithRetry(
+  subscription: WebhookSubscription,
+  event: WebhookEvent,
+  attempt: number = 0,
+): Promise<void> {
+  try {
+    await sendWebhook(subscription, event);
+    await webhookLog.recordSuccess(subscription.id, event.id);
+  } catch (err) {
+    if (attempt >= RETRY_DELAYS.length) {
+      // Todas as tentativas falharam → dead letter queue
+      await deadLetterQueue.add({
+        subscriptionId: subscription.id,
+        event,
+        lastError: (err as Error).message,
+        attempts: attempt + 1,
+      });
+      return;
+    }
+
+    // Agendar próxima tentativa
+    const delaySeconds = RETRY_DELAYS[attempt];
+    await retryQueue.add(
+      'webhook-retry',
+      { subscriptionId: subscription.id, event, attempt: attempt + 1 },
+      { delay: delaySeconds * 1000 },
+    );
+  }
+}
+```
+
+**Dead letter queue**: após todas as tentativas falharem, o evento vai para uma fila de "mortos" para investigação manual. Webhooks com taxa de falha alta devem ser automaticamente desativados após N falhas consecutivas.
+
+---
+
+## API Observability
+
+Uma API em produção sem observabilidade é um avião voando sem instrumentos. Você sabe que está no ar, mas não sabe altitude, velocidade nem combustível.
+
+### Distributed Tracing
+
+Cada request recebe um trace ID único que propaga por todos os serviços:
+
+```typescript
+// Middleware de trace ID propagation
+function tracingMiddleware(req: Request, res: Response, next: NextFunction) {
+  const traceId = req.headers['x-trace-id'] as string || crypto.randomUUID();
+  const spanId = crypto.randomUUID().slice(0, 16);
+
+  req.traceId = traceId;
+  req.spanId = spanId;
+
+  // Propagar para responses e logs
+  res.set('X-Trace-Id', traceId);
+
+  // Injetar em chamadas downstream
+  req.downstreamHeaders = {
+    'x-trace-id': traceId,
+    'x-parent-span-id': spanId,
+  };
+
+  next();
+}
+```
+
+OpenTelemetry é o padrão da indústria para instrumentação. Combina traces, metrics e logs numa API unificada.
+
+### SLIs, SLOs e SLAs
+
+**SLI (Service Level Indicator)** — a métrica medida:
+
+```
+Availability SLI   = requests_successful / requests_total
+Latency SLI (p99)  = percentil 99 da duração dos requests
+Error Rate SLI     = requests_5xx / requests_total
+```
+
+**SLO (Service Level Objective)** — o alvo interno:
+
+```
+Availability SLO   = 99.9%  (43.8 min de downtime/mês)
+Latency SLO (p99)  = < 500ms
+Error Rate SLO     = < 0.1%
+```
+
+**SLA (Service Level Agreement)** — o compromisso contratual com o cliente (sempre mais relaxado que o SLO):
+
+```
+Availability SLA   = 99.5%  (3.6h de downtime/mês)
+```
+
+### Structured Logging
+
+Logs devem ser JSON parseable com campos padronizados para facilitar queries no Datadog, Elastic ou Loki:
+
+```typescript
+// Structured logging middleware
+function requestLogger(req: Request, res: Response, next: NextFunction) {
+  const start = performance.now();
+
+  res.on('finish', () => {
+    const duration = performance.now() - start;
+
+    const logEntry = {
+      timestamp: new Date().toISOString(),
+      level: res.statusCode >= 500 ? 'error' : res.statusCode >= 400 ? 'warn' : 'info',
+      message: `${req.method} ${req.path} ${res.statusCode}`,
+      http: {
+        method: req.method,
+        path: req.path,
+        statusCode: res.statusCode,
+        duration: Math.round(duration * 100) / 100,
+        userAgent: req.headers['user-agent'],
+      },
+      trace: {
+        traceId: req.traceId,
+        spanId: req.spanId,
+      },
+      user: {
+        id: req.user?.id,
+        role: req.user?.role,
+      },
+    };
+
+    // JSON estruturado — uma linha por entry, fácil de parsear
+    process.stdout.write(JSON.stringify(logEntry) + '\n');
+  });
+
+  next();
+}
+```
+
+---
+
+## Exercicios
+
+### Exercicio 1 — Cursor Pagination
+
+Implemente cursor-based pagination para um endpoint `GET /posts` que ordena por `created_at DESC, id DESC`. O cursor deve ser um base64url-encoded JSON com ambos os campos. Teste com um dataset de 10.000 posts e compare a performance com offset pagination para a "página 500" (offset 10.000).
+
+### Exercicio 2 — Token Bucket Distribuído
+
+Implemente o token bucket completo com Redis + Lua script. Requisitos: capacidade configurável por tier (free: 60/min, pro: 600/min, enterprise: 6000/min), headers `X-RateLimit-*` em todos os responses, e response 429 com `Retry-After` quando excedido. Escreva testes que simulam bursts e verificam o refill correto.
+
+### Exercicio 3 — Idempotency Middleware
+
+Crie um middleware genérico de idempotency que funcione com qualquer endpoint POST. Requisitos: lock para prevenir processamento concorrente da mesma key, TTL de 24h, scoped por `user_id`, e teste que faz 3 requests idênticos e verifica que o side-effect acontece apenas uma vez.
+
+### Exercicio 4 — Webhook System
+
+Implemente um sistema de webhooks completo: registro de subscriptions, envio com HMAC-SHA256, retry com exponential backoff, e um endpoint receiver que verifica assinatura e rejeita replay attacks (timestamp > 5 min). Inclua um dashboard endpoint que mostra delivery success rate por subscription.
+
+### Exercicio 5 — API Evolution
+
+Você tem uma API v1 com o endpoint `GET /users/:id` que retorna `{ id, name, email, age }`. Requisitos para v2: `age` deve ser substituído por `birthdate` (ISO 8601), `name` deve ser separado em `firstName` + `lastName`, e deve ser adicionado um campo `address`. Implemente a migração mantendo backward compatibility total na v1 por 6 meses, com `Sunset` header, e um middleware de logging que rastreia quantos clientes ainda usam v1.
+
+---
+
+## Referencias
+
+- **"API Design Patterns"** — JJ Geewax (Manning, 2021). Referência definitiva para padrões de design de APIs, cobrindo nomes, métodos padrão, paginação e operações de longa duração.
+- **Stripe API Docs** — [stripe.com/docs/api](https://stripe.com/docs/api). Referência de implementação para idempotency keys, webhooks com HMAC, versionamento por data e error handling consistente.
+- **Google API Design Guide** — [cloud.google.com/apis/design](https://cloud.google.com/apis/design). Guia interno do Google tornado público. Cobre resource-oriented design, métodos padrão e convenções de naming.
+- **RFC 8594 (Sunset Header)** — Padronização do header `Sunset` para comunicar desativação programada de recursos.
+- **RFC 7807 (Problem Details for HTTP APIs)** — Formato padronizado para erros em APIs HTTP.
+- **"Designing Web APIs"** — Brenda Jin, Saurabh Sahni, Amir Shevat (O'Reilly, 2018). Foco prático em pagination, rate limiting e webhooks.
+- **OpenTelemetry Docs** — [opentelemetry.io/docs](https://opentelemetry.io/docs). Padrão da indústria para observabilidade: traces, metrics e logs.

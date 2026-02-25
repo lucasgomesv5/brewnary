@@ -1,0 +1,827 @@
+---
+title: "Redes Neurais e Deep Learning"
+description: "Do Perceptron aos Transformers: MLP, funcoes de ativacao, backpropagation, CNNs, RNNs, LSTMs, self-attention e a arquitetura que unificou IA moderna"
+track: "ia"
+order: 3
+section: "Modelos"
+priority: "high"
+tags: ["redes-neurais", "deep-learning", "perceptron", "backpropagation", "cnn", "rnn", "transformers", "attention"]
+prerequisites: []
+keyTakeaways:
+  - "Um perceptron e um classificador linear que computa y = f(w*x + b); redes multicamada (MLP) empilham perceptrons com funcoes de ativacao nao-lineares para aproximar qualquer funcao continua (Universal Approximation Theorem)"
+  - "Backpropagation aplica a regra da cadeia do calculo para propagar o erro da saida ate os pesos de cada camada -- CNNs exploram hierarquia espacial com filtros de convolucao, RNNs processam sequencias com estado oculto, e LSTMs resolvem vanishing gradient com gates"
+  - "Transformers substituiram RNNs usando self-attention pura: cada token 'olha' para todos os outros com complexidade O(n^2), mas com paralelizacao total -- e a arquitetura base de BERT, GPT e todos os LLMs modernos"
+---
+
+# Redes Neurais e Deep Learning
+
+## 1. O Perceptron
+
+O **Perceptron** (Frank Rosenblatt, 1957) e o modelo mais simples de neuronio artificial. Ele recebe entradas, aplica pesos, soma, e produz uma saida binaria.
+
+```
+Perceptron:
+
+  x1 ─(w1)──┐
+             │
+  x2 ─(w2)──┼──→ [ z = Σ(wi*xi) + b ] ──→ [ f(z) ] ──→ y
+             │
+  x3 ─(w3)──┘
+
+  z = w1*x1 + w2*x2 + w3*x3 + b    (combinacao linear)
+  y = f(z)                            (funcao de ativacao)
+
+  Para o Perceptron original:
+  f(z) = 1  se z >= 0
+  f(z) = 0  se z < 0                  (step function)
+```
+
+### Implementacao
+
+```python
+import numpy as np
+
+class Perceptron:
+    def __init__(self, n_features, lr=0.01):
+        self.w = np.zeros(n_features)
+        self.b = 0
+        self.lr = lr
+
+    def predict(self, x):
+        z = np.dot(self.w, x) + self.b
+        return 1 if z >= 0 else 0
+
+    def train(self, X, y, epochs=100):
+        for _ in range(epochs):
+            for xi, yi in zip(X, y):
+                pred = self.predict(xi)
+                error = yi - pred
+                # Regra de atualizacao do Perceptron
+                self.w += self.lr * error * xi
+                self.b += self.lr * error
+
+# Exemplo: aprender AND logico
+X = np.array([[0,0], [0,1], [1,0], [1,1]])
+y = np.array([0, 0, 0, 1])
+
+p = Perceptron(n_features=2)
+p.train(X, y, epochs=10)
+
+for xi in X:
+    print(f"{xi} -> {p.predict(xi)}")
+# [0, 0] -> 0
+# [0, 1] -> 0
+# [1, 0] -> 0
+# [1, 1] -> 1
+```
+
+### Limitacao Fundamental: o Problema XOR
+
+O Perceptron so pode resolver problemas **linearmente separaveis** -- onde existe uma reta (ou hiperplano) que separa as classes.
+
+```
+AND (linearmente separavel):     XOR (NAO linearmente separavel):
+
+  y                                y
+  1│     ●(1,1)                    1│ ●(0,1)     ●(1,1)
+   │                                │  classe 1   classe 0
+  0│ ●(0,0)  ●(1,0)               0│ ●(0,0)     ●(1,0)
+   └──────────── x                  │  classe 0   classe 1
+     Uma reta separa ● de ○          └──────────── x
+                                     Nenhuma reta separa as classes!
+```
+
+Essa limitacao, demonstrada por Minsky e Papert em 1969, desencadeou o primeiro AI Winter. A solucao? **Redes multicamada (MLP)**.
+
+---
+
+## 2. Funcoes de Ativacao
+
+Funcoes de ativacao introduzem **nao-linearidade** na rede. Sem elas, empilhar multiplas camadas lineares seria equivalente a uma unica camada linear (composicao de funcoes lineares e linear).
+
+### Sigmoid
+
+```
+σ(z) = 1 / (1 + e^(-z))
+
+Saida: (0, 1)
+Derivada: σ'(z) = σ(z) * (1 - σ(z))
+
+Vantagens: saida entre 0 e 1 (interpretavel como probabilidade)
+Problemas: vanishing gradient (derivada → 0 para |z| grande),
+           saida nao centrada em zero, exp() e lento
+```
+
+### Tanh
+
+```
+tanh(z) = (e^z - e^(-z)) / (e^z + e^(-z))
+
+Saida: (-1, 1)
+Derivada: tanh'(z) = 1 - tanh²(z)
+
+Vantagens: centrada em zero (melhor que sigmoid para camadas ocultas)
+Problemas: ainda sofre vanishing gradient para |z| grande
+```
+
+### ReLU (Rectified Linear Unit)
+
+```
+ReLU(z) = max(0, z)
+
+Saida: [0, +∞)
+Derivada: 1 se z > 0, 0 se z < 0
+
+Vantagens: simples, rapido, sem vanishing gradient para z > 0,
+           gera ativacoes esparsas (muitos zeros = eficiente)
+Problemas: "dying ReLU" (neuronios com z < 0 param de aprender)
+```
+
+### Variantes Modernas
+
+```python
+# Leaky ReLU: resolve dying ReLU
+def leaky_relu(z, alpha=0.01):
+    return np.where(z > 0, z, alpha * z)
+
+# GELU (Gaussian Error Linear Unit): usada em Transformers (BERT, GPT)
+def gelu(z):
+    return 0.5 * z * (1 + np.tanh(np.sqrt(2/np.pi) * (z + 0.044715 * z**3)))
+
+# SiLU / Swish: usada em modelos modernos
+def silu(z):
+    return z * (1 / (1 + np.exp(-z)))  # z * sigmoid(z)
+```
+
+### Quando Usar Cada Funcao
+
+```
+┌─────────────────┬────────────────────────────────────────┐
+│ Funcao          │ Quando usar                            │
+├─────────────────┼────────────────────────────────────────┤
+│ ReLU            │ Padrao para camadas ocultas de MLPs    │
+│ Leaky ReLU      │ Quando muitos neuronios estao "morrendo"│
+│ GELU            │ Transformers (BERT, GPT, etc.)         │
+│ SiLU/Swish      │ Modelos de visao modernos (EfficientNet)│
+│ Sigmoid         │ Camada de saida para classificacao     │
+│                 │ binaria (saida 0-1)                    │
+│ Softmax         │ Camada de saida para classificacao     │
+│                 │ multiclasse (soma = 1)                 │
+│ Tanh            │ Camadas ocultas de RNNs (historico)    │
+│ Linear (nenhuma)│ Camada de saida para regressao         │
+└─────────────────┴────────────────────────────────────────┘
+```
+
+---
+
+## 3. MLP (Multi-Layer Perceptron)
+
+Um MLP e uma rede neural com **uma ou mais camadas ocultas**. Cada camada e uma transformacao linear seguida de uma funcao de ativacao nao-linear.
+
+```
+Input     Hidden Layer 1    Hidden Layer 2    Output
+(3)           (4)               (4)            (2)
+
+x1 ─────●─────●─────●─────●──────●──────●──────●──── y1
+        │╲   ╱│╲   ╱│╲   ╱│╲    ╱│╲    ╱│╲    ╱│
+x2 ─────●──╲╱─●──╲╱─●──╲╱─●──╲╱──●──╲╱──●──╲╱──●── y2
+        │  ╱╲ │  ╱╲ │  ╱╲ │  ╱╲  │  ╱╲  │  ╱╲  │
+x3 ─────●╱───╲●╱───╲●╱───╲●╱────╲●╱────╲●╱────╲●
+
+Cada aresta tem um peso (parametro aprendido).
+Cada neuronio aplica: z = Σ(wi*xi) + b, a = f(z)
+
+Total de parametros:
+  Camada 1: 3*4 + 4 = 16    (pesos + biases)
+  Camada 2: 4*4 + 4 = 20
+  Camada 3: 4*2 + 2 = 10
+  Total: 46 parametros
+```
+
+### Universal Approximation Theorem
+
+O **Teorema da Aproximacao Universal** (Cybenko, 1989; Hornik, 1991) estabelece que um MLP com **uma unica camada oculta** com numero suficiente de neuronios pode aproximar **qualquer funcao continua** em um dominio compacto com precisao arbitraria.
+
+Isso nao significa que uma camada e suficiente na pratica. Redes profundas (muitas camadas) sao mais eficientes em parametros para representar funcoes complexas.
+
+---
+
+## 4. Forward Pass e Funcoes de Perda
+
+### Forward Pass
+
+O **forward pass** e a computacao que transforma a entrada em saida, propagando dados atraves de todas as camadas.
+
+```python
+import numpy as np
+
+class MLP:
+    def __init__(self, layer_sizes):
+        self.weights = []
+        self.biases = []
+
+        for i in range(len(layer_sizes) - 1):
+            # Inicializacao He (bom para ReLU)
+            w = np.random.randn(layer_sizes[i], layer_sizes[i+1]) * np.sqrt(2.0 / layer_sizes[i])
+            b = np.zeros((1, layer_sizes[i+1]))
+            self.weights.append(w)
+            self.biases.append(b)
+
+    def relu(self, z):
+        return np.maximum(0, z)
+
+    def softmax(self, z):
+        exp_z = np.exp(z - np.max(z, axis=1, keepdims=True))
+        return exp_z / exp_z.sum(axis=1, keepdims=True)
+
+    def forward(self, X):
+        self.activations = [X]
+        self.z_values = []
+
+        a = X
+        for i in range(len(self.weights)):
+            z = a @ self.weights[i] + self.biases[i]
+            self.z_values.append(z)
+
+            if i < len(self.weights) - 1:
+                a = self.relu(z)        # ReLU nas camadas ocultas
+            else:
+                a = self.softmax(z)     # Softmax na saida
+
+            self.activations.append(a)
+        return a
+```
+
+### Funcoes de Perda (Loss Functions)
+
+A funcao de perda quantifica **quao errada** esta a predicao do modelo. O objetivo do treinamento e minimizar essa funcao.
+
+```
+MSE (regressao):
+  MSE = (1/n) * Σ(y_pred - y_real)²
+  Penaliza erros grandes mais que erros pequenos (quadratico)
+
+Cross-Entropy (classificacao):
+  Binaria:     L = -[y * log(p) + (1-y) * log(1-p)]
+  Multiclasse: L = -Σ(y_i * log(p_i))
+
+Intuicao: cross-entropy mede a "surpresa" do modelo.
+Predicao 90% na classe correta → loss baixa.
+Predicao 30% na classe correta → loss alta.
+```
+
+---
+
+## 5. Backpropagation
+
+**Backpropagation** (Rumelhart, Hinton & Williams, 1986) e o algoritmo que calcula o gradiente da funcao de perda em relacao a **cada peso** da rede. Ele usa a **regra da cadeia** do calculo, propagando o erro da saida de volta ate a entrada.
+
+```
+Forward pass: dados fluem da entrada para a saida
+              X → h1 → h2 → y_pred → Loss
+
+Backward pass: gradientes fluem da saida para a entrada
+              ∂L/∂W1 ← ∂L/∂h1 ← ∂L/∂h2 ← ∂L/∂y_pred ← Loss
+
+Cada peso e atualizado proporcionalmente a sua
+contribuicao para o erro total.
+```
+
+### Passo a Passo para uma Rede de 2 Camadas
+
+```
+Camada 1: z1 = X @ W1 + b1,  a1 = ReLU(z1)
+Camada 2: z2 = a1 @ W2 + b2, a2 = softmax(z2) = y_pred
+Loss:     L = cross_entropy(y_true, y_pred)
+
+Backward pass:
+  1. dz2 = y_pred - y_true
+  2. dW2 = a1^T @ dz2,  db2 = sum(dz2)
+  3. da1 = dz2 @ W2^T
+  4. dz1 = da1 * (z1 > 0)    (derivada do ReLU)
+  5. dW1 = X^T @ dz1,   db1 = sum(dz1)
+  6. Atualizar: W = W - lr * dW (para todos os pesos)
+```
+
+### Implementacao Completa
+
+```python
+import numpy as np
+
+class NeuralNetwork:
+    def __init__(self, input_size, hidden_size, output_size, lr=0.01):
+        self.W1 = np.random.randn(input_size, hidden_size) * np.sqrt(2.0 / input_size)
+        self.b1 = np.zeros((1, hidden_size))
+        self.W2 = np.random.randn(hidden_size, output_size) * np.sqrt(2.0 / hidden_size)
+        self.b2 = np.zeros((1, output_size))
+        self.lr = lr
+
+    def relu(self, z):
+        return np.maximum(0, z)
+
+    def softmax(self, z):
+        exp_z = np.exp(z - np.max(z, axis=1, keepdims=True))
+        return exp_z / exp_z.sum(axis=1, keepdims=True)
+
+    def forward(self, X):
+        self.z1 = X @ self.W1 + self.b1
+        self.a1 = self.relu(self.z1)
+        self.z2 = self.a1 @ self.W2 + self.b2
+        self.a2 = self.softmax(self.z2)
+        return self.a2
+
+    def backward(self, X, y_true):
+        m = X.shape[0]
+        dz2 = self.a2 - y_true
+        dW2 = (1/m) * self.a1.T @ dz2
+        db2 = (1/m) * np.sum(dz2, axis=0, keepdims=True)
+        da1 = dz2 @ self.W2.T
+        dz1 = da1 * (self.z1 > 0)
+        dW1 = (1/m) * X.T @ dz1
+        db1 = (1/m) * np.sum(dz1, axis=0, keepdims=True)
+
+        self.W2 -= self.lr * dW2
+        self.b2 -= self.lr * db2
+        self.W1 -= self.lr * dW1
+        self.b1 -= self.lr * db1
+
+    def train(self, X, y_true, epochs=1000):
+        for epoch in range(epochs):
+            y_pred = self.forward(X)
+            loss = -np.mean(np.sum(y_true * np.log(y_pred + 1e-15), axis=1))
+            self.backward(X, y_true)
+            if epoch % 200 == 0:
+                print(f"Epoch {epoch:4d}: loss = {loss:.4f}")
+
+# Resolver XOR (que o Perceptron nao consegue!)
+X = np.array([[0,0], [0,1], [1,0], [1,1]])
+y = np.array([[1,0], [0,1], [0,1], [1,0]])  # one-hot
+
+nn = NeuralNetwork(input_size=2, hidden_size=8, output_size=2, lr=0.5)
+nn.train(X, y, epochs=2000)
+```
+
+---
+
+## 6. Inicializacao e Regularizacao
+
+### Inicializacao de Pesos
+
+```
+┌──────────────┬──────────────────────────────────────────────┐
+│ Metodo       │ Descricao                                    │
+├──────────────┼──────────────────────────────────────────────┤
+│ Zeros        │ NUNCA use. Todos os neuronios aprendem a     │
+│              │ mesma coisa (simetria nao e quebrada).        │
+├──────────────┼──────────────────────────────────────────────┤
+│ Xavier/Glorot│ w ~ N(0, 2/(n_in + n_out))                   │
+│              │ Bom para sigmoid e tanh.                      │
+├──────────────┼──────────────────────────────────────────────┤
+│ He/Kaiming   │ w ~ N(0, 2/n_in)                             │
+│              │ Bom para ReLU. Padrao em PyTorch.             │
+└──────────────┴──────────────────────────────────────────────┘
+```
+
+### Dropout
+
+```
+Treinamento (dropout = 0.5):         Inferencia:
+Desativa 50% dos neuronios           Todos os neuronios ativos
+aleatoriamente a cada batch.          (pesos * (1-dropout))
+
+  ● ─── ● ─── ●                      ● ─── ● ─── ●
+  ● ─── X ─── ●  (desativado)        ● ─── ● ─── ●
+  ● ─── ● ─── X  (desativado)        ● ─── ● ─── ●
+  ● ─── ● ─── ●                      ● ─── ● ─── ●
+
+Efeito: forca cada neuronio a ser util independentemente,
+evitando co-adaptacao. Funciona como um ensemble implicito.
+```
+
+### Batch Normalization
+
+Normaliza as ativacoes de cada camada para ter media 0 e variancia 1. Beneficios: treinamento mais estavel, permite learning rates maiores, funciona como regularizador leve.
+
+```python
+# Em PyTorch:
+import torch.nn as nn
+
+model = nn.Sequential(
+    nn.Linear(784, 256),
+    nn.BatchNorm1d(256),
+    nn.ReLU(),
+    nn.Dropout(0.3),
+    nn.Linear(256, 128),
+    nn.BatchNorm1d(128),
+    nn.ReLU(),
+    nn.Dropout(0.3),
+    nn.Linear(128, 10),
+)
+```
+
+---
+
+## 7. CNNs (Convolutional Neural Networks)
+
+CNNs sao projetadas para processar dados com **estrutura espacial** -- imagens, audio (espectrogramas) e ate texto (1D). A ideia central: em vez de conectar cada neuronio a todos os pixels, usamos **filtros** (kernels) que escaneiam a imagem detectando padroes locais.
+
+### Operacao de Convolucao
+
+```
+Imagem de entrada (5x5):        Filtro/Kernel (3x3):
+
+┌─────────────────────┐         ┌───────────┐
+│  1  0  1  0  1      │         │  1  0  1  │
+│  0  1  0  1  0      │         │  0  1  0  │
+│  1  0  1  0  1      │         │  1  0  1  │
+│  0  1  0  1  0      │         └───────────┘
+│  1  0  1  0  1      │
+└─────────────────────┘
+
+Convolucao: deslizar o filtro sobre a imagem,
+calculando o dot product em cada posicao.
+
+Parametros:
+  Kernel size: tamanho do filtro (3x3 e o padrao)
+  Stride: quantos pixels o filtro avanca (1 = padrao)
+  Padding: adicionar zeros nas bordas
+  Numero de filtros: cada filtro detecta um padrao diferente
+```
+
+### Pooling e Hierarquia de Features
+
+Pooling reduz a **dimensionalidade espacial**, mantendo features importantes. Max Pooling (2x2, stride 2) substitui cada regiao 2x2 pelo valor maximo, reduzindo dimensao pela metade.
+
+```
+Camadas iniciais         Camadas medias           Camadas finais
+(features simples)       (features compostas)     (conceitos)
+
+┌───────────────┐       ┌───────────────┐       ┌───────────────┐
+│  ─  │  \      │       │  Olho    Orelha│       │    Gato       │
+│  |  /         │       │  Boca    Nariz │       │    Cachorro   │
+│  Bordas       │       │  Partes        │       │    Objetos    │
+│  Texturas     │       │  de objetos    │       │    completos  │
+└───────────────┘       └───────────────┘       └───────────────┘
+```
+
+### Residual Connections (ResNet)
+
+O problema de redes muito profundas: o gradiente se torna tao pequeno que camadas iniciais mal aprendem (**vanishing gradient**). ResNet resolve isso com **skip connections**:
+
+```
+Bloco residual:
+
+  x ─────────────────────────────┐
+  │                              │ (skip/identity)
+  ▼                              │
+  [Conv → BN → ReLU]            │
+  │                              │
+  ▼                              │
+  [Conv → BN]                   │
+  │                              │
+  ▼                              │
+  [   +   ] ← soma x + F(x)    │
+  │       ←──────────────────────┘
+  ▼
+  [ReLU]
+  │
+  ▼
+  saida = ReLU(F(x) + x)
+
+O modelo aprende a funcao RESIDUAL F(x) = saida_desejada - x.
+Se a camada ideal fosse identidade, F(x) = 0 e facil de aprender.
+```
+
+```python
+import torch
+import torch.nn as nn
+
+class ResidualBlock(nn.Module):
+    def __init__(self, channels):
+        super().__init__()
+        self.conv1 = nn.Conv2d(channels, channels, kernel_size=3, padding=1)
+        self.bn1 = nn.BatchNorm2d(channels)
+        self.conv2 = nn.Conv2d(channels, channels, kernel_size=3, padding=1)
+        self.bn2 = nn.BatchNorm2d(channels)
+        self.relu = nn.ReLU()
+
+    def forward(self, x):
+        residual = x
+        out = self.relu(self.bn1(self.conv1(x)))
+        out = self.bn2(self.conv2(out))
+        out = out + residual            # skip connection
+        out = self.relu(out)
+        return out
+```
+
+### Arquiteturas Classicas
+
+```
+┌────────────┬──────┬────────────┬──────────────────────────────┐
+│ Arquitetura│ Ano  │ Camadas    │ Inovacao                      │
+├────────────┼──────┼────────────┼──────────────────────────────┤
+│ LeNet-5    │ 1998 │ 5          │ CNN para digitos (MNIST)      │
+│ AlexNet    │ 2012 │ 8          │ ReLU, Dropout, GPU training   │
+│ VGGNet     │ 2014 │ 16-19      │ Filtros 3x3 empilhados       │
+│ GoogLeNet  │ 2014 │ 22         │ Inception modules (paralelos) │
+│ ResNet     │ 2015 │ 50-152     │ Residual connections (skip)   │
+│ EfficientNet│2019 │ variavel   │ Scaling balanceado (NAS)      │
+│ ViT        │ 2020 │ Transformer│ Vision Transformer (patches)  │
+└────────────┴──────┴────────────┴──────────────────────────────┘
+```
+
+---
+
+## 8. RNNs (Recurrent Neural Networks)
+
+RNNs processam **sequencias** mantendo um **estado oculto** (hidden state) que funciona como memoria do que ja foi processado.
+
+```
+RNN desdobrada no tempo:
+
+  x1          x2          x3          x4
+  │           │           │           │
+  ▼           ▼           ▼           ▼
+┌─────┐    ┌─────┐    ┌─────┐    ┌─────┐
+│     │───→│     │───→│     │───→│     │
+│ h1  │    │ h2  │    │ h3  │    │ h4  │
+└─────┘    └─────┘    └─────┘    └─────┘
+  │           │           │           │
+  ▼           ▼           ▼           ▼
+  y1          y2          y3          y4
+
+A cada passo t:
+  h_t = tanh(W_hh * h_(t-1) + W_xh * x_t + b_h)
+  y_t = W_hy * h_t + b_y
+```
+
+### O Problema do Vanishing Gradient
+
+Quando a sequencia e longa, os gradientes que fluem de volta no tempo (backpropagation through time - BPTT) sao multiplicados repetidamente pela mesma matriz de pesos. Se os valores proprios forem < 1, os gradientes encolhem exponencialmente -- o modelo **esquece** informacoes distantes.
+
+```
+Gradiente fluindo de h_100 ate h_1:
+  ∂L/∂h_1 = ∂L/∂h_100 * ∂h_100/∂h_99 * ... * ∂h_2/∂h_1
+
+Se cada fator < 1:  0.9^99 ≈ 0.00003 (gradiente praticamente zero)
+Se cada fator > 1:  1.1^99 ≈ 12527   (gradiente explode)
+```
+
+---
+
+## 9. LSTM (Long Short-Term Memory)
+
+LSTM (Hochreiter & Schmidhuber, 1997) resolve o vanishing gradient com um mecanismo de **gates** que controlam o fluxo de informacao.
+
+### Os Tres Gates
+
+```python
+import numpy as np
+
+def lstm_cell(x_t, h_prev, c_prev, Wf, Wi, Wc, Wo, bf, bi, bc, bo):
+    combined = np.concatenate([h_prev, x_t])
+
+    # Forget gate: decide o que ESQUECER do cell state
+    f_t = sigmoid(Wf @ combined + bf)
+
+    # Input gate: decide o que ADICIONAR ao cell state
+    i_t = sigmoid(Wi @ combined + bi)
+    c_candidate = np.tanh(Wc @ combined + bc)
+
+    # Atualizar cell state
+    c_t = f_t * c_prev + i_t * c_candidate
+
+    # Output gate: decide o que EMITIR do cell state
+    o_t = sigmoid(Wo @ combined + bo)
+    h_t = o_t * np.tanh(c_t)
+
+    return h_t, c_t
+```
+
+**Por que LSTM funciona:** o cell state `C_t` e uma "esteira transportadora" que flui ao longo de toda a sequencia. O forget gate pode manter informacoes inalteradas (multiplicando por 1), eliminando o problema de vanishing gradient. A informacao pode persistir por centenas de passos.
+
+---
+
+## 10. Transformers
+
+### O Paper que Mudou Tudo
+
+*"Attention Is All You Need"* (Vaswani et al., 2017) eliminou recorrencia e convolucao, usando apenas mecanismos de **self-attention**. O resultado: paralelizacao total e desempenho superior em NLP.
+
+### Self-Attention (Scaled Dot-Product Attention)
+
+A ideia central: para cada token na sequencia, calcular quao relevantes sao **todos os outros tokens** para entende-lo.
+
+```
+Entrada: "O gato sentou no tapete"
+
+Para o token "sentou":
+  - "gato" e muito relevante (quem sentou?)       → peso alto
+  - "tapete" e relevante (onde sentou?)            → peso medio
+  - "O" e pouco relevante                         → peso baixo
+  - "no" e pouco relevante                        → peso baixo
+```
+
+### Mecanismo Matematico
+
+Cada token gera tres vetores a partir de seus embeddings:
+
+```
+Query (Q): "O que estou procurando?"
+Key (K):   "O que tenho a oferecer?"
+Value (V): "Qual informacao carrego?"
+
+Attention(Q, K, V) = softmax(Q * K^T / sqrt(d_k)) * V
+
+Onde d_k e a dimensao dos vetores (para estabilidade numerica).
+```
+
+```python
+import numpy as np
+
+def scaled_dot_product_attention(Q, K, V, mask=None):
+    d_k = Q.shape[-1]
+    scores = Q @ K.T / np.sqrt(d_k)
+
+    if mask is not None:
+        scores = scores + mask  # mask com -inf bloqueia posicoes futuras
+
+    weights = np.exp(scores - scores.max(axis=-1, keepdims=True))
+    weights = weights / weights.sum(axis=-1, keepdims=True)
+
+    output = weights @ V
+    return output, weights
+```
+
+### Multi-Head Attention
+
+Em vez de um unico mecanismo de atencao, o Transformer usa **multiplas "cabecas"** em paralelo, cada uma aprendendo a prestar atencao a aspectos diferentes da sequencia.
+
+```
+Multi-Head Attention (h = 8 cabecas):
+
+                    ┌──→ Head 1: Attention(Q1, K1, V1) ──→ O1 ──┐
+                    │                                             │
+  X ──→ [Projecoes] ──→ Head 2: Attention(Q2, K2, V2) ──→ O2 ──┼──→ [Concat] ──→ [Linear] ──→ Saida
+                    │                                             │
+                    └──→ Head 8: Attention(Q8, K8, V8) ──→ O8 ──┘
+
+  Cada cabeca opera em uma sub-dimensao: d_k = d_model / h
+  Se d_model = 512 e h = 8, cada cabeca tem d_k = 64
+
+  Uma cabeca pode aprender relacoes sintaticas (sujeito-verbo),
+  outra relacoes semanticas (sinonimos), outra posicionais, etc.
+```
+
+### Positional Encoding
+
+Self-attention e invariante a ordem -- nao sabe se "gato comeu rato" e diferente de "rato comeu gato". Positional Encoding adiciona informacao de posicao:
+
+```
+PE(pos, 2i)   = sin(pos / 10000^(2i/d_model))
+PE(pos, 2i+1) = cos(pos / 10000^(2i/d_model))
+
+Cada posicao recebe um vetor unico baseado em senos e cossenos
+de diferentes frequencias.
+```
+
+### Arquitetura Completa do Transformer
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                     TRANSFORMER                              │
+│                                                              │
+│  ┌────────────────────┐      ┌──────────────────────────┐   │
+│  │      ENCODER       │      │        DECODER            │   │
+│  │                    │      │                           │   │
+│  │  Input Embedding   │      │  Output Embedding         │   │
+│  │  + Positional Enc  │      │  + Positional Enc         │   │
+│  │        │           │      │        │                  │   │
+│  │        ▼           │      │        ▼                  │   │
+│  │  ┌───────────────┐│      │  ┌──────────────────┐     │   │
+│  │  │ Multi-Head    ││      │  │ Masked Multi-Head│     │   │
+│  │  │ Self-Attention││      │  │ Self-Attention   │     │   │
+│  │  └───────┬───────┘│      │  └──────┬───────────┘     │   │
+│  │  [Add & Norm]     │      │  [Add & Norm]              │   │
+│  │        │           │      │        │                  │   │
+│  │  ┌───────────────┐│      │  ┌──────────────────┐     │   │
+│  │  │ Feed Forward  ││  ──→ │  │ Cross-Attention  │     │   │
+│  │  │ Network       ││      │  │ (Q=decoder,      │     │   │
+│  │  └───────┬───────┘│      │  │  K,V=encoder)    │     │   │
+│  │  [Add & Norm]     │      │  └──────┬───────────┘     │   │
+│  │        │           │      │  [Add & Norm]              │   │
+│  │     (Nx layers)   │      │        │                  │   │
+│  └────────────────────┘      │  ┌──────────────────┐     │   │
+│                              │  │ Feed Forward     │     │   │
+│                              │  │ Network          │     │   │
+│                              │  └──────┬───────────┘     │   │
+│                              │  [Add & Norm]              │   │
+│                              │     (Nx layers)           │   │
+│                              │        │                  │   │
+│                              │  [Linear + Softmax]       │   │
+│                              │        │                  │   │
+│                              │    Predicao              │   │
+│                              └──────────────────────────┘   │
+└─────────────────────────────────────────────────────────────┘
+
+Componentes-chave:
+  Add & Norm: residual connection + layer normalization
+  Feed Forward Network: MLP com 2 camadas (expansao 4x + projecao)
+  Masked Self-Attention: mascara tokens futuros (autoregressive)
+  Cross-Attention: decoder "olha" para a saida do encoder
+```
+
+---
+
+## 11. Por que Transformers Venceram
+
+```
+┌─────────────────┬──────────────────┬──────────────────────┐
+│                 │ RNN/LSTM          │ Transformer           │
+├─────────────────┼──────────────────┼──────────────────────┤
+│ Paralelizacao   │ Sequencial (lento)│ Totalmente paralelo  │
+│                 │ Token por token   │ Todos tokens de uma  │
+│                 │                  │ vez na GPU            │
+├─────────────────┼──────────────────┼──────────────────────┤
+│ Dependencias    │ Dificuldade com  │ Acesso direto a      │
+│ de longo alcance│ sequencias longas│ qualquer posicao     │
+│                 │ (vanishing grad) │ via attention         │
+├─────────────────┼──────────────────┼──────────────────────┤
+│ Escalabilidade  │ Dificil escalar  │ Escala com mais      │
+│                 │ alem de ~1000    │ dados, parametros e  │
+│                 │ tokens           │ compute (scaling laws)│
+├─────────────────┼──────────────────┼──────────────────────┤
+│ Complexidade    │ O(n) por camada  │ O(n²) por camada     │
+│ computacional   │                  │ (custo de attention)  │
+│                 │                  │ Mas paralelizavel!    │
+└─────────────────┴──────────────────┴──────────────────────┘
+```
+
+O custo O(n^2) do self-attention e o principal limitador -- e por isso que modelos tem "context window". Pesquisa ativa busca atencao sub-quadratica (Sparse Attention, Linear Attention, Flash Attention para eficiencia de memoria).
+
+### Variantes de Transformers
+
+```
+Encoder-only:   BERT, RoBERTa
+                Bom para: classificacao, NER, similarity
+                Pre-treino: masked language model (bidirecional)
+
+Decoder-only:   GPT-1/2/3/4, Claude, LLaMA, Mistral
+                Bom para: geracao de texto, conversacao
+                Pre-treino: next token prediction (autoregressive)
+
+Encoder-Decoder: T5, BART, modelo original
+                 Bom para: traducao, sumarizacao
+                 Pre-treino: reconstrucao de texto corrompido
+```
+
+---
+
+## 12. Vision Transformers (ViT)
+
+Em 2020, *An Image is Worth 16x16 Words* mostrou que Transformers podiam ser aplicados diretamente a imagens, dividindo-as em **patches** tratados como tokens.
+
+```
+Imagem (224x224) → dividir em patches de 16x16 → 196 patches
+
+[CLS] [p1] [p2] ... [p196] + Positional Embeddings
+  │
+  ▼
+Transformer Encoder (12 camadas)
+  │
+  ▼
+Classificacao (usando o token [CLS])
+```
+
+Isso unificou visao e linguagem sob a mesma arquitetura, levando a modelos multimodais como GPT-4V e Gemini.
+
+---
+
+## Resumo: Evolucao das Arquiteturas
+
+```
+Perceptron (1957) → Classificador linear, limitado a XOR
+MLP (1986+)       → Camadas ocultas + backpropagation
+CNN (1998-2015)   → Convolucao + pooling para visao computacional
+RNN/LSTM (1997)   → Sequencias com memoria, vanishing gradient
+Transformer (2017)→ Self-attention pura, paralelizavel
+ViT (2020)        → Transformers para visao
+LLMs (2020+)      → Transformers massivos, bilhoes de parametros
+
+A tendencia e clara: Transformers se tornaram a arquitetura
+universal para praticamente toda tarefa de deep learning.
+```
+
+---
+
+## Referencias e Fontes
+
+- **Deep Learning** -- Ian Goodfellow, Yoshua Bengio & Aaron Courville (2016). Cobertura completa de redes feedforward, CNNs, RNNs, regularizacao e otimizacao. [deeplearningbook.org](https://www.deeplearningbook.org)
+- **Attention Is All You Need** -- Vaswani et al. (2017). O paper que introduziu a arquitetura Transformer. [arxiv.org/abs/1706.03762](https://arxiv.org/abs/1706.03762)
+- **Neural Networks and Deep Learning** -- Michael Nielsen. Livro online gratuito com explicacoes visuais e interativas sobre perceptrons e backpropagation. [neuralnetworksanddeeplearning.com](http://neuralnetworksanddeeplearning.com)
+- **CS231n: Convolutional Neural Networks for Visual Recognition** -- Stanford University. [cs231n.stanford.edu](https://cs231n.stanford.edu). Curso completo cobrindo CNNs, arquiteturas e Vision Transformers
+- **Hands-On Machine Learning with Scikit-Learn, Keras, and TensorFlow** -- Aurelien Geron (3a edicao, 2022). Guia pratico com implementacoes de CNNs, RNNs e Transformers
+- **Anthropic Documentation** -- [docs.anthropic.com](https://docs.anthropic.com). Research papers sobre a arquitetura e treinamento de modelos Claude
+- **OpenAI Cookbook** -- [cookbook.openai.com](https://cookbook.openai.com). Exemplos praticos de uso de Transformers e modelos de linguagem
+- **Andrej Karpathy's Neural Networks: Zero to Hero** -- [youtube.com/@andrejkarpathy](https://www.youtube.com/@andrejkarpathy). Lectures cobrindo backpropagation, CNNs e GPT do zero
+- **fast.ai** -- [fast.ai](https://www.fast.ai). Curso pratico de deep learning com abordagem top-down

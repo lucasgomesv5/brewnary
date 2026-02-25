@@ -1,0 +1,1709 @@
+---
+title: "gRPC e tRPC"
+description: "Protocol Buffers, gRPC (unary, streaming, interceptors, load balancing), tRPC (end-to-end type safety com Zod + React Query), e decision matrix gRPC vs REST vs GraphQL vs tRPC"
+track: "backend"
+order: 23
+section: "Comunicação"
+priority: "high"
+tags: ["gRPC", "tRPC", "protocol-buffers", "protobuf", "HTTP/2", "streaming", "type-safety", "RPC"]
+prerequisites: ["rest-apis", "graphql"]
+keyTakeaways:
+  - "gRPC usa HTTP/2 + Protocol Buffers para comunicação até 10x mais rápida que REST+JSON — ideal para comunicação entre microserviços"
+  - "Protocol Buffers oferecem backward/forward compatibility via field numbers, permitindo evolução de schema sem breaking changes"
+  - "tRPC elimina a camada de serialização/validação entre frontend e backend TypeScript com end-to-end type safety e zero code generation"
+  - "A escolha entre REST, gRPC, GraphQL e tRPC depende do contexto: público vs interno, polyglot vs TypeScript-only, streaming vs request-response"
+---
+
+# gRPC e tRPC
+
+RPC (Remote Procedure Call) é a ideia de invocar uma função num processo remoto como se fosse local. O conceito existe desde os anos 80, mas as implementações modernas — gRPC do Google e tRPC do ecossistema TypeScript — resolvem problemas muito diferentes com abordagens radicalmente distintas. gRPC foca em performance e interoperabilidade polyglot via Protocol Buffers e HTTP/2. tRPC foca em developer experience e type safety end-to-end dentro de monorepos TypeScript, sem nenhuma camada de serialização ou code generation.
+
+---
+
+## 1. Protocol Buffers
+
+Protocol Buffers (protobuf) é o formato de serialização binária criado pelo Google. É a lingua franca do gRPC — define tanto a estrutura dos dados quanto a interface dos serviços.
+
+### 1.1 Sintaxe proto3
+
+```protobuf
+syntax = "proto3";
+
+package ecommerce.v1;
+
+option go_package = "github.com/myorg/ecommerce/gen/go/ecommerce/v1";
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/wrappers.proto";
+
+// Enum — valores devem começar em 0
+enum OrderStatus {
+  ORDER_STATUS_UNSPECIFIED = 0;  // Sempre ter um valor zero como "unset"
+  ORDER_STATUS_PENDING     = 1;
+  ORDER_STATUS_CONFIRMED   = 2;
+  ORDER_STATUS_SHIPPED     = 3;
+  ORDER_STATUS_DELIVERED   = 4;
+  ORDER_STATUS_CANCELLED   = 5;
+}
+
+enum PaymentMethod {
+  PAYMENT_METHOD_UNSPECIFIED = 0;
+  PAYMENT_METHOD_CREDIT_CARD = 1;
+  PAYMENT_METHOD_PIX         = 2;
+  PAYMENT_METHOD_BOLETO      = 3;
+}
+
+// Message principal — Product
+message Product {
+  string id          = 1;
+  string name        = 2;
+  string description = 3;
+  int32  price_cents = 4;   // Preço em centavos — nunca use float para dinheiro
+  string category    = 5;
+  repeated string tags = 6; // Lista de strings
+  map<string, string> metadata = 7; // Map genérico
+  ProductDetails details = 8;
+  google.protobuf.Timestamp created_at = 9;
+}
+
+// Oneof — apenas um dos campos pode estar setado
+message ProductDetails {
+  oneof kind {
+    PhysicalProduct physical = 1;
+    DigitalProduct  digital  = 2;
+  }
+}
+
+message PhysicalProduct {
+  double weight_kg = 1;
+  Dimensions dimensions = 2;
+}
+
+message Dimensions {
+  double height_cm = 1;
+  double width_cm  = 2;
+  double depth_cm  = 3;
+}
+
+message DigitalProduct {
+  string download_url = 1;
+  int64  file_size_bytes = 2;
+}
+
+// Order com campos compostos
+message Order {
+  string id                     = 1;
+  string customer_id            = 2;
+  repeated OrderItem items      = 3;
+  OrderStatus status            = 4;
+  int64 total_cents             = 5;
+  PaymentMethod payment_method  = 6;
+  Address shipping_address      = 7;
+  google.protobuf.Timestamp created_at  = 8;
+  google.protobuf.Timestamp updated_at  = 9;
+  google.protobuf.StringValue coupon_code = 10; // Wrapper para nullable string
+
+  // Reserved — campos removidos que não podem ser reutilizados
+  reserved 11, 12;
+  reserved "legacy_discount", "old_status";
+}
+
+message OrderItem {
+  string product_id = 1;
+  int32  quantity   = 2;
+  int64  unit_price_cents = 3;
+}
+
+message Address {
+  string street  = 1;
+  string city    = 2;
+  string state   = 3;
+  string zip     = 4;
+  string country = 5;
+}
+```
+
+### 1.2 Tipos Escalares e Wire Types
+
+Protobuf usa wire types para codificação binária. Cada tipo escalar mapeia para um wire type:
+
+```
+Wire Type   Formato            Tipos Proto
+─────────   ─────────────────  ──────────────────────────────
+0           Varint             int32, int64, uint32, uint64,
+                               sint32, sint64, bool, enum
+1           64-bit             fixed64, sfixed64, double
+2           Length-delimited   string, bytes, messages,
+                               repeated (packed)
+5           32-bit             fixed32, sfixed32, float
+```
+
+Ponto importante: `int32` e `int64` usam varint encoding, que é eficiente para números positivos pequenos mas ineficiente para negativos (usa 10 bytes para -1). Para campos que frequentemente contêm negativos, use `sint32`/`sint64` que aplicam ZigZag encoding.
+
+### 1.3 Field Numbers e Evolução de Schema
+
+Os field numbers são a peça central da compatibilidade. O nome do campo é irrelevante no wire format — apenas o número importa.
+
+**Regras de backward/forward compatibility:**
+
+```
+SEGURO (não causa breaking change):
+  ✓ Adicionar novo campo (com novo número)
+  ✓ Remover campo (marcar como reserved)
+  ✓ Renomear campo (número permanece)
+  ✓ Mudar int32 ↔ int64, uint32 ↔ uint64 (compatíveis no wire)
+  ✓ Mudar string ↔ bytes (se bytes for UTF-8 válido)
+
+BREAKING (causa incompatibilidade):
+  ✗ Mudar field number de um campo existente
+  ✗ Mudar wire type (ex: int32 → string)
+  ✗ Reutilizar field number de campo removido
+  ✗ Mudar tipo de repeated ↔ scalar
+  ✗ Mudar required ↔ optional (proto2)
+```
+
+**Reserved fields** protegem contra reutilização acidental:
+
+```protobuf
+message User {
+  string id = 1;
+  string email = 2;
+  // Campo 3 era "password_hash" — removido por segurança
+  // Campo 4 era "legacy_role" — migrado para RBAC
+  reserved 3, 4;
+  reserved "password_hash", "legacy_role";
+  string name = 5;
+}
+```
+
+### 1.4 Compilação com protoc
+
+```bash
+# Instalar protoc
+brew install protobuf  # macOS
+
+# Plugins de linguagem
+go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
+go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
+npm install -g ts-proto  # Plugin TypeScript
+
+# Compilar para Go
+protoc \
+  --go_out=./gen/go --go_opt=paths=source_relative \
+  --go-grpc_out=./gen/go --go-grpc_opt=paths=source_relative \
+  proto/ecommerce/v1/*.proto
+
+# Compilar para TypeScript (ts-proto)
+protoc \
+  --plugin=./node_modules/.bin/protoc-gen-ts_proto \
+  --ts_proto_out=./gen/ts \
+  --ts_proto_opt=outputServices=grpc-js \
+  --ts_proto_opt=esModuleInterop=true \
+  proto/ecommerce/v1/*.proto
+```
+
+---
+
+## 2. gRPC Fundamentals
+
+gRPC é um framework RPC open-source criado pelo Google em 2015. Usa HTTP/2 como transporte e Protocol Buffers como serialização por default.
+
+### 2.1 Arquitetura
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                        gRPC CLIENT                          │
+│                                                             │
+│  Application Code                                           │
+│       │                                                     │
+│       ▼                                                     │
+│  Generated Stub ──→ Serializa (protobuf) ──→ Channel        │
+│                                                │            │
+│                          Interceptors ◄────────┤            │
+│                          (middleware)          │            │
+│                                                │            │
+│                          HTTP/2 Connection ◄───┘            │
+└───────────────────────────┬─────────────────────────────────┘
+                            │ HTTP/2 stream
+                            │ (HEADERS + DATA frames)
+                            ▼
+┌─────────────────────────────────────────────────────────────┐
+│                        gRPC SERVER                          │
+│                                                             │
+│  HTTP/2 Connection                                          │
+│       │                                                     │
+│       ▼                                                     │
+│  Interceptors ──→ Deserializa (protobuf) ──→ Service Impl   │
+│  (middleware)                                     │         │
+│                                                   ▼         │
+│                                            Handler Method   │
+│                                                   │         │
+│                    Serializa response ◄────────────┘         │
+│                         │                                   │
+│                         ▼                                   │
+│                    HTTP/2 Response                           │
+│                    (DATA + TRAILERS)                         │
+└─────────────────────────────────────────────────────────────┘
+```
+
+### 2.2 Os 4 Tipos de RPC
+
+#### Unary RPC (Request-Response)
+
+O padrão mais simples — um request, um response. Equivalente a uma chamada REST.
+
+```protobuf
+service ProductService {
+  rpc GetProduct(GetProductRequest) returns (GetProductResponse);
+}
+
+message GetProductRequest {
+  string id = 1;
+}
+
+message GetProductResponse {
+  Product product = 1;
+}
+```
+
+**Implementação em Go (server):**
+
+```go
+func (s *productServer) GetProduct(
+    ctx context.Context,
+    req *pb.GetProductRequest,
+) (*pb.GetProductResponse, error) {
+    // Deadline propagation — verificar se o contexto já expirou
+    if ctx.Err() == context.DeadlineExceeded {
+        return nil, status.Error(codes.DeadlineExceeded, "deadline exceeded")
+    }
+
+    product, err := s.repo.FindByID(ctx, req.GetId())
+    if err != nil {
+        if errors.Is(err, ErrNotFound) {
+            return nil, status.Error(codes.NotFound, "product not found")
+        }
+        return nil, status.Error(codes.Internal, "internal error")
+    }
+
+    return &pb.GetProductResponse{
+        Product: toProtoProduct(product),
+    }, nil
+}
+```
+
+**Implementação em TypeScript (client):**
+
+```typescript
+import { ProductServiceClient } from './gen/ecommerce/v1/product_grpc_pb';
+import { GetProductRequest } from './gen/ecommerce/v1/product_pb';
+import { credentials, Metadata } from '@grpc/grpc-js';
+
+const client = new ProductServiceClient(
+  'localhost:50051',
+  credentials.createInsecure()
+);
+
+async function getProduct(id: string): Promise<Product> {
+  const request = new GetProductRequest();
+  request.setId(id);
+
+  const metadata = new Metadata();
+  metadata.set('x-request-id', crypto.randomUUID());
+
+  return new Promise((resolve, reject) => {
+    client.getProduct(request, metadata, (err, response) => {
+      if (err) return reject(err);
+      resolve(response!.getProduct()!.toObject());
+    });
+  });
+}
+```
+
+#### Server-Streaming RPC
+
+O servidor envia múltiplas mensagens em resposta a um único request. Ideal para feeds, logs em tempo real, ou resultados paginados como stream.
+
+```protobuf
+service OrderService {
+  // Cliente pede atualizações de um pedido — servidor envia stream de status
+  rpc TrackOrder(TrackOrderRequest) returns (stream OrderUpdate);
+}
+
+message TrackOrderRequest {
+  string order_id = 1;
+}
+
+message OrderUpdate {
+  string order_id = 1;
+  OrderStatus status = 2;
+  string message = 3;
+  google.protobuf.Timestamp timestamp = 4;
+}
+```
+
+**Implementação em Go (server):**
+
+```go
+func (s *orderServer) TrackOrder(
+    req *pb.TrackOrderRequest,
+    stream pb.OrderService_TrackOrderServer,
+) error {
+    orderID := req.GetOrderId()
+
+    // Subscrever a um canal de eventos (ex: Redis Pub/Sub, Kafka)
+    updates, cancel := s.eventBus.Subscribe(orderID)
+    defer cancel()
+
+    for {
+        select {
+        case <-stream.Context().Done():
+            // Cliente desconectou ou deadline expirou
+            return stream.Context().Err()
+        case update, ok := <-updates:
+            if !ok {
+                // Canal fechado — pedido finalizado
+                return nil
+            }
+            if err := stream.Send(update); err != nil {
+                return status.Errorf(codes.Internal, "send failed: %v", err)
+            }
+        }
+    }
+}
+```
+
+#### Client-Streaming RPC
+
+O cliente envia múltiplas mensagens e o servidor responde com uma única mensagem após receber todas. Ideal para uploads em chunks, ou envio de batch de dados.
+
+```protobuf
+service AnalyticsService {
+  // Cliente envia stream de eventos, servidor responde com resumo
+  rpc IngestEvents(stream AnalyticsEvent) returns (IngestSummary);
+}
+
+message AnalyticsEvent {
+  string event_type = 1;
+  string user_id = 2;
+  map<string, string> properties = 3;
+  google.protobuf.Timestamp timestamp = 4;
+}
+
+message IngestSummary {
+  int64 events_received = 1;
+  int64 events_processed = 2;
+  int64 events_failed = 3;
+}
+```
+
+**Implementação em Go (server):**
+
+```go
+func (s *analyticsServer) IngestEvents(
+    stream pb.AnalyticsService_IngestEventsServer,
+) error {
+    var received, processed, failed int64
+
+    for {
+        event, err := stream.Recv()
+        if err == io.EOF {
+            // Cliente terminou de enviar — retornar resumo
+            return stream.SendAndClose(&pb.IngestSummary{
+                EventsReceived:  received,
+                EventsProcessed: processed,
+                EventsFailed:    failed,
+            })
+        }
+        if err != nil {
+            return status.Errorf(codes.Internal, "recv error: %v", err)
+        }
+
+        received++
+        if err := s.processor.Process(stream.Context(), event); err != nil {
+            failed++
+            continue
+        }
+        processed++
+    }
+}
+```
+
+#### Bidirectional Streaming RPC
+
+Ambos os lados enviam streams independentes. Os dois streams operam de forma independente — o servidor não precisa esperar o cliente terminar antes de responder.
+
+```protobuf
+service ChatService {
+  // Chat em tempo real — ambos enviam e recebem mensagens
+  rpc Chat(stream ChatMessage) returns (stream ChatMessage);
+}
+
+message ChatMessage {
+  string sender_id = 1;
+  string room_id = 2;
+  string content = 3;
+  google.protobuf.Timestamp timestamp = 4;
+}
+```
+
+**Implementação em Go (server):**
+
+```go
+func (s *chatServer) Chat(stream pb.ChatService_ChatServer) error {
+    // Extrair metadata com info do user
+    md, ok := metadata.FromIncomingContext(stream.Context())
+    if !ok {
+        return status.Error(codes.Unauthenticated, "missing metadata")
+    }
+    userID := md.Get("x-user-id")[0]
+
+    // Registrar este stream no room
+    room := s.rooms.Join(userID, stream)
+    defer s.rooms.Leave(userID, room)
+
+    for {
+        msg, err := stream.Recv()
+        if err == io.EOF {
+            return nil
+        }
+        if err != nil {
+            return err
+        }
+
+        // Broadcast para todos os outros participantes do room
+        room.Broadcast(msg, userID)
+    }
+}
+```
+
+### 2.3 Fluxo HTTP/2 — Unary RPC
+
+```
+Cliente                                      Servidor
+   │                                            │
+   │─── HEADERS frame ─────────────────────────▶│
+   │    :method: POST                           │
+   │    :path: /ecommerce.v1.ProductService/    │
+   │           GetProduct                       │
+   │    content-type: application/grpc          │
+   │    te: trailers                            │
+   │    grpc-timeout: 5S                        │
+   │                                            │
+   │─── DATA frame (Length-Prefixed Message) ──▶│
+   │    [1 byte: compressed?] [4 bytes: length] │
+   │    [N bytes: protobuf-encoded request]     │
+   │                                            │
+   │─── END_STREAM ────────────────────────────▶│
+   │                                            │
+   │                                            │ (processa)
+   │                                            │
+   │◀── HEADERS frame ─────────────────────────│
+   │    :status: 200                            │
+   │    content-type: application/grpc          │
+   │                                            │
+   │◀── DATA frame (Length-Prefixed Message) ──│
+   │    [protobuf-encoded response]             │
+   │                                            │
+   │◀── HEADERS frame (trailers) ──────────────│
+   │    grpc-status: 0                          │
+   │    grpc-message: OK                        │
+   │                                            │
+```
+
+Ponto chave: o gRPC status code viaja nos **trailers** (HEADERS frame final com END_STREAM), não no HTTP status code. O `:status: 200` na resposta HTTP é quase sempre 200 — o real status da RPC está no `grpc-status` trailer.
+
+---
+
+## 3. gRPC Internals
+
+### 3.1 HTTP/2 Multiplexing
+
+HTTP/2 permite múltiplas RPCs simultâneas na mesma conexão TCP via **streams**. Cada RPC é um stream independente com seu próprio ID.
+
+```
+Conexão TCP (TLS)
+┌─────────────────────────────────────────────────┐
+│                                                 │
+│  Stream 1 ──▶ GetProduct(id=123)       ◀── OK  │
+│  Stream 3 ──▶ ListOrders(user=abc)     ◀── ... │
+│  Stream 5 ──▶ TrackOrder(id=456)       ◀── ... │
+│  Stream 7 ──▶ GetProduct(id=789)       ◀── OK  │
+│                                                 │
+│  Todos os streams compartilham a mesma conexão  │
+│  TCP e são multiplexados em frames              │
+│                                                 │
+└─────────────────────────────────────────────────┘
+```
+
+Isto elimina o **head-of-line blocking** do HTTP/1.1, onde um response lento bloqueava todos os requests subsequentes na mesma conexão.
+
+### 3.2 Flow Control
+
+HTTP/2 implementa flow control por stream e por conexão via WINDOW_UPDATE frames. O receptor anuncia quantos bytes está disposto a receber. Quando a janela esgota, o emissor para de enviar até receber um WINDOW_UPDATE.
+
+Em gRPC, isto é configurável:
+
+```go
+server := grpc.NewServer(
+    grpc.InitialWindowSize(1 << 20),     // 1MB por stream
+    grpc.InitialConnWindowSize(1 << 20), // 1MB por conexão
+)
+```
+
+### 3.3 Deadline Propagation
+
+Um dos mecanismos mais poderosos do gRPC. Quando um cliente define um deadline, este propaga-se automaticamente para todos os serviços downstream via o header `grpc-timeout`.
+
+```
+API Gateway          Serviço A           Serviço B          Serviço C
+    │                    │                   │                   │
+    │─ deadline: 5s ────▶│                   │                   │
+    │                    │─ deadline: 4.8s ─▶│                   │
+    │                    │                   │─ deadline: 4.5s ─▶│
+    │                    │                   │                   │
+    │  Se C demorar mais de 4.5s, toda a cadeia falha com       │
+    │  DEADLINE_EXCEEDED, evitando trabalho desnecessário        │
+```
+
+**Em Go, o deadline propaga via context:**
+
+```go
+func (s *serviceA) ProcessOrder(ctx context.Context, req *pb.Request) (*pb.Response, error) {
+    // O deadline do contexto já inclui o timeout recebido do caller
+    deadline, ok := ctx.Deadline()
+    if ok {
+        log.Printf("deadline restante: %v", time.Until(deadline))
+    }
+
+    // Ao chamar Serviço B, o deadline propaga automaticamente
+    resp, err := s.serviceBClient.Validate(ctx, &pb.ValidateRequest{...})
+    if err != nil {
+        st, _ := status.FromError(err)
+        if st.Code() == codes.DeadlineExceeded {
+            // Timeout propagado — não adianta retry
+            return nil, err
+        }
+    }
+    return resp, nil
+}
+```
+
+### 3.4 Interceptors
+
+Interceptors são o equivalente a middleware no gRPC. Existem dois tipos: unary e stream.
+
+**Unary interceptor em Go (logging + metrics):**
+
+```go
+func loggingUnaryInterceptor(
+    ctx context.Context,
+    req interface{},
+    info *grpc.UnaryServerInfo,
+    handler grpc.UnaryHandler,
+) (interface{}, error) {
+    start := time.Now()
+
+    // Extrair metadata
+    md, _ := metadata.FromIncomingContext(ctx)
+    requestID := md.Get("x-request-id")
+
+    // Chamar o handler real
+    resp, err := handler(ctx, req)
+
+    // Log com duração e status
+    duration := time.Since(start)
+    st, _ := status.FromError(err)
+
+    log.Printf(
+        "method=%s request_id=%s duration=%v status=%s",
+        info.FullMethod, requestID, duration, st.Code(),
+    )
+
+    // Métricas
+    grpcRequestDuration.WithLabelValues(info.FullMethod, st.Code().String()).
+        Observe(duration.Seconds())
+
+    return resp, err
+}
+
+// Registrar no server
+server := grpc.NewServer(
+    grpc.ChainUnaryInterceptor(
+        loggingUnaryInterceptor,
+        authUnaryInterceptor,
+        recoveryUnaryInterceptor,
+    ),
+)
+```
+
+**Stream interceptor em Go (auth):**
+
+```go
+func authStreamInterceptor(
+    srv interface{},
+    ss grpc.ServerStream,
+    info *grpc.StreamServerInfo,
+    handler grpc.StreamHandler,
+) error {
+    md, ok := metadata.FromIncomingContext(ss.Context())
+    if !ok {
+        return status.Error(codes.Unauthenticated, "missing metadata")
+    }
+
+    tokens := md.Get("authorization")
+    if len(tokens) == 0 {
+        return status.Error(codes.Unauthenticated, "missing token")
+    }
+
+    claims, err := validateJWT(tokens[0])
+    if err != nil {
+        return status.Error(codes.Unauthenticated, "invalid token")
+    }
+
+    // Injetar claims no context
+    ctx := context.WithValue(ss.Context(), claimsKey, claims)
+    wrapped := &wrappedStream{ServerStream: ss, ctx: ctx}
+
+    return handler(srv, wrapped)
+}
+```
+
+### 3.5 Metadata
+
+Metadata em gRPC é equivalente a HTTP headers. Propagada via o contexto, permite passar informação transversal como request IDs, tokens, tenant IDs.
+
+```go
+// Client — enviar metadata
+md := metadata.New(map[string]string{
+    "x-request-id": uuid.New().String(),
+    "x-tenant-id":  "tenant-123",
+    "authorization": "Bearer " + token,
+})
+ctx := metadata.NewOutgoingContext(ctx, md)
+resp, err := client.GetProduct(ctx, req)
+
+// Client — ler trailers da resposta
+var trailer metadata.MD
+resp, err := client.GetProduct(ctx, req, grpc.Trailer(&trailer))
+retryAfter := trailer.Get("x-retry-after")
+
+// Server — ler metadata recebida
+md, ok := metadata.FromIncomingContext(ctx)
+tenantID := md.Get("x-tenant-id")[0]
+
+// Server — enviar metadata na resposta (headers)
+header := metadata.New(map[string]string{"x-served-by": hostname})
+grpc.SendHeader(ctx, header)
+
+// Server — enviar trailers
+trailer := metadata.New(map[string]string{"x-request-cost": "42"})
+grpc.SetTrailer(ctx, trailer)
+```
+
+---
+
+## 4. gRPC em Produção
+
+### 4.1 Health Checking
+
+O gRPC define um protocolo standard de health check (`grpc.health.v1.Health`):
+
+```protobuf
+// Já definido pelo gRPC — não precisa criar
+service Health {
+  rpc Check(HealthCheckRequest) returns (HealthCheckResponse);
+  rpc Watch(HealthCheckRequest) returns (stream HealthCheckResponse);
+}
+
+message HealthCheckRequest {
+  string service = 1;  // "" = overall health
+}
+
+message HealthCheckResponse {
+  enum ServingStatus {
+    UNKNOWN = 0;
+    SERVING = 1;
+    NOT_SERVING = 2;
+    SERVICE_UNKNOWN = 3;
+  }
+  ServingStatus status = 1;
+}
+```
+
+```go
+import "google.golang.org/grpc/health"
+import healthpb "google.golang.org/grpc/health/grpc_health_v1"
+
+healthServer := health.NewServer()
+healthpb.RegisterHealthServer(grpcServer, healthServer)
+
+// Marcar serviço como serving
+healthServer.SetServingStatus("ecommerce.v1.ProductService", healthpb.HealthCheckResponse_SERVING)
+
+// Marcar como not serving (durante graceful shutdown)
+healthServer.SetServingStatus("", healthpb.HealthCheckResponse_NOT_SERVING)
+```
+
+### 4.2 Reflection e grpcurl
+
+Reflection permite que ferramentas descubram os serviços disponíveis sem ter os `.proto` files.
+
+```go
+import "google.golang.org/grpc/reflection"
+
+reflection.Register(grpcServer)
+```
+
+```bash
+# Listar serviços
+grpcurl -plaintext localhost:50051 list
+
+# Descrever um serviço
+grpcurl -plaintext localhost:50051 describe ecommerce.v1.ProductService
+
+# Chamar um método
+grpcurl -plaintext \
+  -d '{"id": "prod-123"}' \
+  localhost:50051 ecommerce.v1.ProductService/GetProduct
+
+# Com metadata
+grpcurl -plaintext \
+  -H 'authorization: Bearer eyJ...' \
+  -H 'x-tenant-id: tenant-456' \
+  -d '{"id": "prod-123"}' \
+  localhost:50051 ecommerce.v1.ProductService/GetProduct
+```
+
+### 4.3 Load Balancing
+
+gRPC usa conexões HTTP/2 long-lived — um load balancer L4 (TCP) distribui apenas na criação da conexão, não por request. Isto causa desbalanceamento severo.
+
+```
+PROBLEMA com L4 load balancer:
+                                          ┌────────────────┐
+              conexão 1 (100 RPCs) ──────▶│   Server A     │ (sobrecarregado)
+             ╱                            └────────────────┘
+┌────────┐  ╱                             ┌────────────────┐
+│ Client │────conexão 2 (100 RPCs) ──────▶│   Server B     │ (sobrecarregado)
+└────────┘  ╲                             └────────────────┘
+             ╲                            ┌────────────────┐
+              conexão 3 (0 RPCs) ────────▶│   Server C     │ (idle)
+                                          └────────────────┘
+```
+
+**Soluções:**
+
+**1. Client-side load balancing:**
+
+```go
+import _ "google.golang.org/grpc/balancer/roundrobin"
+
+conn, err := grpc.Dial(
+    "dns:///my-service.default.svc.cluster.local:50051",
+    grpc.WithDefaultServiceConfig(`{
+        "loadBalancingConfig": [{"round_robin": {}}]
+    }`),
+    grpc.WithTransportCredentials(insecure.NewCredentials()),
+)
+```
+
+**2. Proxy-based (Envoy):**
+
+```yaml
+# Envoy config — gRPC-aware L7 load balancing
+static_resources:
+  listeners:
+    - name: grpc_listener
+      address:
+        socket_address: { address: 0.0.0.0, port_value: 8080 }
+      filter_chains:
+        - filters:
+            - name: envoy.filters.network.http_connection_manager
+              typed_config:
+                "@type": type.googleapis.com/envoy.extensions.filters.network.http_connection_manager.v3.HttpConnectionManager
+                stat_prefix: grpc
+                codec_type: AUTO
+                route_config:
+                  name: local_route
+                  virtual_hosts:
+                    - name: grpc_service
+                      domains: ["*"]
+                      routes:
+                        - match: { prefix: "/" }
+                          route:
+                            cluster: grpc_backend
+                            timeout: 5s
+                            retry_policy:
+                              retry_on: "unavailable,resource-exhausted"
+                              num_retries: 3
+                http_filters:
+                  - name: envoy.filters.http.router
+                    typed_config:
+                      "@type": type.googleapis.com/envoy.extensions.filters.http.router.v3.Router
+  clusters:
+    - name: grpc_backend
+      type: STRICT_DNS
+      lb_policy: ROUND_ROBIN
+      typed_extension_protocol_options:
+        envoy.extensions.upstreams.http.v3.HttpProtocolOptions:
+          "@type": type.googleapis.com/envoy.extensions.upstreams.http.v3.HttpProtocolOptions
+          explicit_http_config:
+            http2_protocol_options: {}
+      load_assignment:
+        cluster_name: grpc_backend
+        endpoints:
+          - lb_endpoints:
+              - endpoint:
+                  address:
+                    socket_address: { address: grpc-service, port_value: 50051 }
+```
+
+### 4.4 Error Model
+
+gRPC define status codes explícitos (não reusa HTTP status codes):
+
+```
+Code              Número  Quando Usar
+────              ──────  ──────────────────────────────────
+OK                0       Sucesso
+CANCELLED         1       Cliente cancelou
+UNKNOWN           2       Erro desconhecido
+INVALID_ARGUMENT  3       Input inválido (validação)
+DEADLINE_EXCEEDED 4       Timeout (não fazer retry)
+NOT_FOUND         5       Recurso não encontrado
+ALREADY_EXISTS    6       Conflito de criação
+PERMISSION_DENIED 7       Sem permissão (autenticado mas não autorizado)
+RESOURCE_EXHAUSTED 8      Rate limit, quota excedida
+UNIMPLEMENTED     12      Método não implementado
+INTERNAL          13      Erro interno do servidor
+UNAVAILABLE       14      Serviço temporariamente indisponível (fazer retry)
+UNAUTHENTICATED   16      Não autenticado (token inválido ou ausente)
+```
+
+**Rich error details (Google error model):**
+
+```go
+import (
+    "google.golang.org/genproto/googleapis/rpc/errdetails"
+    "google.golang.org/grpc/status"
+)
+
+func validateCreateOrder(req *pb.CreateOrderRequest) error {
+    var violations []*errdetails.BadRequest_FieldViolation
+
+    if len(req.Items) == 0 {
+        violations = append(violations, &errdetails.BadRequest_FieldViolation{
+            Field:       "items",
+            Description: "pedido deve ter pelo menos um item",
+        })
+    }
+
+    if req.ShippingAddress == nil {
+        violations = append(violations, &errdetails.BadRequest_FieldViolation{
+            Field:       "shipping_address",
+            Description: "endereço de entrega obrigatório",
+        })
+    }
+
+    if len(violations) > 0 {
+        st := status.New(codes.InvalidArgument, "validação falhou")
+        detailed, _ := st.WithDetails(&errdetails.BadRequest{
+            FieldViolations: violations,
+        })
+        return detailed.Err()
+    }
+    return nil
+}
+```
+
+### 4.5 Retry Policy e Hedging
+
+Configuração de retry via service config (declarativo, sem código):
+
+```go
+conn, err := grpc.Dial(target,
+    grpc.WithDefaultServiceConfig(`{
+        "methodConfig": [{
+            "name": [{"service": "ecommerce.v1.ProductService"}],
+            "retryPolicy": {
+                "maxAttempts": 4,
+                "initialBackoff": "0.1s",
+                "maxBackoff": "1s",
+                "backoffMultiplier": 2.0,
+                "retryableStatusCodes": ["UNAVAILABLE", "RESOURCE_EXHAUSTED"]
+            }
+        }]
+    }`),
+)
+```
+
+**Hedging** envia múltiplos requests simultâneos e usa a primeira resposta. Bom para latência tail (p99) quando o custo de requests extras é aceitável:
+
+```json
+{
+  "methodConfig": [{
+    "name": [{"service": "ecommerce.v1.ProductService", "method": "GetProduct"}],
+    "hedgingPolicy": {
+      "maxAttempts": 3,
+      "hedgingDelay": "0.5s",
+      "nonFatalStatusCodes": ["UNAVAILABLE"]
+    }
+  }]
+}
+```
+
+---
+
+## 5. tRPC
+
+tRPC é uma abordagem completamente diferente: em vez de definir schemas externos (protobuf, OpenAPI, GraphQL SDL), o type system do TypeScript **é** o schema. O tipo flui do backend para o frontend sem code generation, sem serialização manual, sem runtime overhead de validação duplicada.
+
+### 5.1 Arquitetura
+
+```
+┌────────────────────────────────────────────────────────┐
+│                     MONOREPO                           │
+│                                                        │
+│  ┌─────────────────────────────────────┐               │
+│  │  Backend (tRPC Server)              │               │
+│  │                                     │               │
+│  │  Router                             │               │
+│  │    ├─ user.getById (query)          │               │
+│  │    ├─ user.create (mutation)        │  AppRouter    │
+│  │    ├─ order.list (query)            │──── type ────▶│
+│  │    └─ order.create (mutation)       │  (exportado)  │
+│  │                                     │               │
+│  │  Zod schemas validam input          │               │
+│  │  Prisma gera types do DB            │               │
+│  └──────────────┬──────────────────────┘               │
+│                 │ HTTP / WebSocket                      │
+│  ┌──────────────▼──────────────────────┐               │
+│  │  Frontend (tRPC Client)             │               │
+│  │                                     │               │
+│  │  trpc.user.getById.useQuery()       │               │
+│  │  trpc.order.create.useMutation()    │               │
+│  │                                     │               │
+│  │  Autocomplete completo              │               │
+│  │  Type errors em compile time        │               │
+│  └─────────────────────────────────────┘               │
+└────────────────────────────────────────────────────────┘
+```
+
+### 5.2 Implementação Completa com Next.js App Router
+
+**1. Definir o router (server):**
+
+```typescript
+// src/server/trpc.ts — Inicialização do tRPC
+import { initTRPC, TRPCError } from '@trpc/server';
+import { type CreateNextContextOptions } from '@trpc/server/adapters/next';
+import superjson from 'superjson';
+import { ZodError } from 'zod';
+import { prisma } from './db';
+import { getServerSession } from './auth';
+
+// Context — disponível em todas as procedures
+export const createTRPCContext = async (opts: CreateNextContextOptions) => {
+  const session = await getServerSession();
+  return {
+    prisma,
+    session,
+    headers: opts.req.headers,
+  };
+};
+
+const t = initTRPC.context<typeof createTRPCContext>().create({
+  transformer: superjson, // Suporta Date, Map, Set, BigInt
+  errorFormatter({ shape, error }) {
+    return {
+      ...shape,
+      data: {
+        ...shape.data,
+        zodError:
+          error.cause instanceof ZodError ? error.cause.flatten() : null,
+      },
+    };
+  },
+});
+
+export const router = t.router;
+export const publicProcedure = t.procedure;
+export const createCallerFactory = t.createCallerFactory;
+
+// Middleware de autenticação
+const enforceAuth = t.middleware(({ ctx, next }) => {
+  if (!ctx.session?.user) {
+    throw new TRPCError({ code: 'UNAUTHORIZED' });
+  }
+  return next({
+    ctx: {
+      session: { ...ctx.session, user: ctx.session.user },
+    },
+  });
+});
+
+export const protectedProcedure = t.procedure.use(enforceAuth);
+```
+
+**2. Definir procedures com Zod:**
+
+```typescript
+// src/server/routers/order.ts
+import { z } from 'zod';
+import { router, protectedProcedure } from '../trpc';
+import { TRPCError } from '@trpc/server';
+
+// Zod schemas — servem como validação E como tipos
+const createOrderInput = z.object({
+  items: z.array(z.object({
+    productId: z.string().uuid(),
+    quantity: z.number().int().min(1).max(100),
+  })).min(1, 'Pedido deve ter pelo menos um item'),
+  shippingAddress: z.object({
+    street: z.string().min(5),
+    city: z.string().min(2),
+    state: z.string().length(2),
+    zip: z.string().regex(/^\d{5}-?\d{3}$/),
+  }),
+  couponCode: z.string().optional(),
+});
+
+const listOrdersInput = z.object({
+  cursor: z.string().uuid().optional(),
+  limit: z.number().int().min(1).max(50).default(20),
+  status: z.enum(['PENDING', 'CONFIRMED', 'SHIPPED', 'DELIVERED']).optional(),
+});
+
+export const orderRouter = router({
+  // Query — buscar pedidos com cursor pagination
+  list: protectedProcedure
+    .input(listOrdersInput)
+    .query(async ({ ctx, input }) => {
+      const orders = await ctx.prisma.order.findMany({
+        where: {
+          customerId: ctx.session.user.id,
+          ...(input.status && { status: input.status }),
+        },
+        take: input.limit + 1, // +1 para saber se tem próxima página
+        ...(input.cursor && {
+          cursor: { id: input.cursor },
+          skip: 1,
+        }),
+        orderBy: { createdAt: 'desc' },
+        include: {
+          items: { include: { product: true } },
+        },
+      });
+
+      let nextCursor: string | undefined;
+      if (orders.length > input.limit) {
+        const next = orders.pop();
+        nextCursor = next?.id;
+      }
+
+      return { orders, nextCursor };
+    }),
+
+  // Query — buscar pedido por ID
+  getById: protectedProcedure
+    .input(z.object({ id: z.string().uuid() }))
+    .query(async ({ ctx, input }) => {
+      const order = await ctx.prisma.order.findUnique({
+        where: { id: input.id },
+        include: {
+          items: { include: { product: true } },
+          shippingAddress: true,
+        },
+      });
+
+      if (!order) {
+        throw new TRPCError({
+          code: 'NOT_FOUND',
+          message: `Pedido ${input.id} não encontrado`,
+        });
+      }
+
+      if (order.customerId !== ctx.session.user.id) {
+        throw new TRPCError({ code: 'FORBIDDEN' });
+      }
+
+      return order;
+    }),
+
+  // Mutation — criar pedido
+  create: protectedProcedure
+    .input(createOrderInput)
+    .mutation(async ({ ctx, input }) => {
+      // Buscar produtos e calcular total
+      const products = await ctx.prisma.product.findMany({
+        where: { id: { in: input.items.map(i => i.productId) } },
+      });
+
+      if (products.length !== input.items.length) {
+        throw new TRPCError({
+          code: 'BAD_REQUEST',
+          message: 'Um ou mais produtos não encontrados',
+        });
+      }
+
+      const totalCents = input.items.reduce((sum, item) => {
+        const product = products.find(p => p.id === item.productId)!;
+        return sum + product.priceCents * item.quantity;
+      }, 0);
+
+      // Criar pedido em transação
+      const order = await ctx.prisma.$transaction(async (tx) => {
+        const order = await tx.order.create({
+          data: {
+            customerId: ctx.session.user.id,
+            status: 'PENDING',
+            totalCents,
+            items: {
+              create: input.items.map(item => ({
+                productId: item.productId,
+                quantity: item.quantity,
+                unitPriceCents: products.find(p => p.id === item.productId)!.priceCents,
+              })),
+            },
+            shippingAddress: { create: input.shippingAddress },
+          },
+          include: { items: true },
+        });
+
+        // Decrementar stock
+        for (const item of input.items) {
+          await tx.product.update({
+            where: { id: item.productId },
+            data: { stock: { decrement: item.quantity } },
+          });
+        }
+
+        return order;
+      });
+
+      return order;
+    }),
+
+  // Mutation — cancelar pedido
+  cancel: protectedProcedure
+    .input(z.object({ id: z.string().uuid() }))
+    .mutation(async ({ ctx, input }) => {
+      const order = await ctx.prisma.order.findUnique({
+        where: { id: input.id },
+      });
+
+      if (!order || order.customerId !== ctx.session.user.id) {
+        throw new TRPCError({ code: 'NOT_FOUND' });
+      }
+
+      if (order.status !== 'PENDING') {
+        throw new TRPCError({
+          code: 'PRECONDITION_FAILED',
+          message: `Pedido com status ${order.status} não pode ser cancelado`,
+        });
+      }
+
+      return ctx.prisma.order.update({
+        where: { id: input.id },
+        data: { status: 'CANCELLED' },
+      });
+    }),
+});
+```
+
+**3. Root router:**
+
+```typescript
+// src/server/routers/_app.ts
+import { router } from '../trpc';
+import { orderRouter } from './order';
+import { productRouter } from './product';
+import { userRouter } from './user';
+
+export const appRouter = router({
+  order: orderRouter,
+  product: productRouter,
+  user: userRouter,
+});
+
+// Exportar o TYPE — nunca importar o router real no client
+export type AppRouter = typeof appRouter;
+```
+
+**4. React Query integration (client):**
+
+```typescript
+// src/trpc/client.ts
+import { createTRPCReact } from '@trpc/react-query';
+import type { AppRouter } from '@/server/routers/_app';
+
+export const trpc = createTRPCReact<AppRouter>();
+```
+
+```tsx
+// src/app/orders/page.tsx
+'use client';
+
+import { trpc } from '@/trpc/client';
+
+export default function OrdersPage() {
+  // useQuery — type-safe, autocomplete nos campos
+  const { data, fetchNextPage, hasNextPage, isLoading } =
+    trpc.order.list.useInfiniteQuery(
+      { limit: 20, status: 'PENDING' },
+      {
+        getNextPageParam: (lastPage) => lastPage.nextCursor,
+        staleTime: 30_000, // 30 segundos
+      },
+    );
+
+  // useMutation — optimistic update
+  const cancelOrder = trpc.order.cancel.useMutation({
+    onMutate: async ({ id }) => {
+      // Cancel outgoing refetches
+      await utils.order.list.cancel();
+
+      // Snapshot do estado anterior
+      const previous = utils.order.list.getInfiniteData({ limit: 20 });
+
+      // Optimistic update
+      utils.order.list.setInfiniteData({ limit: 20 }, (old) => {
+        if (!old) return old;
+        return {
+          ...old,
+          pages: old.pages.map(page => ({
+            ...page,
+            orders: page.orders.map(order =>
+              order.id === id ? { ...order, status: 'CANCELLED' } : order
+            ),
+          })),
+        };
+      });
+
+      return { previous };
+    },
+    onError: (_err, _vars, context) => {
+      // Rollback em caso de erro
+      if (context?.previous) {
+        utils.order.list.setInfiniteData({ limit: 20 }, context.previous);
+      }
+    },
+    onSettled: () => {
+      // Invalidar cache para refetch
+      utils.order.list.invalidate();
+    },
+  });
+
+  const utils = trpc.useUtils();
+
+  if (isLoading) return <div>Carregando...</div>;
+
+  return (
+    <div>
+      {data?.pages.flatMap(page =>
+        page.orders.map(order => (
+          <div key={order.id}>
+            <p>Pedido {order.id} — {order.status}</p>
+            <p>Total: R$ {(order.totalCents / 100).toFixed(2)}</p>
+            {order.status === 'PENDING' && (
+              <button onClick={() => cancelOrder.mutate({ id: order.id })}>
+                Cancelar
+              </button>
+            )}
+          </div>
+        ))
+      )}
+      {hasNextPage && (
+        <button onClick={() => fetchNextPage()}>Carregar mais</button>
+      )}
+    </div>
+  );
+}
+```
+
+### 5.3 Middleware em tRPC
+
+```typescript
+// Middleware de logging com timing
+const timingMiddleware = t.middleware(async ({ path, type, next }) => {
+  const start = performance.now();
+  const result = await next();
+  const duration = performance.now() - start;
+
+  if (duration > 500) {
+    console.warn(`[SLOW] ${type} ${path} levou ${duration.toFixed(0)}ms`);
+  }
+
+  return result;
+});
+
+// Middleware de rate limiting
+const rateLimitMiddleware = t.middleware(async ({ ctx, next }) => {
+  const ip = ctx.headers.get('x-forwarded-for') ?? 'unknown';
+  const key = `ratelimit:${ip}`;
+
+  const current = await redis.incr(key);
+  if (current === 1) await redis.expire(key, 60);
+
+  if (current > 100) {
+    throw new TRPCError({
+      code: 'TOO_MANY_REQUESTS',
+      message: 'Rate limit excedido. Tente novamente em 1 minuto.',
+    });
+  }
+
+  return next();
+});
+
+// Compor middlewares
+export const rateLimitedProcedure = publicProcedure
+  .use(timingMiddleware)
+  .use(rateLimitMiddleware);
+```
+
+### 5.4 Error Handling
+
+```typescript
+import { TRPCError } from '@trpc/server';
+
+// No server — erros tipados
+throw new TRPCError({
+  code: 'NOT_FOUND',
+  message: 'Produto não encontrado',
+  cause: originalError, // Encapsular erro original
+});
+
+// Códigos disponíveis mapeiam para HTTP status:
+// PARSE_ERROR          → 400
+// BAD_REQUEST          → 400
+// UNAUTHORIZED         → 401
+// FORBIDDEN            → 403
+// NOT_FOUND            → 404
+// METHOD_NOT_SUPPORTED → 405
+// TIMEOUT              → 408
+// CONFLICT             → 409
+// PRECONDITION_FAILED  → 412
+// TOO_MANY_REQUESTS    → 429
+// INTERNAL_SERVER_ERROR → 500
+
+// No client — tratamento de erros
+const createOrder = trpc.order.create.useMutation({
+  onError: (error) => {
+    if (error.data?.code === 'BAD_REQUEST') {
+      // Erros de validação Zod
+      const zodErrors = error.data.zodError?.fieldErrors;
+      if (zodErrors) {
+        Object.entries(zodErrors).forEach(([field, messages]) => {
+          form.setError(field, { message: messages?.join(', ') });
+        });
+      }
+    } else if (error.data?.code === 'UNAUTHORIZED') {
+      router.push('/login');
+    } else {
+      toast.error('Erro inesperado. Tente novamente.');
+    }
+  },
+});
+```
+
+---
+
+## 6. Decision Matrix: gRPC vs REST vs GraphQL vs tRPC
+
+### 6.1 Tabela Comparativa
+
+```
+Critério           REST          gRPC          GraphQL       tRPC
+───────────────    ──────────    ──────────    ──────────    ──────────
+Serialização       JSON          Protobuf      JSON          JSON
+                   (texto)       (binário)     (texto)       (superjson)
+
+Latência           Média         Baixa         Média-Alta    Baixa
+                                 (HTTP/2 +     (parsing      (zero
+                                 binário)      overhead)     overhead)
+
+Type Safety        Manual        Forte         Forte         End-to-end
+                   (OpenAPI)     (code gen)    (code gen)    (nativo TS)
+
+Streaming          SSE/WS        Nativo        Subscriptions WebSocket
+                   (workaround)  (4 padrões)   (WS)          (limitado)
+
+Browser Support    Nativo        Via proxy     Nativo        Nativo
+                                 (grpc-web)
+
+Code Generation    Opcional      Obrigatório   Recomendado   Nenhum
+                   (openapi-     (protoc)      (graphql-
+                   generator)                   codegen)
+
+Linguagens         Todas         Todas         Todas         TypeScript
+                                 (polyglot)                   only
+
+Caching HTTP       Nativo        Não           Difícil       Não
+                   (ETag, 304)   (POST only)   (POST)        (mas React
+                                                              Query)
+
+Tooling            Vasto         Bom           Ótimo         Crescendo
+                   (Postman,     (grpcurl,     (Apollo       (tRPC
+                   Swagger)      Buf)          Studio)       panel)
+
+Learning Curve     Baixa         Alta          Média         Baixa
+                                                              (se sabe TS)
+
+Ideal Use Case     APIs          Microserviços Mobile com    Monorepo
+                   públicas      internos,     queries       TypeScript
+                                 polyglot,     variadas      full-stack
+                                 streaming
+```
+
+### 6.2 Quando Usar Cada
+
+**REST** — Escolha quando:
+- A API é pública e precisa ser consumida por clientes de qualquer linguagem
+- Caching HTTP é importante (CDN, browser cache, ETags)
+- A equipe prioriza simplicidade e convenção sobre performance
+- Operações CRUD mapeiam naturalmente para recursos e verbos HTTP
+
+**gRPC** — Escolha quando:
+- Comunicação entre microserviços internos (não expostos ao browser)
+- Ambiente polyglot (Go, Java, Python, etc.) precisa de contrato forte
+- Streaming bidirecional é requisito (chat, telemetria, IoT)
+- Performance é crítica — latência p99 e throughput importam
+- A equipe aceita o overhead de protobuf tooling e code generation
+
+**GraphQL** — Escolha quando:
+- Múltiplos consumers (web, mobile, third-party) com necessidades de dados diferentes
+- O grafo de dados é complexo com muitas relações
+- Over-fetching/under-fetching é um problema real (especialmente mobile)
+- A equipe aceita a complexidade de resolvers, DataLoader e N+1
+
+**tRPC** — Escolha quando:
+- Monorepo TypeScript (Next.js, Remix, etc.) onde client e server estão juntos
+- Developer experience é prioridade máxima (autocomplete, refactoring)
+- Equipe é 100% TypeScript e não precisa de interoperabilidade com outras linguagens
+- API é interna — não precisa ser consumida por clientes externos
+
+### 6.3 Padrão Híbrido: gRPC Interno + REST/GraphQL Externo
+
+Na prática, a maioria dos sistemas de escala usa uma combinação:
+
+```
+                    Internet
+                       │
+                       ▼
+              ┌─────────────────┐
+              │   API Gateway   │
+              │  (REST/GraphQL) │
+              │                 │
+              │  Rate limiting  │
+              │  Auth           │
+              │  Transformação  │
+              │  proto ↔ JSON   │
+              └────────┬────────┘
+                       │ gRPC
+          ┌────────────┼────────────┐
+          │            │            │
+          ▼            ▼            ▼
+   ┌────────────┐ ┌─────────┐ ┌─────────────┐
+   │  Order     │ │ Product │ │  Payment    │
+   │  Service   │ │ Service │ │  Service    │
+   │  (Go)      │ │ (Go)    │ │  (Java)     │
+   └──────┬─────┘ └────┬────┘ └──────┬──────┘
+          │ gRPC       │ gRPC        │ gRPC
+          ▼            ▼             ▼
+   ┌────────────┐ ┌─────────┐ ┌─────────────┐
+   │ Inventory  │ │ Search  │ │  Fraud      │
+   │ Service    │ │ Service │ │  Detection  │
+   └────────────┘ └─────────┘ └─────────────┘
+```
+
+O API Gateway traduz REST/GraphQL externo para gRPC interno. Isto dá o melhor dos dois mundos: APIs públicas com boa DX para consumidores externos, e comunicação interna de alta performance com type safety forte.
+
+---
+
+## 7. gRPC-Web e Connect
+
+### 7.1 gRPC-Web
+
+Browsers não expõem controlo sobre HTTP/2 frames — não é possível usar gRPC nativo. gRPC-Web é um protocolo adaptado que funciona sobre HTTP/1.1 ou HTTP/2, mas requer um proxy (tipicamente Envoy) para traduzir entre gRPC-Web e gRPC nativo.
+
+```
+Browser                Envoy Proxy            gRPC Server
+   │                      │                       │
+   │── gRPC-Web ─────────▶│                       │
+   │   (HTTP/1.1 ou       │── gRPC nativo ───────▶│
+   │    HTTP/2, mas       │   (HTTP/2 com         │
+   │    sem trailers      │    trailers)           │
+   │    nativos)          │                       │
+   │                      │◀── gRPC response ─────│
+   │◀── gRPC-Web resp ───│                       │
+   │   (trailers no body) │                       │
+```
+
+Limitações: apenas unary e server-streaming. Client-streaming e bidirectional não são suportados.
+
+### 7.2 Connect (Buf)
+
+Connect é uma alternativa moderna ao gRPC-Web criada pela Buf. Gera serviços que falam três protocolos simultaneamente:
+
+```
+┌────────────────────────────────────────────────────┐
+│              Connect Server                        │
+│                                                    │
+│  Protocolo 1: Connect (nativo)                     │
+│    → HTTP/1.1 ou HTTP/2                            │
+│    → JSON ou Protobuf                              │
+│    → Funciona direto no browser sem proxy          │
+│    → Streaming via Server-Sent Events              │
+│                                                    │
+│  Protocolo 2: gRPC                                 │
+│    → Compatível com qualquer client gRPC           │
+│    → HTTP/2 obrigatório                            │
+│                                                    │
+│  Protocolo 3: gRPC-Web                             │
+│    → Compatível com grpc-web clients               │
+│    → Sem necessidade de Envoy                      │
+│                                                    │
+└────────────────────────────────────────────────────┘
+```
+
+Isto elimina a necessidade de proxy para comunicação browser-to-server. O client Connect pode chamar o server via fetch API normal:
+
+```typescript
+import { createClient } from "@connectrpc/connect";
+import { createConnectTransport } from "@connectrpc/connect-web";
+import { ProductService } from "./gen/ecommerce/v1/product_connect";
+
+const transport = createConnectTransport({
+  baseUrl: "https://api.example.com",
+});
+
+const client = createClient(ProductService, transport);
+
+// Unary — retorna Promise
+const product = await client.getProduct({ id: "prod-123" });
+
+// Server streaming — async iterator
+for await (const update of client.trackOrder({ orderId: "order-456" })) {
+  console.log(`Status: ${update.status}, Mensagem: ${update.message}`);
+}
+```
+
+### 7.3 Buf CLI
+
+Buf substitui protoc com melhor DX, linting e breaking change detection:
+
+```bash
+# buf.yaml — configuração do módulo
+version: v2
+modules:
+  - path: proto
+lint:
+  use:
+    - STANDARD
+  except:
+    - FIELD_LOWER_SNAKE_CASE
+breaking:
+  use:
+    - FILE
+
+# Lint — detectar problemas no .proto
+buf lint proto/
+# error: ecommerce/v1/order.proto:15:3 - Enum value name
+# "PENDING" should be prefixed with "ORDER_STATUS_"
+
+# Breaking change detection contra a branch main
+buf breaking proto/ --against '.git#branch=main'
+# error: ecommerce/v1/product.proto:8:3 - Field "4" on message
+# "Product" changed type from "int32" to "string"
+
+# Gerar código (substitui protoc)
+buf generate
+```
+
+```yaml
+# buf.gen.yaml
+version: v2
+plugins:
+  - remote: buf.build/protocolbuffers/go
+    out: gen/go
+    opt: paths=source_relative
+  - remote: buf.build/connectrpc/go
+    out: gen/go
+    opt: paths=source_relative
+  - remote: buf.build/connectrpc/es
+    out: gen/ts
+    opt: target=ts
+```
+
+---
+
+## 8. Exercicios
+
+### Exercicio 1 — Protobuf Schema Design
+
+Projete um arquivo `.proto` completo para um sistema de reservas de hotel. Deve incluir:
+- Message `Hotel` com campos para nome, localização (lat/lng), estrelas, amenities (repeated), e metadata (map)
+- Message `Room` com oneof para tipos (Standard, Suite, Presidential) cada um com campos específicos
+- Message `Reservation` com status enum, datas, guest info
+- Service `ReservationService` com: `CreateReservation` (unary), `SearchRooms` (server-streaming, para resultados incrementais), `CheckAvailability` (unary)
+- Use `reserved` fields para simular evolução de schema (campos removidos)
+
+**Critério:** compile sem erros com `buf lint` e `buf build`.
+
+### Exercicio 2 — gRPC Server + Client em Go
+
+Implemente o `ReservationService` do exercício anterior em Go:
+- Server com os 3 métodos, incluindo o server-streaming de `SearchRooms`
+- Unary interceptor de logging que registra method, duration e status code
+- Stream interceptor de auth que valida um token no metadata
+- Health check endpoint funcionando
+- Teste com `grpcurl`
+
+**Critério:** `grpcurl -plaintext localhost:50051 list` deve listar os serviços. Stream de SearchRooms deve enviar resultados incrementalmente.
+
+### Exercicio 3 — tRPC CRUD Completo
+
+Crie uma API tRPC com Next.js App Router para gerenciar uma lista de tarefas:
+- Router com procedures: `list` (query com cursor pagination), `getById` (query), `create` (mutation), `update` (mutation), `delete` (mutation)
+- Input validation com Zod para todos os inputs
+- Middleware de auth e de logging
+- Error handling com TRPCError
+- Frontend com React Query: `useInfiniteQuery` para a lista, `useMutation` com optimistic updates para create/delete
+- Usar Prisma como ORM
+
+**Critério:** type safety completo — mudar um campo no router deve causar erro de tipo no frontend sem precisar de build.
+
+### Exercicio 4 — Benchmark gRPC vs REST
+
+Crie dois serviços identicos (mesmo endpoint, mesma lógica) — um REST (Express/Fastify) e um gRPC — e compare:
+- Latência p50, p95, p99 com `ghz` (gRPC) e `wrk`/`autocannon` (REST)
+- Throughput (requests/segundo)
+- Tamanho do payload no wire (use Wireshark ou `tcpdump`)
+- CPU e memória do server sob carga
+
+**Critério:** documente os resultados com gráficos. Explique as razões das diferenças observadas.
+
+### Exercicio 5 — API Gateway Pattern
+
+Implemente o padrão híbrido: API Gateway REST que traduz para gRPC interno:
+- 2 microserviços gRPC em Go (Product e Order)
+- API Gateway em Go ou TypeScript que expõe REST para o exterior e chama os serviços via gRPC
+- O gateway deve propagar deadlines, request IDs (via metadata), e tratar erros gRPC mapeando para HTTP status codes
+- Load balancing client-side com round_robin entre múltiplas instâncias de cada serviço
+- Docker Compose para orquestrar tudo
+
+**Critério:** `curl` no gateway deve funcionar. Kill de uma instância de serviço deve resultar em failover automático.
+
+---
+
+## 9. Referências
+
+- [gRPC Official Documentation](https://grpc.io/docs/) — guias de conceitos, tutoriais por linguagem, e referência da API
+- [Protocol Buffers Language Guide (proto3)](https://protobuf.dev/programming-guides/proto3/) — especificação completa da sintaxe proto3
+- [tRPC Official Documentation](https://trpc.io/docs) — quickstart, concepts, e API reference
+- [Buf Documentation](https://buf.build/docs/) — Buf CLI, Connect protocol, e BSR (Buf Schema Registry)
+- [gRPC: Up and Running](https://www.oreilly.com/library/view/grpc-up-and/9781492058328/) — Kasun Indrasiri, Danesh Kuruppu (O'Reilly, 2020)
+- [HTTP/2 in Action](https://www.manning.com/books/http2-in-action) — Barry Pollard (Manning, 2019) — para entender o transporte subjacente ao gRPC
+- [gRPC Health Checking Protocol](https://github.com/grpc/grpc/blob/master/doc/health-checking.md) — especificação do protocolo de health check
+- [Connect Protocol Specification](https://connectrpc.com/docs/protocol/) — detalhes do protocolo Connect vs gRPC vs gRPC-Web

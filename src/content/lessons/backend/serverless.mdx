@@ -1,0 +1,1173 @@
+---
+title: "Serverless"
+description: "Modelo de execução serverless, AWS Lambda internals (cold start, warm pool), Step Functions, frameworks (SST, SAM, CDK), cold start optimization, serverless databases e anti-patterns"
+track: "backend"
+order: 25
+section: "Infraestrutura"
+priority: "medium"
+tags: ["serverless", "AWS-Lambda", "cold-start", "Step-Functions", "FaaS", "event-driven", "CDK", "SST"]
+prerequisites: ["arquitetura-backend", "rest-apis"]
+keyTakeaways:
+  - "Serverless não elimina servidores — elimina o gerenciamento de servidores; o modelo de billing por request torna custos proporcionais ao uso real"
+  - "Cold starts são o principal trade-off: o tempo de init (100ms-10s) depende de runtime, bundle size e init code — provisioned concurrency elimina o problema ao custo de billing contínuo"
+  - "Step Functions orquestram workflows complexos como state machines visuais, com retry/catch nativos e execução garantida — ideal para substituir chains de Lambda síncronas"
+  - "Anti-patterns clássicos incluem Lambda monolith, synchronous chains entre functions e oversized bundles — serverless exige uma arquitetura event-driven pensada desde o início"
+---
+
+## Modelo de Execução Serverless
+
+Serverless não significa "sem servidores". Significa que **você não gerencia servidores**. O cloud provider provisiona, escala, patcha e destrói infraestrutura de forma transparente. O modelo de billing muda fundamentalmente: você paga por request e por tempo de execução, não por capacidade reservada.
+
+### FaaS — Function as a Service
+
+FaaS é o modelo de computação central do serverless. A unidade de deploy é uma **função** — um bloco de código que recebe um evento, processa e retorna um resultado. O provider gerencia todo o resto: OS, runtime, networking, scaling.
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│                    RESPONSABILIDADES POR MODELO                     │
+├──────────────────┬──────────┬────────────┬────────────┬────────────┤
+│                  │ On-Prem  │    IaaS    │  Container │  Serverless│
+├──────────────────┼──────────┼────────────┼────────────┼────────────┤
+│ Aplicação        │   Você   │    Você    │    Você    │    Você    │
+│ Runtime          │   Você   │    Você    │    Você    │  Provider  │
+│ OS               │   Você   │    Você    │  Provider  │  Provider  │
+│ Virtualização    │   Você   │  Provider  │  Provider  │  Provider  │
+│ Hardware         │   Você   │  Provider  │  Provider  │  Provider  │
+│ Networking       │   Você   │  Provider  │  Provider  │  Provider  │
+│ Scaling          │   Você   │    Você    │ Você/Prov. │  Provider  │
+└──────────────────┴──────────┴────────────┴────────────┴────────────┘
+```
+
+---
+
+### Lifecycle de uma Lambda Invocation
+
+Cada invocation de uma Lambda function segue um lifecycle previsível. Entender este ciclo é fundamental para otimizar performance.
+
+```
+                         LAMBDA INVOCATION LIFECYCLE
+
+  Request chega
+       │
+       ▼
+  ┌─────────────────┐
+  │ Execution env    │──── Já existe warm? ────► SIM ──► Handler executa
+  │ disponível?      │                                   (hot path ~1-5ms)
+  └────────┬────────┘
+           │ NÃO (COLD START)
+           ▼
+  ┌─────────────────┐
+  │ 1. Download code │  ← S3 → Firecracker micro-VM
+  │    (~50-200ms)   │
+  └────────┬────────┘
+           ▼
+  ┌─────────────────┐
+  │ 2. Start runtime │  ← Node.js/Python/Java/Go
+  │    (~10-500ms)   │
+  └────────┬────────┘
+           ▼
+  ┌─────────────────┐
+  │ 3. Init code     │  ← Código FORA do handler
+  │    (variável)    │    (imports, conexões DB)
+  └────────┬────────┘
+           ▼
+  ┌─────────────────┐
+  │ 4. Handler exec  │  ← Sua função
+  └────────┬────────┘
+           ▼
+  ┌─────────────────┐
+  │ 5. Response      │
+  └────────┬────────┘
+           ▼
+  ┌─────────────────┐
+  │ 6. FREEZE        │  ← Env fica "congelado"
+  │    (warm pool)   │    aguardando próximo request
+  └─────────────────┘    (destruído após ~5-15 min idle)
+```
+
+**Warm pool** é o mecanismo de reuso. Após o primeiro request, o execution environment não é destruído — ele é "congelado" (CPU desligada, memória preservada). O próximo request para a mesma function reutiliza esse environment, eliminando completamente o cold start.
+
+A implicação prática: **código fora do handler executa apenas uma vez** por cold start. Variáveis no escopo do módulo persistem entre invocações:
+
+```typescript
+// INIT CODE — executa uma vez por cold start
+import { DynamoDBClient } from "@aws-sdk/client-dynamodb";
+import { DynamoDBDocumentClient } from "@aws-sdk/lib-dynamodb";
+
+const client = new DynamoDBClient({});
+const docClient = DynamoDBDocumentClient.from(client);
+
+// HANDLER — executa a cada invocation
+export const handler = async (event: APIGatewayProxyEvent) => {
+  // docClient já existe em warm starts — sem custo de init
+  const result = await docClient.send(/* ... */);
+  return { statusCode: 200, body: JSON.stringify(result) };
+};
+```
+
+---
+
+## AWS Lambda Internals
+
+### Firecracker micro-VMs
+
+Lambda executa cada function dentro de uma **Firecracker micro-VM** — a mesma tecnologia que sustenta o Fargate. Firecracker é um VMM (Virtual Machine Monitor) open-source criado pela AWS, escrito em Rust.
+
+Cada micro-VM oferece:
+- **Isolamento de kernel** — cada function tem seu próprio kernel Linux
+- **Boot em ~125ms** — ordens de magnitude mais rápido que VMs tradicionais
+- **Overhead de memória de ~5MB** — permite milhares de VMs por host
+- **Segurança** — isolamento equivalente a EC2, sem shared kernel com outras functions
+
+```
+┌──────────────────────────────────────────────────────┐
+│                    HOST FÍSICO                        │
+│                                                      │
+│  ┌──────────────┐  ┌──────────────┐  ┌────────────┐ │
+│  │ micro-VM #1  │  │ micro-VM #2  │  │ micro-VM N │ │
+│  │ ┌──────────┐ │  │ ┌──────────┐ │  │ ┌────────┐ │ │
+│  │ │ Runtime  │ │  │ │ Runtime  │ │  │ │Runtime │ │ │
+│  │ │ Node.js  │ │  │ │ Python   │ │  │ │  Go    │ │ │
+│  │ └──────────┘ │  │ └──────────┘ │  │ └────────┘ │ │
+│  │ ┌──────────┐ │  │ ┌──────────┐ │  │ ┌────────┐ │ │
+│  │ │ Your Code│ │  │ │ Your Code│ │  │ │  Code  │ │ │
+│  │ └──────────┘ │  │ └──────────┘ │  │ └────────┘ │ │
+│  │  Linux Kernel │  │  Linux Kernel │  │ Linux Ker.│ │
+│  └──────────────┘  └──────────────┘  └────────────┘ │
+│                                                      │
+│              Firecracker VMM (Rust)                   │
+│              Host Linux Kernel                        │
+└──────────────────────────────────────────────────────┘
+```
+
+### Execution Environment
+
+Cada execution environment oferece:
+
+- **/tmp storage**: 512MB (padrão) até 10GB configurável — persiste entre invocações warm
+- **Environment variables**: até 4KB total — injetadas no startup
+- **Memória**: 128MB a 10.240MB (10GB) em incrementos de 1MB
+- **CPU**: **proporcional à memória** — 1 vCPU completa em ~1.769MB. Com 10GB, você recebe ~6 vCPUs
+- **Timeout**: máximo de 15 minutos
+- **Payload**: 6MB síncrono, 256KB assíncrono
+
+A relação memória-CPU é o detalhe mais mal compreendido do Lambda. Não adianta otimizar código se a function está configurada com 128MB — você tem uma fração mínima de CPU. Muitas vezes, **aumentar memória reduz o custo total** porque a execução termina mais rápido.
+
+### Concurrency Model
+
+Lambda segue um modelo **1:1** — cada request concorrente requer seu próprio execution environment. Não há sharing de environment entre requests.
+
+```
+                    CONCURRENCY MODEL
+
+  Request A ──► ┌─────────────┐
+                │   Env #1    │ ← 1 request por env
+                └─────────────┘
+
+  Request B ──► ┌─────────────┐
+                │   Env #2    │ ← env separado
+                └─────────────┘
+
+  Request C ──► ┌─────────────┐
+                │   Env #3    │ ← env separado
+                └─────────────┘
+
+  Account limit padrão: 1.000 concurrent executions (ajustável)
+```
+
+### Reserved vs Provisioned Concurrency
+
+- **Reserved concurrency**: reserva um subconjunto do limite da account para uma function específica. **Não elimina cold starts** — apenas garante que a function terá capacity.
+- **Provisioned concurrency**: pré-inicializa N execution environments. **Elimina cold starts** para até N requests simultâneos. Billing contínuo — você paga mesmo sem requests.
+
+```typescript
+// CDK — configurando provisioned concurrency
+const fn = new lambda.Function(this, "ApiHandler", {
+  runtime: lambda.Runtime.NODEJS_20_X,
+  handler: "index.handler",
+  code: lambda.Code.fromAsset("dist"),
+  memorySize: 1024,
+});
+
+const alias = fn.addAlias("live");
+
+const scaling = alias.addAutoScaling({ minCapacity: 5, maxCapacity: 50 });
+scaling.scaleOnUtilization({ utilizationTarget: 0.7 });
+```
+
+### SnapStart (Java)
+
+Java é notório por cold starts de 3-10 segundos. **SnapStart** resolve isso criando um snapshot Firecracker da micro-VM após a fase de init. Em cold starts subsequentes, Lambda restaura o snapshot em vez de re-executar o init.
+
+O processo:
+1. Publish da function → Lambda executa init code
+2. Snapshot do estado da memória (CRaC — Coordinated Restore at Checkpoint)
+3. Cold start → restore do snapshot (~200-300ms em vez de 3-10s)
+
+**Cuidado**: qualquer estado que depende de unicidade (IDs aleatórios, conexões de rede) deve ser recriado no `afterRestore` hook, pois o snapshot é compartilhado entre environments.
+
+### Custom Runtimes — Lambda Runtime API
+
+Lambda não está limitada a runtimes oficiais. Qualquer linguagem que implemente a **Runtime API** pode rodar no Lambda:
+
+```
+RUNTIME API CONTRACT (HTTP no localhost)
+
+GET  /runtime/invocation/next        ← Polling: busca próximo evento
+POST /runtime/invocation/{id}/response  ← Envia resposta
+POST /runtime/invocation/{id}/error     ← Reporta erro
+POST /runtime/init/error                ← Reporta erro de init
+```
+
+Runtimes customizados (Rust via `lambda_runtime`, Zig, etc.) compilam para um binário Linux AMD64/ARM64 e implementam este loop HTTP.
+
+---
+
+## Serverless Patterns
+
+### API Gateway + Lambda
+
+O padrão mais comum. API Gateway recebe HTTP requests, transforma em eventos Lambda e retorna o response.
+
+```
+                API GATEWAY + LAMBDA
+
+  Cliente ──► ┌──────────────┐    ┌────────────┐    ┌─────────┐
+   HTTP       │ API Gateway  │───►│   Lambda   │───►│DynamoDB │
+  Request     │ (REST/HTTP)  │◄───│  Handler   │◄───│         │
+              └──────────────┘    └────────────┘    └─────────┘
+                   │
+                   ├── Autenticação (Cognito/JWT)
+                   ├── Rate limiting
+                   ├── Request validation
+                   └── CORS
+```
+
+**REST API vs HTTP API (v2)**: HTTP API é ~70% mais barato e tem menor latência (~10ms vs ~30ms), mas menos features (sem usage plans, sem request validation nativa, sem caching).
+
+```typescript
+// Handler para API Gateway HTTP API v2
+import { APIGatewayProxyEventV2, APIGatewayProxyResultV2 } from "aws-lambda";
+
+export const handler = async (
+  event: APIGatewayProxyEventV2
+): Promise<APIGatewayProxyResultV2> => {
+  const { routeKey, pathParameters, body } = event;
+
+  switch (routeKey) {
+    case "GET /users/{id}":
+      return getUser(pathParameters!.id!);
+    case "POST /users":
+      return createUser(JSON.parse(body || "{}"));
+    default:
+      return { statusCode: 404, body: "Not Found" };
+  }
+};
+```
+
+### SQS + Lambda
+
+Lambda pode consumir mensagens de uma SQS queue como event source. O serviço Lambda gerencia o polling — você não precisa implementar nenhum loop.
+
+```
+                SQS + LAMBDA
+
+  Producer ──► ┌─────────┐    ┌────────────┐    ┌──────────┐
+               │  SQS    │───►│   Lambda   │───►│  Aurora   │
+               │  Queue  │    │  (batch=10)│    │ Postgres  │
+               └─────────┘    └────────────┘    └──────────┘
+                   │
+                   └── DLQ (Dead Letter Queue) para falhas
+```
+
+**Partial batch failure**: quando Lambda processa um batch de 10 mensagens e 2 falham, você pode reportar quais falharam em vez de falhar o batch inteiro:
+
+```typescript
+import { SQSBatchResponse, SQSEvent } from "aws-lambda";
+
+export const handler = async (event: SQSEvent): Promise<SQSBatchResponse> => {
+  const failures: { itemIdentifier: string }[] = [];
+
+  for (const record of event.Records) {
+    try {
+      await processMessage(JSON.parse(record.body));
+    } catch (error) {
+      failures.push({ itemIdentifier: record.messageId });
+    }
+  }
+
+  return { batchItemFailures: failures };
+};
+```
+
+### EventBridge + Lambda
+
+EventBridge é um event bus serverless que permite routing sofisticado com rules baseadas em content filtering.
+
+```
+                EVENTBRIDGE + LAMBDA
+
+  Service A ──►┌─────────────┐    ┌────────────┐
+               │             │───►│ Lambda #1  │  (order.created)
+  Service B ──►│ EventBridge │    └────────────┘
+               │   Event Bus │    ┌────────────┐
+  Service C ──►│             │───►│ Lambda #2  │  (payment.processed)
+               └─────────────┘    └────────────┘
+                      │           ┌────────────┐
+                      └──────────►│ Lambda #3  │  (*.failed)
+                                  └────────────┘
+```
+
+```typescript
+// Publicando evento no EventBridge
+import { EventBridgeClient, PutEventsCommand } from "@aws-sdk/client-eventbridge";
+
+const eb = new EventBridgeClient({});
+
+await eb.send(new PutEventsCommand({
+  Entries: [{
+    Source: "com.myapp.orders",
+    DetailType: "OrderCreated",
+    Detail: JSON.stringify({ orderId: "abc-123", total: 99.90 }),
+    EventBusName: "my-app-bus",
+  }],
+}));
+```
+
+### S3 + Lambda — File Processing Pipeline
+
+```
+                S3 + LAMBDA PIPELINE
+
+  Upload ──► ┌─────────┐  s3:ObjectCreated  ┌────────────┐   ┌──────────┐
+             │   S3    │─────────────────────►│  Lambda    │──►│  S3      │
+             │ (raw/)  │                     │ (process)  │   │(output/) │
+             └─────────┘                     └────────────┘   └──────────┘
+```
+
+### DynamoDB Streams + Lambda — Change Data Capture
+
+```
+                DYNAMODB STREAMS + LAMBDA
+
+  Write ──► ┌───────────┐  Stream Record  ┌────────────┐   ┌────────────┐
+            │ DynamoDB  │────────────────►│  Lambda    │──►│ OpenSearch │
+            │  Table    │                 │  (CDC)     │   │  (index)   │
+            └───────────┘                 └────────────┘   └────────────┘
+```
+
+Cada stream record contém a imagem antiga e nova do item, permitindo reações a mudanças específicas.
+
+---
+
+## Step Functions
+
+Step Functions é o serviço de orquestração da AWS para workflows serverless. Ele modela workflows como **state machines** — uma sequência de estados com transições, retry automático e error handling nativo.
+
+### Por que Step Functions?
+
+O problema que resolve: coordenar múltiplas Lambda functions com lógica condicional, retry, paralelismo e tratamento de erro. Sem Step Functions, você acaba com chains síncronas de Lambda → Lambda → Lambda, que são frágeis e difíceis de debugar.
+
+### State Types
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                    STEP FUNCTIONS STATES                     │
+├────────────┬────────────────────────────────────────────────┤
+│ Task       │ Executa trabalho: Lambda, SDK call, Activity   │
+│ Choice     │ Branching condicional (if/else)                │
+│ Wait       │ Delay (segundos ou timestamp)                  │
+│ Parallel   │ Executa branches em paralelo                   │
+│ Map        │ Iteração dinâmica sobre array                  │
+│ Pass       │ Transforma input/output sem execução           │
+│ Succeed    │ Terminal state — sucesso                       │
+│ Fail       │ Terminal state — falha                         │
+└────────────┴────────────────────────────────────────────────┘
+```
+
+### Error Handling — Retry e Catch
+
+O poder real do Step Functions está no error handling declarativo:
+
+```json
+{
+  "ProcessPayment": {
+    "Type": "Task",
+    "Resource": "arn:aws:lambda:...:processPayment",
+    "Retry": [
+      {
+        "ErrorEquals": ["PaymentGatewayTimeout"],
+        "IntervalSeconds": 2,
+        "MaxAttempts": 3,
+        "BackoffRate": 2.0
+      }
+    ],
+    "Catch": [
+      {
+        "ErrorEquals": ["PaymentDeclined"],
+        "Next": "NotifyCustomerDeclined"
+      },
+      {
+        "ErrorEquals": ["States.ALL"],
+        "Next": "HandleUnexpectedError"
+      }
+    ],
+    "Next": "FulfillOrder"
+  }
+}
+```
+
+### Exemplo: Order Processing Workflow
+
+```
+              ORDER PROCESSING — STEP FUNCTIONS
+
+  ┌──────────────┐
+  │ ValidateOrder│
+  └──────┬───────┘
+         ▼
+  ┌──────────────┐     ┌──────────────────┐
+  │ CheckStock   │────►│ OutOfStock?      │
+  └──────────────┘     │ (Choice)         │
+                       └──┬───────────┬───┘
+                    SIM   │           │  NÃO
+                          ▼           ▼
+                 ┌──────────┐  ┌───────────────┐
+                 │BackOrder │  │ ProcessPayment│
+                 │ + Notify │  └──────┬────────┘
+                 └──────────┘         ▼
+                              ┌───────────────┐
+                              │   Parallel     │
+                              │ ┌───────────┐  │
+                              │ │UpdateStock│  │
+                              │ └───────────┘  │
+                              │ ┌───────────┐  │
+                              │ │SendEmail  │  │
+                              │ └───────────┘  │
+                              │ ┌───────────┐  │
+                              │ │CreateShip.│  │
+                              │ └───────────┘  │
+                              └───────┬───────┘
+                                      ▼
+                              ┌───────────────┐
+                              │    Succeed     │
+                              └───────────────┘
+```
+
+Definição ASL (Amazon States Language) simplificada:
+
+```json
+{
+  "StartAt": "ValidateOrder",
+  "States": {
+    "ValidateOrder": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:...:validateOrder",
+      "Next": "CheckStock"
+    },
+    "CheckStock": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:...:checkStock",
+      "Next": "IsInStock"
+    },
+    "IsInStock": {
+      "Type": "Choice",
+      "Choices": [
+        {
+          "Variable": "$.inStock",
+          "BooleanEquals": false,
+          "Next": "BackOrder"
+        }
+      ],
+      "Default": "ProcessPayment"
+    },
+    "ProcessPayment": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:...:processPayment",
+      "Retry": [{ "ErrorEquals": ["States.TaskFailed"], "MaxAttempts": 2 }],
+      "Next": "FulfillParallel"
+    },
+    "FulfillParallel": {
+      "Type": "Parallel",
+      "Branches": [
+        { "StartAt": "UpdateStock", "States": { "UpdateStock": { "Type": "Task", "Resource": "arn:aws:lambda:...:updateStock", "End": true }}},
+        { "StartAt": "SendEmail", "States": { "SendEmail": { "Type": "Task", "Resource": "arn:aws:lambda:...:sendEmail", "End": true }}},
+        { "StartAt": "CreateShipment", "States": { "CreateShipment": { "Type": "Task", "Resource": "arn:aws:lambda:...:createShipment", "End": true }}}
+      ],
+      "Next": "OrderComplete"
+    },
+    "OrderComplete": { "Type": "Succeed" },
+    "BackOrder": {
+      "Type": "Task",
+      "Resource": "arn:aws:lambda:...:handleBackOrder",
+      "End": true
+    }
+  }
+}
+```
+
+### Express vs Standard Workflows
+
+| Característica       | Standard                    | Express                      |
+|---------------------|-----------------------------|------------------------------|
+| Duração máxima      | 1 ano                       | 5 minutos                    |
+| Execution model     | Exactly-once                | At-least-once / At-most-once |
+| Preço               | Por transição de estado     | Por request + duração        |
+| Execuções/segundo   | 2.000 start                 | 100.000+ start               |
+| Caso de uso         | Workflows longos, approvals | High-volume, streaming       |
+
+---
+
+## Frameworks e Ferramentas
+
+### AWS SAM (Serverless Application Model)
+
+SAM é uma extensão do CloudFormation focada em serverless. Usa templates YAML e oferece CLI para build, test local e deploy.
+
+```yaml
+# template.yaml (SAM)
+AWSTemplateFormatVersion: "2010-09-09"
+Transform: AWS::Serverless-2016-10-31
+
+Globals:
+  Function:
+    Timeout: 10
+    Runtime: nodejs20.x
+    MemorySize: 256
+    Architectures: [arm64]
+
+Resources:
+  GetUsersFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      Handler: src/handlers/getUsers.handler
+      Events:
+        GetUsers:
+          Type: HttpApi
+          Properties:
+            Path: /users
+            Method: GET
+      Policies:
+        - DynamoDBReadPolicy:
+            TableName: !Ref UsersTable
+
+  UsersTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: users
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: pk
+          AttributeType: S
+      KeySchema:
+        - AttributeName: pk
+          KeyType: HASH
+```
+
+### SST (v3)
+
+SST é o framework mais moderno para serverless na AWS. A versão 3 (Ion) é baseada em Pulumi e oferece **live Lambda development** — alterações de código são refletidas em ~50ms no Lambda real da AWS.
+
+```typescript
+// sst.config.ts (SST v3 / Ion)
+/// <reference path="./.sst/platform/config.d.ts" />
+
+export default $config({
+  app(input) {
+    return {
+      name: "my-app",
+      removal: input?.stage === "production" ? "retain" : "remove",
+      home: "aws",
+    };
+  },
+  async run() {
+    const table = new sst.aws.Dynamo("UsersTable", {
+      fields: { pk: "string", sk: "string" },
+      primaryIndex: { hashKey: "pk", rangeKey: "sk" },
+    });
+
+    const api = new sst.aws.ApiGatewayV2("Api");
+
+    api.route("GET /users", {
+      handler: "src/handlers/getUsers.handler",
+      link: [table],
+      memory: "512 MB",
+      architecture: "arm64",
+    });
+
+    api.route("POST /users", {
+      handler: "src/handlers/createUser.handler",
+      link: [table],
+    });
+
+    return { apiUrl: api.url };
+  },
+});
+```
+
+### AWS CDK (Cloud Development Kit)
+
+CDK permite definir infraestrutura como código em TypeScript, Python, Java ou Go. Compila para CloudFormation.
+
+```typescript
+// lib/api-stack.ts (CDK)
+import * as cdk from "aws-cdk-lib";
+import * as lambda from "aws-cdk-lib/aws-lambda";
+import * as apigatewayv2 from "aws-cdk-lib/aws-apigatewayv2";
+import * as dynamodb from "aws-cdk-lib/aws-dynamodb";
+import { Construct } from "constructs";
+
+export class ApiStack extends cdk.Stack {
+  constructor(scope: Construct, id: string, props?: cdk.StackProps) {
+    super(scope, id, props);
+
+    const table = new dynamodb.Table(this, "UsersTable", {
+      partitionKey: { name: "pk", type: dynamodb.AttributeType.STRING },
+      billingMode: dynamodb.BillingMode.PAY_PER_REQUEST,
+      removalPolicy: cdk.RemovalPolicy.DESTROY,
+    });
+
+    const fn = new lambda.Function(this, "GetUsers", {
+      runtime: lambda.Runtime.NODEJS_20_X,
+      handler: "index.handler",
+      code: lambda.Code.fromAsset("dist/getUsers"),
+      memorySize: 512,
+      architecture: lambda.Architecture.ARM_64,
+      environment: {
+        TABLE_NAME: table.tableName,
+      },
+    });
+
+    table.grantReadData(fn);
+  }
+}
+```
+
+### Comparação de Frameworks
+
+```
+┌──────────────────┬──────────┬──────────┬──────────┬──────────────┐
+│                  │   SAM    │   SST    │   CDK    │  Serverless  │
+│                  │          │  (v3)    │          │  Framework   │
+├──────────────────┼──────────┼──────────┼──────────┼──────────────┤
+│ Linguagem config │  YAML    │    TS    │  TS/Py   │    YAML      │
+│ Dev local / live │  Sim*    │ Sim (!)  │   Não    │ Sim (plugin) │
+│ Multi-cloud      │  Não     │   Não    │   Não    │    Sim       │
+│ Learning curve   │  Baixa   │  Baixa   │  Média   │   Baixa      │
+│ Flexibilidade    │  Média   │  Alta    │  Máxima  │   Média      │
+│ Community        │  AWS     │  Ativa   │  Grande  │   Enorme     │
+│ Recomendação     │ Simples  │ Greenf.  │ Empresa  │  Multi-cloud │
+└──────────────────┴──────────┴──────────┴──────────┴──────────────┘
+
+* SAM local usa Docker para emular Lambda — não é o mesmo que SST live dev
+```
+
+**Quando usar cada um:**
+- **SAM**: projetos simples, equipes já familiares com CloudFormation
+- **SST**: projetos greenfield, developer experience é prioridade, TypeScript-first
+- **CDK**: grandes organizações, infraestrutura complexa, reuso via constructs L3
+- **Serverless Framework**: necessidade de multi-cloud ou ecossistema de plugins
+
+---
+
+## Cold Start Optimization
+
+Cold starts são o principal trade-off do modelo serverless. Para APIs com requisitos de latência p99 < 200ms, este é um problema que precisa ser enfrentado diretamente.
+
+### Benchmarks por Runtime
+
+```
+┌──────────────────────────────────────────────────────────────┐
+│              COLD START BENCHMARKS (p50, 512MB)              │
+├─────────────────┬────────────────────────────────────────────┤
+│ Rust (AL2)      │ ████ ~12ms                                 │
+│ Go              │ ████ ~15ms                                 │
+│ .NET (NativeAOT)│ ██████ ~30ms                               │
+│ Node.js 20      │ ████████████ ~80ms                         │
+│ Python 3.12     │ █████████████ ~95ms                        │
+│ .NET 8          │ ██████████████████ ~180ms                  │
+│ Java 21         │ ██████████████████████████████████ ~600ms  │
+│ Java (SnapStart)│ ████████████████ ~150ms                    │
+└─────────────────┴────────────────────────────────────────────┘
+
+Nota: valores aproximados — variam por bundle size, init code e região
+```
+
+### Estratégias de Otimização
+
+**1. Bundle size — menos código = init mais rápido**
+
+```typescript
+// esbuild.config.ts — minifica e tree-shake
+import { build } from "esbuild";
+
+await build({
+  entryPoints: ["src/handlers/getUsers.ts"],
+  bundle: true,
+  minify: true,
+  platform: "node",
+  target: "node20",
+  outdir: "dist/getUsers",
+  format: "esm",
+  // CRÍTICO: exclui o SDK v3 — já está no runtime do Lambda
+  external: ["@aws-sdk/*"],
+  treeShaking: true,
+});
+```
+
+**2. Lazy loading — carrega apenas quando necessário**
+
+```typescript
+// ❌ RUIM — carrega sempre no init, mesmo que este path não use
+import { S3Client, PutObjectCommand } from "@aws-sdk/client-s3";
+import sharp from "sharp"; // 50MB+ nativo
+
+const s3 = new S3Client({});
+
+export const handler = async (event: any) => {
+  // sharp só é usado em 10% das invocações
+  if (event.needsImageProcessing) {
+    const image = await sharp(event.buffer).resize(300).toBuffer();
+    // ...
+  }
+};
+
+// ✅ BOM — lazy loading
+let _sharp: typeof import("sharp") | null = null;
+
+async function getSharp() {
+  if (!_sharp) {
+    _sharp = await import("sharp");
+  }
+  return _sharp.default;
+}
+
+export const handler = async (event: any) => {
+  if (event.needsImageProcessing) {
+    const sharp = await getSharp();
+    const image = await sharp(event.buffer).resize(300).toBuffer();
+    // ...
+  }
+};
+```
+
+**3. Connection reuse — warm start optimization**
+
+```typescript
+// Conexão criada no init — reutilizada em warm starts
+import { Client } from "pg";
+
+let client: Client | null = null;
+
+async function getClient(): Promise<Client> {
+  if (!client) {
+    client = new Client({
+      host: process.env.DB_HOST,
+      database: process.env.DB_NAME,
+      // RDS Proxy resolve connection pooling no lado do DB
+      ssl: { rejectUnauthorized: false },
+    });
+    await client.connect();
+  }
+  return client;
+}
+
+export const handler = async (event: any) => {
+  const db = await getClient();
+  const result = await db.query("SELECT * FROM users WHERE id = $1", [event.id]);
+  return { statusCode: 200, body: JSON.stringify(result.rows[0]) };
+};
+```
+
+**4. ARM64 (Graviton2) — 20% melhor price-performance**
+
+Lambda com arquitetura ARM64 (Graviton2) oferece ~20% melhor preço-performance em relação a x86_64. A migração é trivial para Node.js e Python (não requer recompilação). Binários nativos (Go, Rust) precisam ser compilados para `linux/arm64`.
+
+**5. Provisioned Concurrency com Auto Scaling**
+
+Para workloads com requisitos estritos de latência, provisioned concurrency é a solução definitiva — mas tem custo contínuo:
+
+```
+Provisioned: ~$0.015/GB-hour (24/7, mesmo sem requests)
+On-demand:   ~$0.0000166667/GB-second (só quando executa)
+
+Break-even: se a function executa >90% do tempo,
+            provisioned pode ser mais barato
+```
+
+---
+
+## Serverless Databases
+
+### DynamoDB
+
+DynamoDB é o banco de dados serverless nativo da AWS. Zero cold start, latência de single-digit millisecond, e escala sem limites práticos.
+
+**Single-table design**: em vez de múltiplas tabelas (modelo relacional), DynamoDB incentiva colocar múltiplas entidades na mesma tabela, usando padrões de chave (pk/sk) para modelar relações.
+
+```typescript
+// Single-table design — exemplo
+// pk: USER#123        sk: METADATA          → dados do user
+// pk: USER#123        sk: ORDER#2024-001    → pedido do user
+// pk: ORDER#2024-001  sk: ITEM#sku-abc      → item do pedido
+
+import { DynamoDBDocumentClient, QueryCommand } from "@aws-sdk/lib-dynamodb";
+
+const docClient = DynamoDBDocumentClient.from(new DynamoDBClient({}));
+
+// Buscar user + todos os pedidos em uma query
+const result = await docClient.send(new QueryCommand({
+  TableName: "MyTable",
+  KeyConditionExpression: "pk = :pk AND begins_with(sk, :sk)",
+  ExpressionAttributeValues: {
+    ":pk": "USER#123",
+    ":sk": "ORDER#",
+  },
+}));
+```
+
+**On-demand vs Provisioned**: on-demand é serverless puro (paga por request), provisioned é mais barato para workloads previsíveis (~7x mais barato em steady-state).
+
+### Aurora Serverless v2
+
+Aurora Serverless v2 escala automaticamente em incrementos de 0.5 ACU (Aurora Capacity Units), de um mínimo de 0.5 ACU até centenas. Compatível com PostgreSQL e MySQL.
+
+- **Escala em segundos** — não minutos como v1
+- **Não escala a zero** — mínimo de 0.5 ACU (~$43/mês)
+- Ideal para workloads com picos imprevisíveis que precisam de SQL relacional
+
+### Neon — Serverless PostgreSQL
+
+Neon oferece PostgreSQL serverless com **scale-to-zero** real e **database branching** (cria branches do banco como branches de código).
+
+- Cold start: ~500ms a 1s
+- Branching: cada branch é um snapshot copy-on-write do banco
+- Free tier generoso para dev/staging
+
+### PlanetScale — Serverless MySQL
+
+PlanetScale é MySQL serverless (baseado em Vitess, a mesma tecnologia do YouTube). Oferece schema branching e deploy requests (migrações como PRs).
+
+### Comparação
+
+```
+┌──────────────────┬───────────┬──────────────┬──────────┬───────────┐
+│                  │ DynamoDB  │ Aurora Sv2   │  Neon    │PlanetScale│
+├──────────────────┼───────────┼──────────────┼──────────┼───────────┤
+│ Modelo           │  NoSQL    │ SQL (Pg/My)  │ SQL (Pg) │ SQL (My)  │
+│ Scale to zero    │  Sim*     │     Não      │   Sim    │   Sim     │
+│ Cold start       │  Nenhum   │     N/A      │  ~500ms  │  ~200ms   │
+│ Latência p50     │  <5ms     │    <10ms     │  <10ms   │  <10ms    │
+│ Preço mínimo     │  $0       │   ~$43/mês   │   $0     │   $0      │
+│ Branching        │  Não      │     Não      │   Sim    │   Sim     │
+│ Joins/Relations  │  Limitado │     Sim      │   Sim    │   Sim     │
+└──────────────────┴───────────┴──────────────┴──────────┴───────────┘
+
+* DynamoDB on-demand: sem custo fixo, paga por request
+```
+
+---
+
+## Anti-patterns
+
+### 1. Lambda Monolith
+
+Colocar toda a aplicação (todos os routes, toda a lógica) em uma única Lambda function. Resultado: bundle enorme, cold start lento, impossível escalar routes independentemente.
+
+```
+❌ ANTI-PATTERN: Lambda Monolith
+
+  API Gateway ──► ┌─────────────────────┐
+  ALL routes      │   UMA Lambda        │
+                  │   (50MB bundle)     │
+                  │                     │
+                  │   /users            │
+                  │   /orders           │
+                  │   /products         │
+                  │   /payments         │
+                  │   /reports          │
+                  │   /admin            │
+                  └─────────────────────┘
+
+✅ PATTERN: Function-per-route (ou per-domain)
+
+  GET  /users    ──► ┌────────────┐
+                     │ getUsers   │ (2MB)
+                     └────────────┘
+  POST /orders   ──► ┌────────────┐
+                     │ createOrder│ (3MB)
+                     └────────────┘
+  GET  /reports  ──► ┌────────────┐
+                     │ genReport  │ (5MB, mais memória)
+                     └────────────┘
+```
+
+### 2. Synchronous Lambda Chains
+
+Invocar Lambda de dentro de Lambda de forma síncrona. Cada hop adiciona latência e cria pontos de falha sem retry automático.
+
+```
+❌ ANTI-PATTERN: Synchronous Chains
+
+  API GW ──► Lambda A ──invoke──► Lambda B ──invoke──► Lambda C
+             (aguarda B)           (aguarda C)
+             Latência total = A + B + C + overhead de 2 invocações
+             Se C falha, A precisa tratar → timeout cascading
+
+✅ PATTERN: Step Functions ou Event-Driven
+
+  API GW ──► Step Functions ──► Lambda A ──► Lambda B ──► Lambda C
+             (orquestra)        (retry nativo por step)
+
+  OU
+
+  API GW ──► Lambda A ──► SQS ──► Lambda B ──► SQS ──► Lambda C
+             (async)      (buffer)  (async)     (buffer)
+```
+
+### 3. Oversized Functions
+
+Bundles de 50MB+ significam downloads mais lentos no cold start. O SDK v3 da AWS já está disponível no runtime do Lambda — não precisa ser incluído no bundle.
+
+```typescript
+// ❌ package.json com tudo incluído
+{
+  "dependencies": {
+    "@aws-sdk/client-dynamodb": "^3.x",  // JÁ ESTÁ NO RUNTIME
+    "@aws-sdk/client-s3": "^3.x",        // JÁ ESTÁ NO RUNTIME
+    "lodash": "^4.x",                     // 72KB — use imports individuais
+    "moment": "^2.x",                     // 300KB — use date-fns ou dayjs
+    "express": "^4.x"                     // Desnecessário em Lambda
+  }
+}
+
+// ✅ Bundle otimizado
+{
+  "dependencies": {
+    "date-fns": "^3.x"   // 13KB tree-shakeable
+  },
+  "devDependencies": {
+    "@aws-sdk/client-dynamodb": "^3.x",  // Só para types em dev
+    "esbuild": "^0.20.x"
+  }
+}
+```
+
+### 4. Inicializando Conexões Dentro do Handler
+
+```typescript
+// ❌ RUIM — cria nova conexão a cada invocação
+export const handler = async (event: any) => {
+  const client = new DynamoDBClient({});           // Nova instância toda vez
+  const docClient = DynamoDBDocumentClient.from(client);
+  // ...
+};
+
+// ✅ BOM — reutiliza em warm starts
+const client = new DynamoDBClient({});
+const docClient = DynamoDBDocumentClient.from(client);
+
+export const handler = async (event: any) => {
+  // docClient reutilizado
+  // ...
+};
+```
+
+### 5. Ignorando Timeout Configuration
+
+O timeout padrão do Lambda é 3 segundos. Para functions que processam imagens, fazem queries complexas ou chamam APIs externas, isso é insuficiente. Mas configurar 15 minutos "por segurança" também é errado — se a function travar, você paga pelos 15 minutos inteiros.
+
+**Regra**: configure o timeout para 2-3x o tempo esperado de execução no p99.
+
+---
+
+## Cost Model
+
+### Pricing Structure
+
+Lambda cobra por dois eixos: **número de requests** e **duração de execução** (GB-second).
+
+```
+Requests:     $0.20 por 1M requests
+Duração:      $0.0000166667 por GB-second (x86)
+              $0.0000133334 por GB-second (ARM64, ~20% mais barato)
+
+Exemplo: 1M requests/mês, 512MB, 200ms média
+  Requests:   1M × $0.20/M = $0.20
+  Duração:    1M × 0.5GB × 0.2s = 100.000 GB-s × $0.0000166667 = $1.67
+  Total:      ~$1.87/mês
+
+Free tier:    1M requests + 400.000 GB-s/mês (permanente)
+```
+
+### Lambda vs Fargate vs EC2
+
+```
+┌───────────────────────────────────────────────────────────────────┐
+│          CUSTO MENSAL ESTIMADO POR WORKLOAD                       │
+├─────────────────────┬──────────┬───────────┬─────────────────────┤
+│ Cenário             │  Lambda  │  Fargate  │  EC2 (reserved)     │
+├─────────────────────┼──────────┼───────────┼─────────────────────┤
+│ 100K req/mês,       │          │           │                     │
+│ 200ms, 512MB        │   ~$0.04 │   ~$15    │      ~$8            │
+├─────────────────────┼──────────┼───────────┼─────────────────────┤
+│ 10M req/mês,        │          │           │                     │
+│ 200ms, 512MB        │  ~$18    │   ~$30    │      ~$8            │
+├─────────────────────┼──────────┼───────────┼─────────────────────┤
+│ 100M req/mês,       │          │           │                     │
+│ 200ms, 1GB          │  ~$350   │   ~$60    │      ~$35           │
+├─────────────────────┼──────────┼───────────┼─────────────────────┤
+│ 1B req/mês,         │          │           │                     │
+│ 200ms, 1GB          │ ~$3.500  │   ~$200   │      ~$70           │
+└─────────────────────┴──────────┴───────────┴─────────────────────┘
+
+Conclusão: Lambda é imbatível para low-to-medium traffic.
+           Acima de ~50M req/mês, containers ficam mais baratos.
+```
+
+**Quando serverless fica mais caro:**
+- Workloads de alta volumetria constante (>100M req/mês)
+- Functions que executam por >5 segundos consistentemente
+- Workloads com requisitos de provisioned concurrency alta (>100)
+- Processing contínuo (melhor usar ECS/EKS com spot instances)
+
+---
+
+## Observabilidade
+
+Serverless torna a observabilidade simultaneamente mais fácil (tudo é gerenciado, métricas automáticas) e mais difícil (centenas de functions, distributed tracing obrigatório).
+
+### CloudWatch
+
+Lambda integra nativamente com CloudWatch:
+
+- **Logs**: stdout/stderr → CloudWatch Logs automaticamente
+- **Metrics**: Duration, Errors, Throttles, ConcurrentExecutions, Invocations
+- **Insights**: Lambda Insights para métricas de CPU, memória, rede
+
+### AWS X-Ray — Distributed Tracing
+
+X-Ray rastreia requests através de múltiplos serviços AWS, gerando um mapa visual do trace.
+
+```typescript
+// Habilitar X-Ray no handler é automático via config
+// Mas para traces custom:
+import { Tracer } from "@aws-lambda-powertools/tracer";
+
+const tracer = new Tracer({ serviceName: "order-service" });
+
+export const handler = async (event: any) => {
+  const segment = tracer.getSegment();
+  const subsegment = segment!.addNewSubsegment("processOrder");
+
+  try {
+    const result = await processOrder(event);
+    subsegment.close();
+    return result;
+  } catch (error) {
+    subsegment.addError(error as Error);
+    subsegment.close();
+    throw error;
+  }
+};
+```
+
+### Powertools for Lambda
+
+**Powertools** é a biblioteca oficial da AWS para observabilidade em Lambda. Oferece structured logging, tracing e custom metrics em um SDK coeso.
+
+```typescript
+import { Logger } from "@aws-lambda-powertools/logger";
+import { Tracer } from "@aws-lambda-powertools/tracer";
+import { Metrics, MetricUnit } from "@aws-lambda-powertools/metrics";
+
+const logger = new Logger({ serviceName: "order-service" });
+const tracer = new Tracer({ serviceName: "order-service" });
+const metrics = new Metrics({ namespace: "MyApp", serviceName: "order-service" });
+
+export const handler = async (event: any) => {
+  // Structured logging — JSON com correlation ID
+  logger.appendKeys({ orderId: event.orderId });
+  logger.info("Processing order", { total: event.total });
+
+  // Custom metrics — embedded metric format
+  metrics.addMetric("OrderProcessed", MetricUnit.Count, 1);
+  metrics.addMetric("OrderValue", MetricUnit.None, event.total);
+
+  // Auto-trace com decorator (ou manual como acima)
+  const result = await processOrder(event);
+
+  metrics.publishStoredMetrics();
+  return result;
+};
+```
+
+O **Embedded Metric Format** (EMF) permite publicar custom metrics via CloudWatch Logs, sem chamadas extras à API do CloudWatch — mais barato e sem throttling.
+
+---
+
+## Exercícios
+
+### Exercício 1 — API CRUD Serverless
+
+Crie uma API REST serverless completa com:
+- API Gateway HTTP API (v2)
+- 4 Lambda functions (GET, POST, PUT, DELETE) para um recurso `products`
+- DynamoDB como data store (single-table design)
+- Validação de input com zod
+- Bundle com esbuild, arquitetura ARM64
+
+**Requisito**: cold start < 100ms no p50.
+
+### Exercício 2 — File Processing Pipeline
+
+Implemente um pipeline que:
+1. Recebe upload de imagem via presigned URL para S3
+2. Lambda trigger no `s3:ObjectCreated` redimensiona a imagem (3 tamanhos)
+3. Salva thumbnails em outro bucket
+4. Registra metadata no DynamoDB
+5. Publica evento no EventBridge
+
+**Requisito**: use Step Functions para orquestrar os steps 2-5 com retry automático.
+
+### Exercício 3 — Cold Start Benchmark
+
+Compare cold starts entre:
+- Node.js 20 (x86 vs ARM64)
+- Node.js 20 com bundle de 500KB vs 5MB vs 50MB
+- Node.js 20 com 128MB vs 512MB vs 1024MB vs 3008MB
+
+Use o script de benchmark para invocar cada configuração 100 vezes e calcule p50, p90 e p99. Documente as conclusões.
+
+### Exercício 4 — Event-Driven Order System
+
+Implemente o workflow de pedidos descrito na seção de Step Functions:
+1. ValidateOrder → CheckStock → ProcessPayment → Fulfill
+2. Use Step Functions Standard workflow
+3. Implemente retry com exponential backoff no ProcessPayment
+4. Implemente o Catch para pagamento recusado com notificação via SES
+5. Use Map state para processar múltiplos itens em paralelo
+
+### Exercício 5 — Observabilidade Completa
+
+Adicione ao exercício 1:
+- Powertools for Lambda (logger, tracer, metrics)
+- CloudWatch Dashboard com métricas de latência p50/p90/p99
+- X-Ray tracing end-to-end
+- Alarme CloudWatch para error rate > 1%
+- Custom metric para tracking de revenue (soma do valor dos produtos vendidos)
+
+---
+
+## Referências
+
+- [AWS Lambda Developer Guide](https://docs.aws.amazon.com/lambda/latest/dg/) — documentação oficial, inclui limites, runtime API e best practices
+- [Firecracker: Lightweight Virtualization for Serverless Applications](https://www.usenix.org/conference/nsdi20/presentation/agache) — paper original do NSDI '20
+- [AWS Well-Architected Serverless Lens](https://docs.aws.amazon.com/wellarchitected/latest/serverless-applications-lens/welcome.html) — framework de revisão arquitetural para serverless
+- **"Serverless Architectures on AWS"** (Peter Sbarski, Yan Cui) — livro referência para patterns e anti-patterns
+- **"AWS Lambda in Action"** (Danilo Poccia) — guia prático com exemplos reais
+- [SST Documentation](https://sst.dev/docs) — framework moderno para serverless na AWS
+- [AWS Lambda Powertools for TypeScript](https://docs.powertools.aws.dev/lambda/typescript/latest/) — observabilidade out-of-the-box
+- [DAWS — Serverless Land](https://serverlessland.com/) — patterns, snippets e tutoriais oficiais da AWS
+- [Yan Cui — "The Burning Monk"](https://theburningmonk.com/) — blog de referência sobre serverless em produção
+- [Luc van Donkersgoed — Lambda Cold Start benchmarks](https://maxday.github.io/lambda-perf/) — benchmarks atualizados de cold start por runtime
