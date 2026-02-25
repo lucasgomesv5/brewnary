@@ -62,6 +62,21 @@ function computeSteps(values: number[]): LinkedListStep[] {
 
     prevIdx = currIdx;
     currIdx++;
+
+    const advPointers: Record<string, string> = { prev: nodes[prevIdx].id };
+    if (currIdx < nodes.length) advPointers.curr = nodes[currIdx].id;
+
+    const advHighlights: Record<string, string> = { [nodes[prevIdx].id]: 'prev' };
+    if (currIdx < nodes.length) advHighlights[nodes[currIdx].id] = 'current';
+
+    steps.push({
+      nodes: [...nodes],
+      arrows: [...arrows],
+      pointers: advPointers,
+      highlights: advHighlights,
+      description: `Avança: prev=${nodes[prevIdx].value}, curr=${currIdx < nodes.length ? nodes[currIdx].value : 'null'}`,
+      codeLine: { js: 13, py: 13, cpp: 18 },
+    });
   }
 
   steps.push({
