@@ -22,7 +22,7 @@ function computeSteps(arr: number[]): AlgorithmStep[] {
         data: [...data],
         highlights: { [j]: 'comparing', [j + 1]: 'comparing' },
         description: `Comparando ${data[j]} e ${data[j + 1]}`,
-        codeLine: { js: 11, py: 8, cpp: 7 },
+        codeLine: { js: 9, py: 9, cpp: 7 },
       });
 
       if (data[j] > data[j + 1]) {
@@ -31,7 +31,7 @@ function computeSteps(arr: number[]): AlgorithmStep[] {
           data: [...data],
           highlights: { [j]: 'swapping', [j + 1]: 'swapping' },
           description: `Trocando ${data[j + 1]} e ${data[j]}`,
-          codeLine: { js: 13, py: 10, cpp: 11 },
+          codeLine: { js: 11, py: 11, cpp: 9 },
         });
       }
     }
@@ -42,13 +42,13 @@ function computeSteps(arr: number[]): AlgorithmStep[] {
       data: [...data],
       highlights: sorted,
       description: `Posição ${n - 1 - i} definida`,
-      codeLine: { js: 7, py: 4, cpp: 3 },
+      codeLine: { js: 5, py: 5, cpp: 3 },
     });
   }
 
   const allSorted: Record<number, 'sorted'> = {};
   for (let k = 0; k < n; k++) allSorted[k] = 'sorted';
-  steps.push({ data: [...data], highlights: allSorted, description: 'Ordenação concluída!', codeLine: { js: 18, py: 12, cpp: 14 } });
+  steps.push({ data: [...data], highlights: allSorted, description: 'Ordenação concluída!', codeLine: { js: 16, py: 13, cpp: 15 } });
 
   return steps;
 }

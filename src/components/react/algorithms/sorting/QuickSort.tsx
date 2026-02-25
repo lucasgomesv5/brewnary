@@ -14,7 +14,7 @@ function computeSteps(arr: number[]): AlgorithmStep[] {
   const data = [...arr];
   const sortedFlags = new Set<number>();
 
-  steps.push({ data: [...data], highlights: {}, description: 'Array inicial', codeLine: { js: 1, py: 1, cpp: 32 } });
+  steps.push({ data: [...data], highlights: {}, description: 'Array inicial', codeLine: { js: 1, py: 1, cpp: 24 } });
 
   function partition(low: number, high: number) {
     const pivot = data[high];
@@ -22,7 +22,7 @@ function computeSteps(arr: number[]): AlgorithmStep[] {
       data: [...data],
       highlights: { [high]: 'pivot' },
       description: `Pivô escolhido: ${pivot} (posição ${high})`,
-      codeLine: { js: 14, py: 16, cpp: 3 },
+      codeLine: { js: 15, py: 17, cpp: 3 },
     });
 
     let i = low - 1;
@@ -32,7 +32,7 @@ function computeSteps(arr: number[]): AlgorithmStep[] {
         data: [...data],
         highlights: hl,
         description: `Comparando ${data[j]} com pivô ${pivot}`,
-        codeLine: { js: 19, py: 21, cpp: 8 },
+        codeLine: { js: 20, py: 22, cpp: 8 },
       });
 
       if (data[j] <= pivot) {
@@ -43,7 +43,7 @@ function computeSteps(arr: number[]): AlgorithmStep[] {
             data: [...data],
             highlights: { [i]: 'swapping', [j]: 'swapping', [high]: 'pivot' },
             description: `Trocando ${data[j]} e ${data[i]}`,
-            codeLine: { js: 22, py: 24, cpp: 11 },
+            codeLine: { js: 23, py: 25, cpp: 11 },
           });
         }
       }
@@ -56,7 +56,7 @@ function computeSteps(arr: number[]): AlgorithmStep[] {
       data: [...data],
       highlights: hl,
       description: `Pivô ${pivot} na posição final ${i + 1}`,
-      codeLine: { js: 27, py: 27, cpp: 18 },
+      codeLine: { js: 28, py: 28, cpp: 18 },
     });
 
     return i + 1;
@@ -76,7 +76,7 @@ function computeSteps(arr: number[]): AlgorithmStep[] {
 
   const allSorted: Record<number, 'sorted'> = {};
   for (let k = 0; k < data.length; k++) allSorted[k] = 'sorted';
-  steps.push({ data: [...data], highlights: allSorted, description: 'Ordenação concluída!', codeLine: { js: 9, py: 12, cpp: 41 } });
+  steps.push({ data: [...data], highlights: allSorted, description: 'Ordenação concluída!', codeLine: { js: 10, py: 13, cpp: 33 } });
 
   return steps;
 }

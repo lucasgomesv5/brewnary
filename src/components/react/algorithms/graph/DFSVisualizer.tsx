@@ -52,7 +52,7 @@ function computeSteps(): GraphStep[] {
     queue: ['A'],
     description: 'Início: A adicionado à pilha',
     edges: [],
-    codeLine: { js: 4, py: 4, cpp: 12 },
+    codeLine: { js: 4, py: 4, cpp: 14 },
   });
 
   while (stack.length > 0) {
@@ -66,7 +66,7 @@ function computeSteps(): GraphStep[] {
       queue: [...stack],
       description: `Visitando ${current} (retirado da pilha)`,
       edges: [...visitedEdges],
-      codeLine: { js: 12, py: 13, cpp: 21 },
+      codeLine: { js: 12, py: 13, cpp: 23 },
     });
 
     const neighbors = (ADJ[current] || []).slice().reverse();
@@ -87,7 +87,7 @@ function computeSteps(): GraphStep[] {
           queue: [...stack],
           description: `${neighbor} adicionado à pilha (vizinho de ${current})`,
           edges: [...visitedEdges],
-          codeLine: { js: 18, py: 19, cpp: 29 },
+          codeLine: { js: 19, py: 20, cpp: 32 },
         });
       }
     }
@@ -99,7 +99,7 @@ function computeSteps(): GraphStep[] {
     queue: [],
     description: 'DFS concluída! Todos os nós foram visitados.',
     edges: [...visitedEdges],
-    codeLine: { js: 1, py: 1, cpp: 7 },
+    codeLine: { js: 1, py: 1, cpp: 9 },
   });
 
   return steps;

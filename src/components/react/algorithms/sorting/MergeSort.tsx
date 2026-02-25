@@ -13,7 +13,7 @@ function computeSteps(arr: number[]): AlgorithmStep[] {
   const steps: AlgorithmStep[] = [];
   const data = [...arr];
 
-  steps.push({ data: [...data], highlights: {}, description: 'Array inicial', codeLine: { js: 1, py: 1, cpp: 33 } });
+  steps.push({ data: [...data], highlights: {}, description: 'Array inicial', codeLine: { js: 1, py: 1, cpp: 29 } });
 
   function merge(left: number, mid: number, right: number) {
     const hl: Record<number, 'comparing'> = {};
@@ -43,7 +43,7 @@ function computeSteps(arr: number[]): AlgorithmStep[] {
         data: [...data],
         highlights: { [k]: 'swapping' },
         description: `Posicionando ${data[k]} na posição ${k}`,
-        codeLine: { js: 20, py: 19, cpp: 17 },
+        codeLine: { js: 20, py: 20, cpp: 14 },
       });
       k++;
     }
@@ -54,7 +54,7 @@ function computeSteps(arr: number[]): AlgorithmStep[] {
         data: [...data],
         highlights: { [k]: 'swapping' },
         description: `Copiando ${data[k]} da metade esquerda`,
-        codeLine: { js: 30, py: 28, cpp: 29 },
+        codeLine: { js: 30, py: 28, cpp: 25 },
       });
       i++;
       k++;
@@ -66,7 +66,7 @@ function computeSteps(arr: number[]): AlgorithmStep[] {
         data: [...data],
         highlights: { [k]: 'swapping' },
         description: `Copiando ${data[k]} da metade direita`,
-        codeLine: { js: 30, py: 29, cpp: 30 },
+        codeLine: { js: 30, py: 29, cpp: 26 },
       });
       j++;
       k++;
@@ -78,7 +78,7 @@ function computeSteps(arr: number[]): AlgorithmStep[] {
       data: [...data],
       highlights: sorted,
       description: `Subarray ${left}-${right} ordenado`,
-      codeLine: { js: 11, py: 11, cpp: 43 },
+      codeLine: { js: 11, py: 12, cpp: 39 },
     });
   }
 

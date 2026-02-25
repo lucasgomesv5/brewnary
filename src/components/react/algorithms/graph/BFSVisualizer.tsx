@@ -66,7 +66,7 @@ function computeSteps(): GraphStep[] {
       queue: [...queue],
       description: `Visitando ${current} (retirado da fila)`,
       edges: [...visitedEdges],
-      codeLine: { js: 12, py: 15, cpp: 21 },
+      codeLine: { js: 12, py: 15, cpp: 22 },
     });
 
     for (const neighbor of ADJ[current] || []) {
@@ -83,7 +83,7 @@ function computeSteps(): GraphStep[] {
           queue: [...queue],
           description: `${neighbor} adicionado à fila (vizinho de ${current})`,
           edges: [...visitedEdges],
-          codeLine: { js: 18, py: 21, cpp: 27 },
+          codeLine: { js: 18, py: 21, cpp: 28 },
         });
       }
     }
@@ -95,7 +95,7 @@ function computeSteps(): GraphStep[] {
     queue: [],
     description: 'BFS concluída! Todos os nós foram visitados.',
     edges: [...visitedEdges],
-    codeLine: { js: 1, py: 3, cpp: 7 },
+    codeLine: { js: 1, py: 3, cpp: 8 },
   });
 
   return steps;

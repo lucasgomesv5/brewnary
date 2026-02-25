@@ -52,7 +52,7 @@ function computeSteps(arr: number[]): SearchStep[] {
       target,
       found: null,
       description: `mid=${mid}, valor=${arr[mid]}. Comparando com ${target}`,
-      codeLine: { js: 8, py: 9, cpp: 10 },
+      codeLine: { js: 8, py: 8, cpp: 8 },
     });
 
     if (arr[mid] === target) {
@@ -64,7 +64,7 @@ function computeSteps(arr: number[]): SearchStep[] {
         target,
         found: true,
         description: `Encontrado! ${target} está na posição ${mid}`,
-        codeLine: { js: 12, py: 13, cpp: 14 },
+        codeLine: { js: 12, py: 12, cpp: 12 },
       });
       return steps;
     } else if (arr[mid] < target) {
@@ -76,7 +76,7 @@ function computeSteps(arr: number[]): SearchStep[] {
         target,
         found: null,
         description: `${arr[mid]} < ${target}, descartando metade esquerda`,
-        codeLine: { js: 15, py: 16, cpp: 17 },
+        codeLine: { js: 15, py: 15, cpp: 15 },
       });
       low = mid + 1;
     } else {
@@ -88,7 +88,7 @@ function computeSteps(arr: number[]): SearchStep[] {
         target,
         found: null,
         description: `${arr[mid]} > ${target}, descartando metade direita`,
-        codeLine: { js: 18, py: 19, cpp: 20 },
+        codeLine: { js: 18, py: 18, cpp: 18 },
       });
       high = mid - 1;
     }
@@ -102,7 +102,7 @@ function computeSteps(arr: number[]): SearchStep[] {
     target,
     found: false,
     description: `${target} não encontrado no array`,
-    codeLine: { js: 21, py: 22, cpp: 22 },
+    codeLine: { js: 23, py: 21, cpp: 23 },
   });
   return steps;
 }
