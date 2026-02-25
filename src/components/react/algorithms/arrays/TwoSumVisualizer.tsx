@@ -78,7 +78,7 @@ export default function TwoSumVisualizer() {
   return (
     <AlgorithmShell
       title="Two Sum"
-      description="Encontra dois números que somam ao target usando hash map. O(n)."
+      description="Encontra dois números que somam ao target usando hash map. O(n) tempo, O(n) espaço."
       totalSteps={state.steps.length - 1}
       currentStep={state.currentStep}
       stepDescription={step.description}
@@ -90,7 +90,7 @@ export default function TwoSumVisualizer() {
 
 A ideia: para cada elemento x, o complemento que precisamos é (alvo - x). Se guardarmos cada elemento num hash map conforme percorremos o array, podemos verificar em O(1) se o complemento já apareceu.
 
-Por que funciona? O hash map oferece lookup em tempo constante (amortizado). Percorremos o array uma única vez, e para cada elemento fazemos no máximo uma inserção e uma busca no mapa.
+Por que funciona? O hash map oferece lookup em O(1) no caso médio. Percorremos o array uma única vez, e para cada elemento fazemos no máximo uma inserção e uma busca no mapa. Complexidade: O(n) tempo e O(n) espaço para o hash map.
 
 Esse padrão — trocar espaço por tempo usando um hash map — é um dos mais importantes em entrevistas e no dia a dia. Aparece em problemas de frequência, detecção de duplicatas, agrupamento, e muitos outros.`}
       codeView={<AlgorithmCodeView codes={ALGORITHM_CODES['two-sum']} color="#8B5CF6" highlightedLines={step.codeLine} />}

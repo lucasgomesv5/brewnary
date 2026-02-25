@@ -52,8 +52,8 @@ const sections: Section[] = [
     id: 'arrays',
     title: 'Arrays & Strings',
     color: '#8B5CF6',
-    description: 'Sequência contígua na memória com acesso O(1) por índice. Strings são arrays de caracteres. A base de quase todos os problemas de entrevista.',
-    complexity: 'Acesso: O(1) · Busca: O(n) · Inserção/Remoção: O(n)',
+    description: 'Sequência contígua na memória com acesso O(1) por índice. Strings são sequências de caracteres (imutáveis na maioria das linguagens). A base de quase todos os problemas de entrevista.',
+    complexity: 'Acesso: O(1) · Busca: O(n) · Inserção/Remoção: O(n) (append: O(1) amortizado)',
     diagram: `  Índice:    0     1     2     3     4     5
            ┌─────┬─────┬─────┬─────┬─────┬─────┐
   Array:   │  3  │  7  │  1  │  9  │  4  │  2  │
@@ -77,8 +77,8 @@ const sections: Section[] = [
     id: 'hash-tables',
     title: 'Hash Tables',
     color: '#2563EB',
-    description: 'Estrutura que mapeia chaves a valores usando função hash. Acesso, inserção e remoção em O(1) amortizado. Fundamental para otimizar busca.',
-    complexity: 'Inserção: O(1)* · Busca: O(1)* · Remoção: O(1)* (*amortizado)',
+    description: 'Estrutura que mapeia chaves a valores usando função hash. Inserção, busca e remoção em O(1) no caso médio. Pior caso O(n) com colisões.',
+    complexity: 'Inserção: O(1) amortizado · Busca: O(1)* · Remoção: O(1)* (*caso médio)',
     diagram: `  Chave     Hash Function     Bucket      Valor
   ─────     ─────────────     ──────      ─────
   "nome" ──► hash("nome") ──► [0] ─────► "Lucas"
@@ -235,7 +235,7 @@ const sections: Section[] = [
     title: 'Linked Lists',
     color: '#a855f7',
     description: 'Coleção de nós onde cada nó aponta para o próximo. Inserção/remoção em O(1) dado o ponteiro, mas acesso por índice é O(n). Trade-off oposto ao array.',
-    complexity: 'Acesso: O(n) · Busca: O(n) · Inserção/Remoção: O(1)*',
+    complexity: 'Acesso: O(n) · Busca: O(n) · Inserção/Remoção: O(1)* (*dado o ponteiro)',
     diagram: `  Singly Linked List:
   ┌──────┬───┐    ┌──────┬───┐    ┌──────┬───┐    ┌──────┬──────┐
   │  10  │ ──┼───►│  20  │ ──┼───►│  30  │ ──┼───►│  40  │ null │
@@ -334,22 +334,23 @@ const sections: Section[] = [
     title: 'Heaps / Priority Queue',
     color: '#EF4444',
     description: 'Árvore binária completa onde cada pai ≥ filhos (max-heap) ou ≤ filhos (min-heap). Representada como array. Essencial para top-k, mediana e scheduling.',
-    complexity: 'Insert: O(log n) · Extract Min/Max: O(log n) · Peek: O(1)',
+    complexity: 'Insert: O(log n) · Extract Min/Max: O(log n) · Peek: O(1) · Build: O(n)',
     diagram: `  Min-Heap (array representation):
 
   Árvore:              Array:
-       ┌──┐            ┌───┬───┬───┬───┬───┬───┬───┐
-       │ 1│            │ 1 │ 3 │ 5 │ 4 │ 8 │ 7 │ 6 │
-       └┬─┘            └───┴───┴───┴───┴───┴───┴───┘
-     ┌──┴──┐            [0]  [1]  [2]  [3]  [4]  [5]  [6]
-   ┌─┴┐  ┌─┴┐
-   │ 3│  │ 5│          Relações no array:
-   └┬─┘  └┬─┘          ► Pai de i:        ⌊(i-1)/2⌋
-  ┌─┴┐ ┌─┴┐            ► Filho esquerdo:  2i + 1
-  │ 4│ │ 8│ │ 7│ │ 6│  ► Filho direito:   2i + 2
-  └──┘ └──┘ └──┘ └──┘
-                        Insert: adicione no final, bubble up (sift up)
-                        Extract: troque root com último, bubble down`,
+       ┌───┐           ┌───┬───┬───┬───┬───┬───┬───┐
+       │ 1 │           │ 1 │ 3 │ 5 │ 4 │ 8 │ 7 │ 6 │
+       └─┬─┘           └───┴───┴───┴───┴───┴───┴───┘
+     ┌───┴───┐          [0]  [1]  [2]  [3]  [4]  [5]  [6]
+   ┌─┴─┐  ┌─┴─┐
+   │ 3 │  │ 5 │       Relações no array:
+   └─┬─┘  └─┬─┘       ► Pai de i:        ⌊(i-1)/2⌋
+  ┌──┴──┐ ┌──┴──┐     ► Filho esquerdo:  2i + 1
+ ┌┴┐  ┌┴┐┌┴┐  ┌┴┐    ► Filho direito:   2i + 2
+ │4│  │8││7│  │6│
+ └─┘  └─┘└─┘  └─┘     Insert: adicione no final, bubble up
+                        Extract: troque root com último, bubble down
+                        Build Heap: bottom-up heapify em O(n)`,
     diagramCaption: 'Min-Heap como árvore e como array com fórmulas de navegação',
     problems: [
       { title: 'Kth Largest Element in a Stream', slug: 'kth-largest-element-in-a-stream', difficulty: 'easy', hint: 'Min-heap de tamanho k. O topo é sempre o k-ésimo maior' },
@@ -397,7 +398,7 @@ const sections: Section[] = [
     id: 'graphs',
     title: 'Graphs — BFS & DFS',
     color: '#2563EB',
-    description: 'Grafos modelam relações entre entidades. BFS explora nível a nível (menor caminho). DFS explora em profundidade (ciclos, componentes conexos).',
+    description: 'Grafos modelam relações entre entidades. BFS explora nível a nível (menor caminho em grafos não-ponderados). DFS explora em profundidade (ciclos, componentes conexos).',
     complexity: 'BFS/DFS: O(V + E) · Espaço: O(V)',
     diagram: `  Grafo:                    Adjacency List:
       ┌───┐                 0: [1, 2]
@@ -433,7 +434,7 @@ const sections: Section[] = [
     title: 'Algoritmos de Ordenação',
     color: '#EC4899',
     description: 'Organizar elementos em ordem. Lower bound de comparação: Ω(n log n). Entender trade-offs entre estabilidade, espaço e caso médio vs pior caso.',
-    complexity: 'Comparação: Ω(n log n) · Não-comparativo: O(n)',
+    complexity: 'Comparação: Ω(n log n) · Não-comparativo: O(n+k) ou O(d·n)',
     diagram: `  ┌──────────────┬─────────┬───────────┬──────────┬────────┬─────────┐
   │  Algoritmo   │ Melhor  │   Médio   │   Pior   │ Espaço │ Estável │
   ├──────────────┼─────────┼───────────┼──────────┼────────┼─────────┤
@@ -510,7 +511,7 @@ const sections: Section[] = [
     id: 'dp',
     title: 'Programação Dinâmica',
     color: '#8B5CF6',
-    description: 'Resolve problemas com subproblemas sobrepostos e subestrutura ótima. Memoization (top-down) ou tabulação (bottom-up). De O(2ⁿ) para O(n).',
+    description: 'Resolve problemas com subproblemas sobrepostos e subestrutura ótima. Memoization (top-down) ou tabulação (bottom-up). Reduz complexidade exponencial para polinomial.',
     complexity: 'Tempo: O(estados × transição) · Espaço: O(estados)',
     diagram: `  Fibonacci — de O(2ⁿ) para O(n):
 
@@ -665,7 +666,7 @@ const sections: Section[] = [
     title: 'Grafos Avançados',
     color: '#F59E0B',
     description: 'Topological Sort para DAGs, Union-Find para componentes conexos, Dijkstra para menores caminhos ponderados. Problemas que vão além de BFS/DFS simples.',
-    complexity: 'Topo Sort: O(V+E) · Union-Find: O(α(n))* · Dijkstra: O((V+E) log V)',
+    complexity: 'Topo Sort: O(V+E) · Union-Find: O(α(n)) por operação · Dijkstra: O((V+E) log V)',
     diagram: `  Topological Sort (Kahn's BFS):
   Pré-requisitos de cursos: 0→1, 0→2, 1→3, 2→3
 

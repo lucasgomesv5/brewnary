@@ -438,8 +438,8 @@ void bfs(unordered_map<string, vector<string>>& graph,
     console.log("Visitando:", node);
 
     // Adiciona vizinhos não visitados à pilha
-    // (invertemos para manter a ordem natural)
-    for (const neighbor of graph[node].reverse()) {
+    // (cópia invertida para manter a ordem natural)
+    for (const neighbor of [...graph[node]].reverse()) {
       if (!visited.has(neighbor)) {
         stack.push(neighbor);
       }
