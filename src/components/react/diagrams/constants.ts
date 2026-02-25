@@ -22,6 +22,10 @@ export const BADGE_COLORS = {
   fix: { bg: '#14532d', text: '#86efac', border: '#22c55e' },
   load: { bg: '#78350f', text: '#fcd34d', border: '#f59e0b' },
   info: { bg: '#1e3a5f', text: '#93c5fd', border: '#3b82f6' },
+  latency: { bg: '#164e63', text: '#67e8f9', border: '#06b6d4' },
+  throughput: { bg: '#14532d', text: '#86efac', border: '#22c55e' },
+  tradeoff: { bg: '#3b0764', text: '#d8b4fe', border: '#a855f7' },
+  warn: { bg: '#78350f', text: '#fcd34d', border: '#f59e0b' },
 } as const;
 
 export const NODE_DEFAULTS = {

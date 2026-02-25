@@ -1,0 +1,16 @@
+---
+import MainLayout from '../../../layouts/MainLayout.astro';
+import BrowserRenderingDiagram from '../../../components/react/diagrams/frontend/BrowserRenderingDiagram';
+---
+
+<MainLayout
+  title="Browser Rendering Pipeline — Frontend"
+  description="Diagrama interativo do Critical Rendering Path: HTML parsing, DOM, CSSOM, Layout, Paint e Compositing."
+>
+  <div class="mx-auto max-w-7xl px-4 py-8 sm:px-6">
+    <div class="mb-6">
+      <a href="/diagramas" class="text-sm text-(--color-text-muted) transition-colors hover:text-(--color-text)">← Voltar aos diagramas</a>
+    </div>
+    <BrowserRenderingDiagram client:visible />
+  </div>
+</MainLayout>

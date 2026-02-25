@@ -1,0 +1,16 @@
+---
+import MainLayout from '../../../layouts/MainLayout.astro';
+import CICDPipelineDiagram from '../../../components/react/diagrams/infrastructure/CICDPipelineDiagram';
+---
+
+<MainLayout
+  title="CI/CD Pipeline — Infrastructure"
+  description="Diagrama interativo de pipeline CI/CD: build, testes, segurança, deploy strategies e rollback."
+>
+  <div class="mx-auto max-w-7xl px-4 py-8 sm:px-6">
+    <div class="mb-6">
+      <a href="/diagramas" class="text-sm text-(--color-text-muted) transition-colors hover:text-(--color-text)">← Voltar aos diagramas</a>
+    </div>
+    <CICDPipelineDiagram client:visible />
+  </div>
+</MainLayout>

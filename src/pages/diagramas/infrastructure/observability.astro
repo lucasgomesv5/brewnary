@@ -1,0 +1,16 @@
+---
+import MainLayout from '../../../layouts/MainLayout.astro';
+import ObservabilityDiagram from '../../../components/react/diagrams/infrastructure/ObservabilityDiagram';
+---
+
+<MainLayout
+  title="Observability Stack — Infrastructure"
+  description="Diagrama interativo do stack de observabilidade: Prometheus, logs, traces, SLOs e alerting."
+>
+  <div class="mx-auto max-w-7xl px-4 py-8 sm:px-6">
+    <div class="mb-6">
+      <a href="/diagramas" class="text-sm text-(--color-text-muted) transition-colors hover:text-(--color-text)">← Voltar aos diagramas</a>
+    </div>
+    <ObservabilityDiagram client:visible />
+  </div>
+</MainLayout>

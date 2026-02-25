@@ -1,0 +1,16 @@
+---
+import MainLayout from '../../../layouts/MainLayout.astro';
+import UrlShortenerDiagram from '../../../components/react/diagrams/system-design/UrlShortenerDiagram';
+---
+
+<MainLayout
+  title="URL Shortener — System Design"
+  description="Diagrama interativo de um URL Shortener com cache Redis, Bloom Filter e analytics com ClickHouse."
+>
+  <div class="mx-auto max-w-7xl px-4 py-8 sm:px-6">
+    <div class="mb-6">
+      <a href="/diagramas" class="text-sm text-(--color-text-muted) transition-colors hover:text-(--color-text)">← Voltar aos diagramas</a>
+    </div>
+    <UrlShortenerDiagram client:visible />
+  </div>
+</MainLayout>
