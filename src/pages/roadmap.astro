@@ -5,7 +5,7 @@ import { tracks } from '../lib/tracks';
 
 <MainLayout
   title="Visão Geral"
-  description="Visão geral da estrutura de conteúdo — fundamentos, backend, frontend, devops, infra e carreira."
+  description="Visão geral da estrutura de conteúdo — fundamentos, backend, frontend, plataforma, arquitetura, IA e carreira."
 >
   <div class="mx-auto max-w-4xl px-4 py-12 sm:px-6">
     <div class="mb-12">
@@ -22,81 +22,68 @@ import { tracks } from '../lib/tracks';
             n: 1,
             title: 'Fundamentos de Ciência da Computação',
             description:
-              'Complexidade algorítmica, estruturas de dados, algoritmos clássicos, redes TCP/IP, sistemas operacionais e design patterns.',
+              'Fundamentos matemáticos, complexidade algorítmica, estruturas de dados, algoritmos clássicos, redes TCP/IP e sistemas operacionais.',
             tracks: [tracks[0]],
             topics: [
-              'Notação assintótica (Big O)',
+              'Lógica, combinatória, logaritmos e Master Theorem',
               'Estruturas de dados (arrays, listas, hash tables, árvores, grafos)',
-              'Algoritmos de busca e ordenação',
-              'Redes e protocolos',
-              'Design patterns fundamentais',
+              'Algoritmos de busca e ordenação, recursão e programação dinâmica',
+              'Sistemas operacionais (eBPF, io_uring), compiladores e redes (HTTP/3, QUIC)',
+              'Sistemas distribuídos (Raft, CRDTs), concorrência avançada e database internals',
             ],
           },
           {
             n: 2,
             title: 'Backend & Frontend',
             description:
-              'Desenvolvimento de aplicações completas. Backend com Node.js, SQL/NoSQL, APIs. Frontend com DOM, CSS avançado, JavaScript profundo e React.',
+              'Desenvolvimento de aplicações completas. Backend com Node.js internals, Go, Java, SQL/NoSQL, APIs. Frontend com CSS, JavaScript core, React e Next.js.',
             tracks: [tracks[1], tracks[2]],
             topics: [
-              'Event loop, streams e clustering',
-              'Modelagem relacional e índices',
-              'REST, autenticação, segurança',
-              'Box model, flexbox, grid',
-              'Closures, prototypes, async/await',
+              'Event loop, streams, Go, Java e Rust essencial',
+              'SQL, PostgreSQL internals, índices, transações e NoSQL',
+              'REST, gRPC/tRPC, GraphQL, Kafka, serverless e API design avançado',
+              'JavaScript core, TypeScript avançado, CSS moderno, React Compiler/RSC',
+              'Web Components, micro-frontends, acessibilidade WCAG e performance web',
             ],
           },
           {
             n: 3,
-            title: 'DevOps & Integração',
-            description: 'Ferramentas e práticas de produção. Git avançado, containers, CI/CD, cloud e monitoramento.',
-            tracks: [tracks[3]],
+            title: 'Plataforma & Arquitetura',
+            description: 'Infraestrutura de produção e design de sistemas. Docker, Kubernetes, AWS, sistemas distribuídos e reliability engineering.',
+            tracks: [tracks[3], tracks[4]],
             topics: [
-              'Git rebase, bisect, branching strategies',
-              'Docker & Docker Compose',
-              'GitHub Actions CI/CD',
-              'AWS fundamentos',
-              'Observabilidade e health checks',
+              'Docker, Kubernetes, Terraform e CI/CD',
+              'AWS, observabilidade e segurança de infraestrutura',
+              'Edge computing, Cloudflare Workers e WebAssembly',
+              'SOLID, design patterns, system design e hexagonal architecture',
+              'Sistemas distribuídos, CAP theorem, consensus e microsserviços',
             ],
           },
           {
             n: 4,
-            title: 'Infraestrutura',
-            description: 'Operações em escala. Containers avançados, orquestração, IaC e cloud deep dive.',
-            tracks: [tracks[4]],
-            topics: [
-              'Docker multi-stage e networking',
-              'Kubernetes deployments e services',
-              'AWS VPC, S3, RDS, Lambda',
-              'Terraform',
-              'CI/CD blue-green e canary',
-            ],
-          },
-          {
-            n: 5,
             title: 'Inteligência Artificial',
             description: 'Fundamentos de IA, redes neurais, deep learning, LLMs, agentes de IA e prompt engineering.',
             tracks: [tracks[5]],
             topics: [
-              'Fundamentos e história da IA',
-              'Matemática essencial (álgebra linear, cálculo)',
-              'Redes neurais e deep learning',
-              'LLMs, tokenização e fine-tuning',
+              'Fundamentos de IA e matemática essencial',
+              'Redes neurais, deep learning e Transformers',
+              'LLMs, tokenização, fine-tuning e RLHF',
               'Agentes de IA e prompt engineering',
+              'AI para devs: RAG, embeddings, MCP, LLMs em produção',
             ],
           },
           {
-            n: 6,
-            title: 'Engenharia & Práticas',
+            n: 5,
+            title: 'Carreira',
             description:
-              'Princípios de engenharia de software, documentação técnica, entrevistas e aprendizado contínuo.',
+              'Documentação técnica, leitura de código, entrevistas técnicas e inglês técnico.',
             tracks: [tracks[6]],
             topics: [
-              'ADRs e RFCs',
-              'Code review',
-              'Princípios SOLID',
-              'System design interviews',
-              'Leitura de código e open source',
+              'Documentação técnica (ADRs, RFCs)',
+              'Leitura e navegação de código legado',
+              'Entrevistas de coding',
+              'Entrevistas de system design',
+              'Inglês técnico profissional',
             ],
           },
         ].map((item) => (
