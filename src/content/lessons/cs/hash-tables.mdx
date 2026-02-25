@@ -2,7 +2,7 @@
 title: "Hash Tables (Tabelas Hash)"
 description: "Análise aprofundada de tabelas hash: funções hash, colisões, open addressing, consistent hashing, Bloom Filters, Cuckoo Hashing e implementação completa em TypeScript"
 track: "cs"
-order: 10
+order: 7
 section: "Estruturas de Dados"
 priority: "high"
 tags: ["hash-table", "estruturas-de-dados", "hash", "colisões", "map", "bloom-filter", "consistent-hashing"]
@@ -1062,3 +1062,13 @@ console.log(map.getStats());
 O pior caso O(n) para lookup em separate chaining ocorre quando **todas as chaves colidem no mesmo bucket** — uma cadeia degenerada. Hashing universal reduz isso a O(1) com alta probabilidade. Perfect hashing elimina completamente para conjuntos estáticos. Cuckoo Hashing garante O(1) worst-case para lookup em conjuntos dinâmicos, ao custo de inserções mais complexas.
 
 > **Nota para entrevistas**: Hash Tables são a estrutura mais testada em entrevistas técnicas. Two Sum, deduplicação, frequency counting, anagram grouping — todos dependem de O(1) lookup. Entenda não só a API, mas o **porquê** do O(1): a função hash distribui uniformemente, o load factor é mantido baixo por rehashing, e colisões são resolvidas eficientemente.
+
+---
+
+## Referências
+
+- **Introduction to Algorithms (CLRS)** — Cormen, Leiserson, Rivest, Stein. Capítulo 11 (Hash Tables — chaining, open addressing, universal hashing, perfect hashing)
+- **Algorithms** — Robert Sedgewick & Kevin Wayne. Capítulo 3.4 (Hash Tables) e 3.5 (Applications)
+- **"Cuckoo Hashing"** — Rasmus Pagh & Flemming Friche Rodler, 2004. O paper original sobre cuckoo hashing
+- **"Space/Time Trade-offs in Hash Coding with Allowable Errors"** — Burton H. Bloom, 1970. O paper original dos Bloom Filters
+- **V8 Blog: Fast properties in V8** — [https://v8.dev/blog/fast-properties](https://v8.dev/blog/fast-properties) — Hidden classes e inline caches

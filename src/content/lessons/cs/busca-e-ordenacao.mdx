@@ -2,7 +2,7 @@
 title: "Algoritmos de Busca e Ordenação"
 description: "Busca linear, busca binária, merge sort, quick sort, heap sort, algoritmos não-comparativos e análise formal de complexidade"
 track: "cs"
-order: 13
+order: 10
 section: "Algoritmos"
 priority: "high"
 tags: ["busca", "ordenação", "binary-search", "merge-sort", "quick-sort", "heap-sort", "timsort", "algoritmos"]
@@ -722,4 +722,13 @@ Desde 2019, o V8 usa **TimSort**, resolvendo ambos os problemas. A implementaç�
 - **Memória extremamente limitada + pior caso garantido:** Heap Sort.
 - **Dados que não cabem em memória:** External Merge Sort.
 - **Performance máxima com pior caso garantido:** IntroSort (Quick Sort + Heap Sort + Insertion Sort).
-- **Sub-arrays pequenos (n ≤ 64):** Insertion Sort, sempre.
+- **Sub-arrays pequenos (n &lt;= 64):** Insertion Sort, sempre.
+
+---
+
+## Referências
+
+- **Introduction to Algorithms (CLRS)** — Cormen, Leiserson, Rivest, Stein. Capítulo 6 (Heapsort), Capítulo 7 (Quicksort), Capítulo 8 (Sorting in Linear Time — lower bounds, counting sort, radix sort), Capítulo 9 (Medians and Order Statistics)
+- **Algorithms** — Robert Sedgewick & Kevin Wayne. Capítulo 2 (Sorting) — cobertura completa de mergesort, quicksort, heapsort e suas variantes
+- **"TimSort: A Very Fast, Stable, O(n log n) Sorting Algorithm"** — Tim Peters. Descrição original do algoritmo usado em Python e Java
+- **V8 Blog: Getting things sorted in V8** — [https://v8.dev/blog/array-sort](https://v8.dev/blog/array-sort) — Implementação de TimSort no V8

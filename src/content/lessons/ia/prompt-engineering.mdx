@@ -2,7 +2,7 @@
 title: "Prompt Engineering"
 description: "Zero-shot, few-shot, chain-of-thought, system prompts, templates, guardrails e tecnicas avancadas para extrair o maximo de LLMs"
 track: "ia"
-order: 8
+order: 6
 section: "LLMs & Aplicacoes"
 priority: "medium"
 tags: ["prompt-engineering", "few-shot", "chain-of-thought", "llm"]
@@ -575,3 +575,16 @@ def evaluate_prompt(prompt_template, test_cases, llm):
 ```
 
 Prompt engineering nao e um truque temporario -- e uma habilidade fundamental para qualquer pessoa que trabalhe com LLMs. As tecnicas apresentadas aqui (zero/few-shot, CoT, system prompts, saida estruturada e guardrails) formam o toolkit basico para construir aplicacoes robustas com IA.
+
+---
+
+## Referencias e Fontes
+
+- **Deep Learning** -- Ian Goodfellow, Yoshua Bengio & Aaron Courville (2016). Entender como modelos processam informacao ajuda a projetar prompts mais eficazes. [deeplearningbook.org](https://www.deeplearningbook.org)
+- **Attention Is All You Need** -- Vaswani et al. (2017). Compreender self-attention explica por que a posicao e estrutura do prompt importam. [arxiv.org/abs/1706.03762](https://arxiv.org/abs/1706.03762)
+- **Chain-of-Thought Prompting Elicits Reasoning in Large Language Models** -- Jason Wei et al. (2022). O paper que demonstrou como raciocinio passo a passo melhora o desempenho de LLMs. [arxiv.org/abs/2201.11903](https://arxiv.org/abs/2201.11903)
+- **Anthropic Prompt Engineering Documentation** -- [docs.anthropic.com/en/docs/build-with-claude/prompt-engineering](https://docs.anthropic.com/en/docs/build-with-claude/prompt-engineering). Documentacao oficial da Anthropic com tecnicas especificas para Claude, incluindo system prompts e saida estruturada
+- **OpenAI Prompt Engineering Guide** -- [platform.openai.com/docs/guides/prompt-engineering](https://platform.openai.com/docs/guides/prompt-engineering). Guia oficial com estrategias e melhores praticas para escrever prompts eficazes
+- **OpenAI Cookbook** -- [cookbook.openai.com](https://cookbook.openai.com). Exemplos praticos de few-shot, CoT, function calling e saida estruturada com modelos de linguagem
+- **Andrej Karpathy's Neural Networks: Zero to Hero** -- [youtube.com/@andrejkarpathy](https://www.youtube.com/@andrejkarpathy). Entender a mecanica interna de LLMs informa melhores estrategias de prompting
+- **fast.ai** -- [fast.ai](https://www.fast.ai). Curso pratico que aborda interacao com modelos de linguagem em contextos aplicados

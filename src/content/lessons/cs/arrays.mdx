@@ -2,7 +2,7 @@
 title: "Arrays"
 description: "Estrutura de dados fundamental: sequência contígua de elementos na memória, layout, alocação, análise amortizada e técnicas avançadas"
 track: "cs"
-order: 7
+order: 4
 section: "Estruturas de Dados"
 priority: "high"
 tags: ["arrays", "estruturas-de-dados", "big-o", "memória", "typed-arrays", "v8"]
@@ -762,3 +762,12 @@ Memória extra          Nenhuma           ~50% overhead     ponteiro/nó
 - Elementos têm tamanhos variáveis → use array de ponteiros ou outra estrutura
 
 > **Regra de ouro:** Na dúvida, comece com array. É a estrutura de dados com melhor cache locality, menor overhead de memória, e a mais otimizada pelos engines modernos. Só troque quando o profiling mostrar que outra estrutura resolve um gargalo real.
+
+---
+
+## Referências
+
+- **Introduction to Algorithms (CLRS)** — Cormen, Leiserson, Rivest, Stein. Capítulos 10 (Elementary Data Structures) e Apêndice A (Somatórios para análise amortizada)
+- **Algorithms** — Robert Sedgewick & Kevin Wayne. Capítulo 1.3 (Bags, Queues, and Stacks — dynamic arrays)
+- **V8 Blog: Elements kinds in V8** — [https://v8.dev/blog/elements-kinds](https://v8.dev/blog/elements-kinds) — Detalhes sobre representações internas de arrays no V8
+- **Computer Systems: A Programmer's Perspective (CS:APP)** — Bryant & O'Hallaron. Capítulo 6 (Memory Hierarchy) para cache locality e row-major vs column-major

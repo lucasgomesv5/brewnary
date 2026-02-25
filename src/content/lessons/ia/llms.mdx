@@ -2,7 +2,7 @@
 title: "Large Language Models (LLMs)"
 description: "Tokenizacao, embeddings, pre-treino, fine-tuning, RLHF, inferencia e scaling laws -- como LLMs funcionam por dentro"
 track: "ia"
-order: 6
+order: 4
 section: "LLMs & Aplicacoes"
 priority: "high"
 tags: ["llm", "gpt", "tokenizacao", "embeddings", "fine-tuning", "rlhf"]
@@ -491,3 +491,18 @@ Essas capacidades nao foram explicitamente programadas -- elas emergiram do trei
 ```
 
 Este pipeline -- de dados brutos a um assistente de IA funcional -- representa o estado da arte da engenharia de ML moderna. As proximas licoes exploram como **usar** esses modelos: agentes, prompt engineering e integracao em aplicacoes reais.
+
+---
+
+## Referencias e Fontes
+
+- **Deep Learning** -- Ian Goodfellow, Yoshua Bengio & Aaron Courville (2016). Fundamentos de redes neurais e otimizacao que sustentam a arquitetura dos LLMs. [deeplearningbook.org](https://www.deeplearningbook.org)
+- **Attention Is All You Need** -- Vaswani et al. (2017). O paper que introduziu a arquitetura Transformer, base de todos os LLMs modernos. [arxiv.org/abs/1706.03762](https://arxiv.org/abs/1706.03762)
+- **Language Models are Few-Shot Learners (GPT-3)** -- Brown et al., OpenAI (2020). Demonstrou capacidades emergentes de in-context learning em modelos de linguagem de grande escala. [arxiv.org/abs/2005.14165](https://arxiv.org/abs/2005.14165)
+- **Training language models to follow instructions with human feedback (InstructGPT)** -- Ouyang et al., OpenAI (2022). O paper que introduziu RLHF para alinhar LLMs. [arxiv.org/abs/2203.02155](https://arxiv.org/abs/2203.02155)
+- **Speech and Language Processing** -- Dan Jurafsky & James H. Martin (3a edicao, draft online). Cobertura abrangente de NLP, desde fundamentos ate Transformers e LLMs. [web.stanford.edu/~jurafsky/slp3](https://web.stanford.edu/~jurafsky/slp3)
+- **Anthropic Documentation** -- [docs.anthropic.com](https://docs.anthropic.com). Documentacao oficial incluindo papers sobre Constitutional AI, RLHF e arquitetura de modelos Claude
+- **OpenAI Cookbook** -- [cookbook.openai.com](https://cookbook.openai.com). Guias praticos sobre tokenizacao, embeddings, fine-tuning e uso de APIs de LLMs
+- **Andrej Karpathy's Neural Networks: Zero to Hero** -- [youtube.com/@andrejkarpathy](https://www.youtube.com/@andrejkarpathy). Inclui "Let's build GPT from scratch" -- construcao de um LLM do zero explicando tokenizacao, attention e geracao autoregressiva
+- **fast.ai** -- [fast.ai](https://www.fast.ai). Curso pratico que cobre fine-tuning e uso de modelos de linguagem em aplicacoes reais
+- **Chinchilla: Training Compute-Optimal Large Language Models** -- Hoffmann et al., DeepMind (2022). Scaling laws para treinamento eficiente de LLMs. [arxiv.org/abs/2203.15556](https://arxiv.org/abs/2203.15556)

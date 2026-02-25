@@ -1385,3 +1385,10 @@ A organização por domínio (package-by-feature) escala melhor que organizaçã
 4. **Virtual Threads vs Platform Threads**: Crie um benchmark que faz 10.000 chamadas HTTP simuladas (com `Thread.sleep` para simular I/O). Compare tempo total usando `newFixedThreadPool(200)` vs `newVirtualThreadPerTaskExecutor()`. Meça memória com `Runtime.getRuntime().totalMemory()`.
 
 5. **Spring Boot completo**: Construa uma API REST com Spring Boot 3, Java 21, PostgreSQL (via Docker), Flyway para migrations, paginação cursor-based, error handling com `ProblemDetail` (RFC 7807), virtual threads habilitadas, e testes com Testcontainers.
+
+---
+
+## Referencias e Fontes
+
+- **"Effective Java"** — Joshua Bloch — Guia de boas praticas para desenvolvimento Java, cobrindo patterns, generics, concorrencia e design de APIs
+- **Oracle Java Documentation** — https://docs.oracle.com/en/java/ — Documentacao oficial da plataforma Java, incluindo JDK, JVM e especificacoes da linguagem

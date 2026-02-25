@@ -2,7 +2,7 @@
 title: "Sistemas Operacionais"
 description: "Processos, threads, escalonamento, memória virtual, concorrência, deadlock, filesystem, I/O assíncrono, containers e o event loop do Node.js"
 track: "cs"
-order: 15
+order: 12
 section: "Sistemas"
 priority: "medium"
 tags: ["SO", "processos", "threads", "concorrência", "escalonamento", "memória-virtual", "deadlock", "filesystem", "epoll", "containers"]
@@ -949,6 +949,146 @@ for (let i = 0; i < 8; i++) {
 
 ---
 
+## Linux Moderno: eBPF, io_uring e Cgroups v2
+
+### eBPF (extended Berkeley Packet Filter)
+
+O **eBPF** permite executar programas sandboxed **dentro do kernel** sem modificar o código-fonte do kernel ou carregar kernel modules. Originalmente criado para filtragem de pacotes, evoluiu para uma plataforma de programabilidade geral do kernel.
+
+```
+Arquitetura eBPF:
+
+User Space                           Kernel Space
+┌─────────────┐                     ┌──────────────────────────┐
+│ bpftool     │    syscall(bpf)     │  Verifier                │
+│ bcc         │ ──────────────────→ │  (valida segurança do    │
+│ libbpf      │                     │   programa: sem loops     │
+│ cilium      │                     │   infinitos, sem crash)   │
+└─────────────┘                     ├──────────────────────────┤
+                                    │  JIT Compiler            │
+                                    │  (eBPF bytecode → native │
+                                    │   x86/ARM instructions)  │
+                                    ├──────────────────────────┤
+                                    │  Hook Points:            │
+                                    │  • kprobes (funções)     │
+                                    │  • tracepoints           │
+                                    │  • XDP (network ingress) │
+                                    │  • cgroup hooks          │
+                                    │  • LSM hooks (security)  │
+                                    ├──────────────────────────┤
+                                    │  eBPF Maps               │
+                                    │  (hash, array, ringbuf   │
+                                    │   — shared com userspace) │
+                                    └──────────────────────────┘
+```
+
+**Use cases reais:**
+- **Observabilidade**: tracing de funções do kernel e userspace sem overhead (bpftrace, Pixie)
+- **Networking**: XDP processa pacotes antes de entrar na network stack — Cloudflare usa para DDoS mitigation
+- **Security**: Falco, Cilium Tetragon monitoram syscalls e network em tempo real
+- **Profiling**: continuous profiling com overhead mínimo (Parca, Pyroscope)
+
+```bash
+# Exemplo com bpftrace: rastrear todas as chamadas open() com o path
+sudo bpftrace -e 'tracepoint:syscalls:sys_enter_openat { printf("%s %s\n", comm, str(args->filename)); }'
+
+# Exemplo: histograma de latência de read() por processo
+sudo bpftrace -e 'tracepoint:syscalls:sys_enter_read { @start[tid] = nsecs; }
+  tracepoint:syscalls:sys_exit_read /@start[tid]/ { @us[comm] = hist((nsecs - @start[tid]) / 1000); delete(@start[tid]); }'
+```
+
+O **verifier** é a chave de segurança do eBPF: ele analisa estaticamente o programa antes de carregá-lo, garantindo que termina (sem loops infinitos), não acessa memória inválida e não crasha o kernel. Isso torna eBPF fundamentalmente diferente de kernel modules (que podem derrubar o sistema).
+
+### io_uring
+
+O **io_uring** (Linux 5.1+) é a interface de I/O assíncrono moderna do Linux. Resolve as limitações de `epoll` (que não é realmente async para file I/O) e `aio` (API terrível, limitada a direct I/O).
+
+```
+Arquitetura io_uring:
+
+User Space                    Kernel Space
+┌──────────────┐             ┌──────────────┐
+│ Submission   │  ────────→  │ Submission   │
+│ Queue (SQ)   │  mmap       │ Queue (SQ)   │
+│ [SQE][SQE].. │  shared     │ processa     │
+├──────────────┤  memory     ├──────────────┤
+│ Completion   │  ←────────  │ Completion   │
+│ Queue (CQ)   │  mmap       │ Queue (CQ)   │
+│ [CQE][CQE].. │  shared     │ resultados   │
+└──────────────┘             └──────────────┘
+
+Fluxo: zero syscalls em modo SQPOLL!
+1. App escreve SQE (Submission Queue Entry) na memória compartilhada
+2. Kernel thread (SQPOLL) detecta novas entries via polling
+3. Kernel executa I/O e escreve CQE (Completion Queue Entry)
+4. App lê resultado da memória compartilhada
+```
+
+**Vantagens sobre epoll:**
+- **Batching**: submeter múltiplas operações com um único syscall (ou zero em SQPOLL mode)
+- **True async file I/O**: funciona com arquivos regulares (epoll não!)
+- **Zero-copy**: suporte a registered buffers e fixed files
+- **Linked operations**: encadear operações (read → process → write)
+
+**Performance**: benchmarks mostram 2-3x mais IOPS que epoll para I/O de disco, e até 30% melhor throughput para networking em alta carga.
+
+O **Tokio** (Rust) e o **libuv** (Node.js) já têm suporte experimental a io_uring. Em produção, é usado por ScyllaDB, RocksDB e Ceph.
+
+### Cgroups v2 (Control Groups)
+
+**Cgroups** são o mecanismo do kernel para limitar e contabilizar recursos (CPU, memória, I/O, rede) de grupos de processos. São a base de **containers** (Docker, Kubernetes).
+
+```
+Hierarquia Cgroups v2 (unified):
+
+/sys/fs/cgroup/
+├── cgroup.controllers        # controllers disponíveis
+├── cgroup.subtree_control    # controllers ativos para filhos
+├── system.slice/             # serviços do sistema
+│   ├── docker.service/
+│   └── sshd.service/
+├── user.slice/               # processos de usuários
+│   └── user-1000.slice/
+└── kubepods.slice/           # pods Kubernetes
+    ├── pod-abc123/
+    │   ├── container-xyz/
+    │   │   ├── cgroup.procs   # PIDs no grupo
+    │   │   ├── cpu.max        # limite de CPU
+    │   │   ├── memory.max     # limite de memória
+    │   │   ├── io.max         # limite de I/O
+    │   │   └── pids.max       # limite de processos
+    │   └── ...
+    └── ...
+```
+
+**Cgroups v1 vs v2:**
+
+| Aspecto | v1 | v2 |
+|---------|----|----|
+| Hierarquia | Múltiplas (uma por controller) | **Unificada** (uma só árvore) |
+| Thread-level | Limitado | Suporte completo |
+| Pressure Stall Information (PSI) | Não | **Sim** (cpu.pressure, memory.pressure, io.pressure) |
+| Delegation segura | Problemática | **Segura** (cgroup.type = threaded) |
+| Adoção | Legacy | **Padrão** em systemd, Docker, Kubernetes |
+
+**Controllers principais:**
+- **cpu**: `cpu.max "200000 100000"` → máximo 200ms de CPU a cada 100ms (2 cores)
+- **memory**: `memory.max 536870912` → limite de 512MB; `memory.high` para throttling gradual
+- **io**: `io.max "8:0 rbps=1048576 wbps=1048576"` → 1MB/s read/write no device 8:0
+- **pids**: `pids.max 100` → máximo 100 processos (previne fork bombs)
+
+**PSI (Pressure Stall Information)**: métrica do kernel que mostra quanto tempo tarefas estão esperando por recursos. Kubernetes usa PSI para eviction decisions.
+
+```bash
+# Verificar pressão de memória de um cgroup
+cat /sys/fs/cgroup/kubepods.slice/pod-abc123/memory.pressure
+# some avg10=0.50 avg60=0.30 avg300=0.15 total=123456
+# full avg10=0.10 avg60=0.05 avg300=0.02 total=45678
+# "some": pelo menos uma task esperando; "full": todas as tasks esperando
+```
+
+---
+
 ## Resumo das Complexidades e Trade-offs
 
 ```
@@ -972,3 +1112,14 @@ Mutex com contenção              ~1-10 μs            Syscall futex + context 
 ```
 
 Entender esses custos é o que separa um engenheiro que "faz funcionar" de um que entende **por que** funciona e **quando** vai parar de funcionar.
+
+---
+
+## Referências e Fontes
+
+- **"Operating Systems: Three Easy Pieces"** (OSTEP) — Remzi & Andrea Arpaci-Dusseau — disponível gratuitamente em https://pages.cs.wisc.edu/~remzi/OSTEP/
+- **"Operating System Concepts"** — Silberschatz, Galvin, Gagne — o "Dinosaur Book"
+- **"Linux Kernel Development"** — Robert Love — implementação do kernel Linux
+- **"Understanding the Linux Kernel"** — Bovet & Cesati — detalhes de implementação
+- **MIT 6.828 Operating System Engineering** — labs com xv6
+- **"Systems Performance"** — Brendan Gregg — análise de performance em Linux

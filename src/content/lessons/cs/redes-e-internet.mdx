@@ -2,7 +2,7 @@
 title: "Redes e Internet"
 description: "Modelo OSI/TCP-IP, subnetting, TCP/UDP, DNS, HTTP/1.1-2-3, TLS, WebSocket, CDN e load balancing"
 track: "cs"
-order: 17
+order: 14
 section: "Sistemas"
 priority: "high"
 tags: ["redes", "HTTP", "TCP", "DNS", "internet", "TLS", "OSI", "load-balancing", "CDN"]
@@ -632,6 +632,151 @@ Load balancers monitoram backends continuamente:
 
 ---
 
+## HTTP/3 e QUIC
+
+O HTTP/3 (RFC 9114) substitui o TCP pelo **QUIC** (RFC 9000) como protocolo de transporte. Isso resolve problemas fundamentais do HTTP/2 sobre TCP.
+
+### Por que UDP?
+
+TCP sofre de **head-of-line blocking** na camada de transporte: se um pacote é perdido, todos os streams multiplexados sobre a mesma conexão TCP são bloqueados até a retransmissão. QUIC resolve isso implementando multiplexing na camada de transporte — perda em um stream não afeta os outros.
+
+```
+HTTP/2 sobre TCP:
+┌──────────────────────────────────┐
+│         HTTP/2 Streams           │
+│  Stream 1  Stream 2  Stream 3   │
+├──────────────────────────────────┤
+│      TCP (single byte stream)    │  ← pacote perdido bloqueia TUDO
+├──────────────────────────────────┤
+│              IP                  │
+└──────────────────────────────────┘
+
+HTTP/3 sobre QUIC:
+┌──────────────────────────────────┐
+│         HTTP/3 Streams           │
+│  Stream 1  Stream 2  Stream 3   │
+├──────────────────────────────────┤
+│     QUIC (streams independentes) │  ← perda no Stream 1 NÃO bloqueia 2 e 3
+├──────────────────────────────────┤
+│              UDP                 │
+└──────────────────────────────────┘
+```
+
+### QUIC: Características
+
+| Feature | TCP + TLS 1.3 | QUIC |
+|---------|--------------|------|
+| Handshake | 1-RTT TCP + 1-RTT TLS = 2-RTT | 1-RTT (integrado) |
+| 0-RTT resumption | TLS 1.3 0-RTT (limitado) | 0-RTT nativo (com replay protection) |
+| Multiplexing | HOL blocking (L4) | Streams independentes |
+| Connection migration | IP muda = conexão nova | Connection ID sobrevive mudança de IP/rede |
+| Loss recovery | TCP retransmission | Per-stream, mais granular |
+| Congestion control | Kernel-space (difícil evoluir) | User-space (fácil iterar) |
+
+**Connection migration** é especialmente relevante para mobile: quando o usuário muda de Wi-Fi para 4G, o IP muda. Com TCP, a conexão morre. Com QUIC, o **Connection ID** (não atrelado ao IP) mantém a sessão viva.
+
+### 0-RTT
+
+Na primeira conexão, QUIC faz 1-RTT (como TLS 1.3). Nas reconexões, o cliente envia dados junto com o primeiro pacote (0-RTT), usando chaves salvas da sessão anterior. O servidor processa imediatamente.
+
+**Risco de replay attack**: dados 0-RTT podem ser replayados por um atacante. Mitigação: só usar 0-RTT para requests idempotentes (GET), nunca para operações que mudam estado.
+
+### Adoção
+
+HTTP/3 é suportado por todos os browsers modernos. Grandes CDNs (Cloudflare, Akamai, Fastly) já servem HTTP/3 por padrão. Google usa QUIC desde 2014 (pré-padronização).
+
+---
+
+## gRPC sobre HTTP/2
+
+O gRPC usa HTTP/2 como transporte, aproveitando suas features para comunicação eficiente entre serviços:
+
+```
+gRPC sobre HTTP/2:
+┌─────────────────────────────────────────────┐
+│  gRPC Message (Protocol Buffers - binário)  │
+├─────────────────────────────────────────────┤
+│  gRPC Frame: Length-Prefixed Message        │
+│  [1 byte compressed flag][4 bytes length]   │
+├─────────────────────────────────────────────┤
+│  HTTP/2 DATA frames (multiplexed streams)   │
+├─────────────────────────────────────────────┤
+│  HTTP/2 HEADERS frame:                      │
+│    :method POST                             │
+│    :path /package.Service/Method            │
+│    content-type: application/grpc           │
+│    grpc-timeout: 5S                         │
+├─────────────────────────────────────────────┤
+│  TCP + TLS                                  │
+└─────────────────────────────────────────────┘
+```
+
+**Streaming bidirecional**: gRPC suporta 4 padrões de comunicação sobre HTTP/2 streams — unary (request-response), server-streaming, client-streaming e bidi-streaming. Cada RPC é um HTTP/2 stream, permitindo múltiplas RPCs simultâneas sobre uma conexão.
+
+**Trailers**: gRPC usa HTTP/2 trailers para enviar o status code (grpc-status) e mensagem de erro (grpc-message) ao final da resposta, após todos os DATA frames. Isso permite que o server processe toda a requisição antes de decidir o status.
+
+---
+
+## mTLS (Mutual TLS)
+
+No TLS padrão, apenas o **servidor** apresenta certificado. Em **mTLS**, o **cliente também** apresenta um certificado, provando sua identidade ao servidor.
+
+```
+TLS padrão (one-way):
+  Client ──────→ Server
+         ←cert── Server prova identidade
+  Client confia no Server ✓
+
+mTLS (two-way):
+  Client ──cert→ Server
+         ←cert── Server prova identidade
+  Client prova identidade ✓
+  Server confia no Client ✓
+```
+
+### Quando usar mTLS
+
+- **Service-to-service** em microserviços: cada serviço tem seu certificado, impedindo que serviços não-autorizados se comuniquem
+- **Zero trust architecture**: não confiar na rede interna
+- Service meshes (Istio, Linkerd) implementam mTLS automaticamente entre pods
+
+### Certificate management
+
+- **Certificate Authority (CA) interna**: gera certificados para cada serviço
+- **SPIFFE/SPIRE**: framework para identidade de workloads (gera certificados automaticamente)
+- **Rotation**: certificados de curta duração (24h) reduzem risco de comprometimento
+
+---
+
+## DNS sobre HTTPS/TLS (DoH/DoT)
+
+DNS tradicional é **plaintext** — qualquer intermediário (ISP, Wi-Fi público) pode ver e até modificar queries DNS. DoH e DoT resolvem isso:
+
+| Protocolo | Porta | Transporte | Padrão |
+|-----------|-------|-----------|--------|
+| DNS tradicional | 53 | UDP (ou TCP) plaintext | RFC 1035 |
+| DoT (DNS over TLS) | 853 | TLS | RFC 7858 |
+| DoH (DNS over HTTPS) | 443 | HTTPS | RFC 8484 |
+
+### DNS over TLS (DoT)
+
+Encapsula queries DNS dentro de uma conexão TLS na porta 853. Vantagem: simples de implementar. Desvantagem: porta dedicada facilita blocking por firewalls/ISPs.
+
+### DNS over HTTPS (DoH)
+
+Envia queries DNS como requests HTTPS normais (GET ou POST para `https://dns.resolver/dns-query`). Vantagem: indistinguível de tráfego HTTPS normal (porta 443), difícil de bloquear. Desvantagem: maior overhead, debate sobre centralização (Cloudflare 1.1.1.1, Google 8.8.8.8).
+
+### Impacto em privacidade e segurança
+
+- **Privacidade**: ISP não vê quais domínios você resolve
+- **Integridade**: previne DNS spoofing/poisoning em trânsito
+- **Censura**: mais difícil bloquear DoH (parece tráfego HTTPS normal)
+- **Debate**: centraliza resolução DNS em poucos providers (Cloudflare, Google)
+
+Browsers modernos (Firefox, Chrome) suportam DoH nativamente. Firefox usa Cloudflare DoH por padrão nos EUA.
+
+---
+
 ## Referências e RFCs
 
 ```
@@ -643,6 +788,6 @@ RFC 5681  — TCP Congestion Control  RFC 6455  — WebSocket
 RFC 6928  — TCP Initial Window      RFC 7323  — TCP Extensions (Window Scale)
 RFC 7540  — HTTP/2                  RFC 7858  — DNS over TLS
 RFC 8446  — TLS 1.3                 RFC 8484  — DNS over HTTPS
-RFC 9000  — QUIC                    RFC 9110  — HTTP Semantics
-RFC 9113  — HTTP/2                  RFC 9114  — HTTP/3
+RFC 9000  — QUIC                    RFC 9114  — HTTP/3
+RFC 9110  — HTTP Semantics          RFC 9113  — HTTP/2 (revised)
 ```

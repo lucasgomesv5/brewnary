@@ -1006,7 +1006,373 @@ Ordem importa:
 
 ---
 
-## Exercícios
+## Rate Limiting
+
+Rate limiting e essencial para proteger APIs contra abuso, brute force e DDoS. Existem dois algoritmos classicos, cada um com trade-offs distintos.
+
+### Token Bucket
+
+O algoritmo Token Bucket mantem um "balde" com tokens. Cada request consome um token. Tokens sao reabastecidos a uma taxa fixa. Se o balde esta vazio, o request e rejeitado.
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  TOKEN BUCKET                                            │
+│                                                         │
+│  Capacidade: 10 tokens                                  │
+│  Taxa de reabastecimento: 1 token/segundo               │
+│                                                         │
+│  t=0:  [■■■■■■■■■■] 10/10  → request → [■■■■■■■■■ ] 9  │
+│  t=0:  [■■■■■■■■■ ]  9/10  → request → [■■■■■■■■  ] 8  │
+│  t=1:  [■■■■■■■■■ ]  9/10  → +1 token (reabastecido)   │
+│  ...                                                     │
+│  t=x:  [          ]  0/10  → request → REJEITADO (429)  │
+│                                                         │
+│  Vantagens:                                              │
+│  - Permite bursts (ate a capacidade do balde)            │
+│  - Simples de implementar                                │
+│  - Usado por: AWS API Gateway, Stripe, GitHub            │
+└─────────────────────────────────────────────────────────┘
+```
+
+```typescript
+class TokenBucket {
+  private tokens: number;
+  private lastRefill: number;
+
+  constructor(
+    private readonly capacity: number,
+    private readonly refillRate: number, // tokens por segundo
+  ) {
+    this.tokens = capacity;
+    this.lastRefill = Date.now();
+  }
+
+  consume(tokens = 1): boolean {
+    this.refill();
+    if (this.tokens >= tokens) {
+      this.tokens -= tokens;
+      return true; // Permitido
+    }
+    return false; // Rate limited
+  }
+
+  private refill(): void {
+    const now = Date.now();
+    const elapsed = (now - this.lastRefill) / 1000;
+    this.tokens = Math.min(this.capacity, this.tokens + elapsed * this.refillRate);
+    this.lastRefill = now;
+  }
+}
+```
+
+### Leaky Bucket
+
+O Leaky Bucket processa requests a uma taxa fixa, como agua vazando de um balde. Requests que chegam quando o balde esta cheio sao descartados. Diferente do Token Bucket, ele **suaviza bursts** — a taxa de saida e sempre constante.
+
+```
+┌─────────────────────────────────────────────────────────┐
+│  LEAKY BUCKET                                            │
+│                                                         │
+│  Capacidade da fila: 10 requests                        │
+│  Taxa de vazamento: 2 requests/segundo                  │
+│                                                         │
+│  Requests entram por cima, saem por baixo a taxa fixa:  │
+│                                                         │
+│  Entrada:  ████████████  (burst de 12 requests)         │
+│            ┌──────────┐                                  │
+│            │ ████████ │  10 na fila (2 descartados)     │
+│            │ ████████ │                                  │
+│            └────┬─────┘                                  │
+│                 │  vazamento constante: 2 req/s          │
+│            ▼▼                                            │
+│  Saida:    ██  ██  ██  ██  ██  (uniforme)               │
+│                                                         │
+│  Vantagem: saida uniforme (bom para proteger backends)  │
+│  Desvantagem: nao permite bursts legitimos               │
+└─────────────────────────────────────────────────────────┘
+```
+
+### Quando usar cada um
+
+| Algoritmo | Burst permitido | Saida | Uso ideal |
+|---|---|---|---|
+| **Token Bucket** | Sim (ate capacidade) | Variavel | APIs publicas, rate limiting por usuario |
+| **Leaky Bucket** | Nao (suavizado) | Constante | Protecao de backends, filas de processamento |
+
+---
+
+## Error Handling e Observabilidade em Arquitetura
+
+Em sistemas distribuidos, error handling e observabilidade sao requisitos arquiteturais, nao detalhes de implementacao.
+
+### Taxonomia de Erros
+
+| Tipo | Exemplos | Como Tratar |
+|------|----------|-------------|
+| **Operacional** | Timeout de rede, arquivo nao encontrado, input invalido | Tratar no codigo: retry, fallback, mensagem ao usuario |
+| **Programacao** | TypeError, null dereference, assertion failure | Crashar, logar, corrigir o bug no codigo |
+
+### Error Handling Centralizado
+
+```javascript
+function errorHandler(err, req, res, next) {
+  const logPayload = {
+    error: err.message,
+    code: err.code,
+    stack: err.stack,
+    requestId: req.id,
+    method: req.method,
+    url: req.url,
+  };
+
+  if (err.isOperational) {
+    logger.warn(logPayload);
+    return res.status(err.statusCode).json({
+      type: `https://api.example.com/errors/${err.code}`,
+      title: err.message,
+      status: err.statusCode,
+    });
+  }
+
+  // Erro de programacao — log como error, resposta generica
+  logger.error(logPayload);
+  res.status(500).json({
+    type: 'https://api.example.com/errors/INTERNAL',
+    title: 'Erro interno do servidor',
+    status: 500,
+  });
+}
+```
+
+### Os Tres Pilares da Observabilidade
+
+- **Logs** — registros discretos de eventos. Logging estruturado (JSON) com correlation IDs.
+- **Metricas** — valores numericos agregados (counters, gauges, histograms). Frameworks USE (recursos) e RED (servicos).
+- **Traces** — caminho completo de um request atraves de multiplos servicos. OpenTelemetry e o padrao aberto para instrumentacao.
+
+### Alertas: Sintomas, Nao Causas
+
+```yaml
+# Alerta baseado em sintoma — actionable
+- alert: HighErrorRate
+  expr: rate(http_requests_total{status=~"5.."}[5m]) / rate(http_requests_total[5m]) > 0.01
+  for: 5m
+  # 1% de erros por 5 minutos = usuarios afetados = precisa de acao
+```
+
+---
+
+## Saga Patterns Avançados
+
+Em microserviços, uma operação de negócio frequentemente envolve múltiplos serviços. Como não existe transação distribuída simples, usamos **Sagas**: sequências de transações locais onde cada etapa é compensável.
+
+### Choreography (Coreografia)
+
+Cada serviço publica eventos e reage a eventos de outros serviços. Não há coordenador central.
+
+```
+Pedido de compra — Choreography:
+
+┌──────────┐   OrderCreated   ┌──────────┐  PaymentProcessed  ┌──────────┐
+│  Order   │ ──────────────→  │ Payment  │ ─────────────────→ │ Shipping │
+│ Service  │                  │ Service  │                    │ Service  │
+└──────────┘                  └──────────┘                    └──────────┘
+     ↑                              │                              │
+     │        PaymentFailed         │     ShippingFailed           │
+     │ ←────────────────────────────┘  ←──────────────────────────┘
+     │ (compensar: cancelar pedido)    (compensar: reembolsar)
+```
+
+**Prós**: simples, desacoplado, sem single point of failure.
+**Contras**: difícil de entender o fluxo completo, difícil de debugar, ciclos podem surgir.
+
+### Orchestration (Orquestração)
+
+Um **orquestrador central** (saga coordinator) diz a cada serviço o que fazer e trata compensações.
+
+```
+Pedido de compra — Orchestration:
+
+                    ┌──────────────┐
+                    │    Saga      │
+         ┌─────────│ Orchestrator │─────────┐
+         │         └──────────────┘         │
+         │           │        ↑             │
+         ▼           ▼        │             ▼
+    ┌──────────┐ ┌──────────┐ │    ┌──────────┐
+    │  Order   │ │ Payment  │ │    │ Shipping │
+    │ Service  │ │ Service  │ │    │ Service  │
+    └──────────┘ └──────────┘ │    └──────────┘
+                              │
+                    Se falha: │
+                    compensa  │
+                    steps     │
+                    anteriores│
+```
+
+**Prós**: fluxo claro e centralizado, fácil de debugar, compensações explícitas.
+**Contras**: orquestrador é single point of failure, risco de ficar "God object".
+
+### Compensating Transactions
+
+Cada step de uma saga deve ter uma **compensação** que desfaz o efeito:
+
+| Step | Ação | Compensação |
+|------|-------|-------------|
+| 1. Criar pedido | INSERT order status=PENDING | UPDATE order status=CANCELLED |
+| 2. Reservar estoque | decrement(stock) | increment(stock) |
+| 3. Processar pagamento | charge(card) | refund(card) |
+| 4. Despachar envio | ship(order) | ~~não compensável~~ → flag para manual |
+
+**Atenção**: nem toda operação é compensável (ex: enviar email, despachar produto). Para estas, use **pivot transactions** — só execute após confirmar que steps anteriores e posteriores são viáveis.
+
+### Quando usar Choreography vs Orchestration
+
+| Critério | Choreography | Orchestration |
+|----------|-------------|---------------|
+| Número de steps | 2-3 steps simples | 4+ steps ou lógica complexa |
+| Dependência entre steps | Independentes | Sequenciais/condicionais |
+| Observabilidade | Difícil (eventos dispersos) | Fácil (estado centralizado) |
+| Coupling | Baixo | Médio (orquestrador conhece todos) |
+
+---
+
+## Bulkhead Pattern
+
+O **Bulkhead pattern** isola recursos entre diferentes funcionalidades para evitar que a falha de uma parte derrube o sistema inteiro. O nome vem dos compartimentos estanques de navios.
+
+### Thread Pool Isolation
+
+Cada funcionalidade (ou dependência externa) tem seu próprio pool de recursos:
+
+```
+Sem bulkhead:
+┌─────────────────────────────────┐
+│     Thread Pool compartilhado   │
+│  [t1][t2][t3][t4][t5][t6][t7]  │
+│   API-A  API-B  API-C  API-A   │
+│                                 │
+│  Se API-C fica lenta, consome   │
+│  todas as threads → API-A e     │
+│  API-B também degradam          │
+└─────────────────────────────────┘
+
+Com bulkhead:
+┌───────────┐ ┌───────────┐ ┌───────────┐
+│  Pool A   │ │  Pool B   │ │  Pool C   │
+│ [t1][t2]  │ │ [t3][t4]  │ │ [t5][t6]  │
+│  API-A    │ │  API-B    │ │  API-C    │
+│           │ │           │ │ (lenta!)  │
+│ Não       │ │ Não       │ │ Afeta só  │
+│ afetado!  │ │ afetado!  │ │ este pool │
+└───────────┘ └───────────┘ └───────────┘
+```
+
+### Implementação com Semáforo
+
+```typescript
+class Bulkhead {
+  private current = 0;
+  private queue: Array<() => void> = [];
+
+  constructor(
+    private maxConcurrent: number,
+    private maxQueue: number
+  ) {}
+
+  async execute<T>(fn: () => Promise<T>): Promise<T> {
+    if (this.current >= this.maxConcurrent) {
+      if (this.queue.length >= this.maxQueue) {
+        throw new Error('Bulkhead: queue full, request rejected');
+      }
+      await new Promise<void>((resolve) => this.queue.push(resolve));
+    }
+
+    this.current++;
+    try {
+      return await fn();
+    } finally {
+      this.current--;
+      const next = this.queue.shift();
+      if (next) next();
+    }
+  }
+}
+
+// Uso: cada serviço externo tem seu bulkhead
+const paymentBulkhead = new Bulkhead(10, 50);   // max 10 concurrent, 50 queued
+const shippingBulkhead = new Bulkhead(5, 20);    // max 5 concurrent, 20 queued
+
+await paymentBulkhead.execute(() => paymentService.charge(amount));
+await shippingBulkhead.execute(() => shippingService.ship(order));
+```
+
+Bulkhead combina com **Circuit Breaker**: o bulkhead limita concorrência, o circuit breaker corta tráfego quando falhas são frequentes.
+
+---
+
+## Feature Flags em Profundidade
+
+Feature flags permitem separar **deploy** de **release**: código novo vai para produção desligado e é ativado gradualmente.
+
+### Tipos de Feature Flags
+
+| Tipo | Duração | Exemplo |
+|------|---------|---------|
+| **Release toggle** | Temporário (dias/semanas) | Nova UI do checkout |
+| **Experiment toggle** | Temporário (A/B test) | Botão verde vs azul |
+| **Ops toggle** | Temporário/permanente | Kill switch para feature com problema |
+| **Permission toggle** | Permanente | Feature disponível só para plano premium |
+
+### Canary Releases com Feature Flags
+
+```
+Deploy canary com feature flag:
+
+1. Deploy v2 em todas as instâncias (flag OFF)
+   [v2 OFF][v2 OFF][v2 OFF][v2 OFF][v2 OFF]
+
+2. Ativar flag para 5% dos usuários
+   [v2 ON ][v2 OFF][v2 OFF][v2 OFF][v2 OFF]
+   └─ 5% veem a feature nova; monitore erros e métricas
+
+3. Métricas OK? Aumentar para 25%, 50%, 100%
+
+4. Flag vira permanente? Remova o código do flag (cleanup!)
+```
+
+### Implementação Limpa
+
+```typescript
+// Feature flag service (pode ser LaunchDarkly, Unleash, ou custom)
+interface FeatureFlags {
+  isEnabled(flag: string, context?: { userId?: string; percentage?: number }): boolean;
+}
+
+// Uso: sem if/else espalhados — use strategy pattern
+interface CheckoutStrategy {
+  process(cart: Cart): Promise<Order>;
+}
+
+const checkoutStrategy: CheckoutStrategy = featureFlags.isEnabled('new-checkout', { userId })
+  ? new NewCheckoutFlow()
+  : new LegacyCheckoutFlow();
+
+const order = await checkoutStrategy.process(cart);
+```
+
+### Ferramentas
+
+- **LaunchDarkly**: SaaS, feature management completo, targeting avançado
+- **Unleash**: open-source, self-hosted, boa alternativa ao LaunchDarkly
+- **Flagsmith**: open-source, feature flags + remote config
+- **Simples**: variável de ambiente ou tabela no banco para casos triviais
+
+**Cuidado com tech debt**: feature flags temporários que nunca são removidos acumulam complexidade. Defina uma **data de expiração** para cada flag e agende a remoção.
+
+---
+
+## Exercicios
 
 1. **Modular Monolith**: Pegue um monolito existente (ou crie um simples) com pelo menos 3 domínios. Refatore para módulos com interfaces públicas explícitas. Valide que nenhum módulo importa classes internas de outro.
 
@@ -1017,3 +1383,11 @@ Ordem importa:
 4. **Circuit Breaker completo**: Implemente um circuit breaker com os três estados (closed, open, half-open), métricas de falha e fallback. Teste com um serviço simulado que falha intermitentemente.
 
 5. **Retry com observabilidade**: Implemente retry com exponential backoff, jitter e logging estruturado de cada tentativa (attempt number, delay, erro). Integre com métricas (Prometheus counters de tentativas e desistências).
+
+---
+
+## Referencias e Fontes
+
+- **"Clean Architecture"** — Robert C. Martin — Principios de arquitetura de software, separacao de responsabilidades e dependency rule
+- **"Building Microservices"** — Sam Newman — Guia pratico sobre design, deploy e operacao de sistemas baseados em microservicos
+- **"Release It!"** — Michael Nygard — Patterns de estabilidade para sistemas em producao, incluindo circuit breakers, bulkheads e retry strategies

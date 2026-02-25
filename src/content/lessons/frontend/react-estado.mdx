@@ -2,7 +2,7 @@
 title: "Patterns de Estado no React"
 description: "Domine useState, useReducer, Context, state management externo e estratégias avançadas de gerenciamento de estado"
 track: "frontend"
-order: 13
+order: 9
 section: "React"
 priority: "high"
 tags: ["react", "estado", "context", "tanstack-query", "patterns"]
@@ -730,3 +730,12 @@ const deepCopy = structuredClone(user);
 ```
 
 Gerenciamento de estado é o problema central de toda aplicação React. A chave é usar a ferramenta certa para cada tipo de estado: local para UI, Context para compartilhamento limitado, TanStack Query para servidor, URL para estado navegável, e state managers externos apenas quando a complexidade justifica. Estado é como dívida técnica: quanto menos global, mais fácil de entender e manter.
+
+---
+
+## Referencias e Fontes
+
+- **React Documentation — State Management** — https://react.dev/learn/managing-state — Guia oficial do React sobre gerenciamento de estado, lifting state, reducers e Context
+- **Redux Documentation** — https://redux.js.org — Documentacao oficial do Redux com tutoriais, padroes e boas praticas para gerenciamento de estado global
+- **Zustand Documentation** — https://docs.pmnd.rs/zustand — Documentacao do Zustand, uma alternativa leve e moderna ao Redux para gerenciamento de estado em React
+- **"Tao of React"** — Alex Kondov — Guia de principios e padroes para escrever aplicacoes React manteniveis, incluindo estrategias de organizacao e gerenciamento de estado

@@ -2,11 +2,11 @@
 title: "React Internals e Hooks"
 description: "Virtual DOM, React Fiber, reconciliation, hooks internamente, concurrent features, Server Components e o React Compiler"
 track: "frontend"
-order: 12
+order: 8
 section: "React"
 priority: "high"
 tags: ["react", "virtual-dom", "hooks", "reconciliation", "fiber", "concurrent"]
-prerequisites: ["closures", "typescript"]
+prerequisites: ["javascript-core", "typescript"]
 keyTakeaways:
   - "React Fiber representa a árvore de componentes como uma linked list de units of work, permitindo rendering interruptível"
   - "Hooks são armazenados como uma linked list no fiber node — por isso as Rules of Hooks exigem ordem fixa"
@@ -1151,3 +1151,12 @@ Compiler = memoização automática em build time
 ```
 
 A chave para performance em React não é adicionar `useMemo` e `useCallback` em tudo — é entender **por que** um componente re-renderiza e resolver o problema na raiz, seja com composição, separação de state, ou memoização cirúrgica.
+
+---
+
+## Referencias e Fontes
+
+- **React Official Documentation** — https://react.dev — Documentacao oficial do React com guias sobre hooks, componentes, Server Components e padroes recomendados
+- **"React as a UI Runtime"** — Dan Abramov — Artigo aprofundado sobre o modelo mental do React, reconciliacao, elementos vs componentes e como o React realmente funciona por baixo
+- **React RFC Repository** — https://github.com/reactjs/rfcs — Repositorio oficial de RFCs onde novas features do React sao propostas, discutidas e documentadas antes da implementacao
+- **React Fiber Architecture** — Andrew Clark — Documento tecnico que explica a arquitetura Fiber, work loops, prioridades e como o React implementa rendering interruptivel e concorrente

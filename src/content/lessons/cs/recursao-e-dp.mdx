@@ -2,7 +2,7 @@
 title: "Recursão e Programação Dinâmica"
 description: "De recorrências e backtracking a memoization e bitmask DP: análise formal e implementação de técnicas recursivas e de programação dinâmica"
 track: "cs"
-order: 14
+order: 11
 section: "Algoritmos"
 priority: "high"
 tags: ["recursão", "programação-dinâmica", "memoization", "backtracking", "divide-and-conquer", "algoritmos"]
@@ -764,3 +764,12 @@ function lisOptimal(arr: number[]): number {
 | Bitmask DP | Estado é um subconjunto de n ≤ 25 elementos | O(2ⁿ · poly(n)) |
 
 A maestria em DP vem da prática de **identificar subproblemas**: dado um problema, pergunte-se quais parâmetros definem unicamente um subproblema, escreva a recorrência e verifique se o grafo de dependências é acíclico. Com essa disciplina, a maioria dos problemas de DP se torna uma questão de formulação — e a implementação segue diretamente da recorrência.
+
+---
+
+## Referências
+
+- **Introduction to Algorithms (CLRS)** — Cormen, Leiserson, Rivest, Stein. Capítulo 15 (Dynamic Programming) e Capítulo 4 (Divide-and-Conquer, Master Theorem)
+- **Algorithm Design** — Jon Kleinberg & Eva Tardos. Capítulo 6 (Dynamic Programming) — excelente para construir intuição de formulação de estados
+- **Algorithms** — Robert Sedgewick & Kevin Wayne. Dynamic programming e divide-and-conquer patterns
+- **"The Art of Computer Programming, Vol. 4A"** — Donald Knuth. Combinatorial algorithms e backtracking

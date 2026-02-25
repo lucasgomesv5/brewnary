@@ -1059,3 +1059,164 @@ redis-cli INFO memory | grep -E "used_memory_human|maxmemory_human|mem_fragmenta
 | Memória usada | > 85% de maxmemory | Risco de evictions agressivas |
 | Connected clients | > 80% de maxclients | Risco de connection refused |
 | Replication lag | > 1s | Réplicas servindo dados muito stale |
+
+---
+
+## Distributed Locking com Redis
+
+### O Problema
+
+Em sistemas distribuídos, múltiplas instâncias da aplicação podem competir para executar a mesma operação (ex: enviar email, processar pagamento). Um lock distribuído garante que apenas uma instância executa a operação por vez.
+
+### Implementação Simples
+
+```typescript
+class SimpleRedisLock {
+  constructor(private redis: Redis) {}
+
+  async acquire(lockKey: string, ttlMs: number): Promise<string | null> {
+    const token = crypto.randomUUID(); // Identificador único do lock
+    const result = await this.redis.set(lockKey, token, 'PX', ttlMs, 'NX');
+    return result === 'OK' ? token : null;
+  }
+
+  async release(lockKey: string, token: string): Promise<boolean> {
+    // Lua script atômico: só libera se o token é o nosso
+    const script = `
+      if redis.call("get", KEYS[1]) == ARGV[1] then
+        return redis.call("del", KEYS[1])
+      else
+        return 0
+      end
+    `;
+    const result = await this.redis.eval(script, 1, lockKey, token);
+    return result === 1;
+  }
+}
+
+// Uso:
+const lock = new SimpleRedisLock(redis);
+const token = await lock.acquire('payment:order:123', 30_000);
+if (token) {
+  try {
+    await processPayment(orderId);
+  } finally {
+    await lock.release('payment:order:123', token);
+  }
+}
+```
+
+**Por que o Lua script?** Sem ele, entre o `GET` (verificar token) e o `DEL` (liberar lock), outro cliente pode ter adquirido o lock. O Lua script executa atomicamente no Redis.
+
+### Redlock Algorithm
+
+Para ambientes com múltiplas instâncias Redis (sem replicação), Martin Redlock propôs o **Redlock**:
+
+1. Obter timestamp atual T1
+2. Tentar adquirir lock em N instâncias Redis sequencialmente (com timeout curto)
+3. Lock é considerado adquirido se: obtido em **maioria** (N/2+1) das instâncias E tempo total gasto < TTL do lock
+4. Validade efetiva = TTL - tempo gasto para adquirir
+
+### A Controvérsia: Kleppmann vs Antirez
+
+**Martin Kleppmann** (autor de DDIA) argumentou que Redlock é fundamentalmente broken:
+- **GC pauses**: um cliente pode achar que tem o lock, sofrer GC pause, e quando volta o lock já expirou e outro cliente o adquiriu
+- **Clock drift**: se um nó Redis tem clock skew, o TTL pode expirar prematuramente
+- Solução proposta: usar **fencing tokens** — cada lock acquisition incrementa um counter, e o storage (banco) rejeita operações com tokens antigos
+
+**Salvatore Sanfilippo (Antirez)** rebateu que:
+- GC pauses longos o suficiente para invalidar locks são raros em prática
+- Fencing tokens adicionam complexidade equivalente a não usar distributed lock
+
+**Recomendação prática**: para operações críticas (pagamentos), use fencing tokens. Para operações "at-most-once-ish" (cache warming, background jobs), lock simples com TTL é suficiente.
+
+---
+
+## Redis Cluster Internals
+
+### Hash Slots
+
+Redis Cluster divide o keyspace em **16384 hash slots**. Cada chave é mapeada para um slot via `CRC16(key) mod 16384`. Cada nó master é responsável por um subconjunto de slots.
+
+```
+Cluster com 3 masters:
+┌──────────────┐  ┌──────────────┐  ┌──────────────┐
+│   Master A   │  │   Master B   │  │   Master C   │
+│ Slots 0-5460 │  │ Slots 5461-  │  │ Slots 10923- │
+│              │  │     10922    │  │     16383    │
+│  Replica A'  │  │  Replica B'  │  │  Replica C'  │
+└──────────────┘  └──────────────┘  └──────────────┘
+
+CRC16("user:123") mod 16384 = 7832 → Master B
+CRC16("order:456") mod 16384 = 2105 → Master A
+```
+
+### Hash Tags
+
+Para garantir que chaves relacionadas fiquem no mesmo slot, use **hash tags**: `{user:123}:profile` e `{user:123}:orders` usam apenas `user:123` para calcular o slot. Isso permite operações multi-key (MGET, pipelines) em chaves relacionadas.
+
+### Resharding
+
+Mover slots entre nós é online (sem downtime). O Redis migra chave por chave, e durante a migração, redireciona clients com `-ASK` redirects para o nó destino.
+
+### Failover
+
+Quando um master falha, os replicas detectam via gossip protocol e iniciam uma eleição. O replica com offset de replicação mais avançado geralmente vence e é promovido a master.
+
+---
+
+## Redis Streams
+
+**Redis Streams** (5.0+) é uma estrutura de dados append-only que funciona como um log distribuído — uma alternativa lightweight ao Kafka para casos simples.
+
+```typescript
+// Producer: adicionar mensagem ao stream
+await redis.xadd('orders-stream', '*', // '*' = auto-generate ID
+  'orderId', '123',
+  'amount', '99.90',
+  'status', 'created'
+);
+
+// Consumer Group: processar mensagens distribuídas entre consumers
+await redis.xgroup('CREATE', 'orders-stream', 'order-processors', '0', 'MKSTREAM');
+
+// Consumer: ler mensagens do grupo
+const messages = await redis.xreadgroup(
+  'GROUP', 'order-processors', 'consumer-1',
+  'COUNT', 10,
+  'BLOCK', 5000, // espera 5s por novas mensagens
+  'STREAMS', 'orders-stream', '>' // '>' = apenas mensagens não entregues
+);
+
+// Confirmar processamento
+if (messages) {
+  for (const [stream, entries] of messages) {
+    for (const [id, fields] of entries) {
+      await processOrder(fields);
+      await redis.xack('orders-stream', 'order-processors', id);
+    }
+  }
+}
+```
+
+**Streams vs Kafka:**
+
+| Feature | Redis Streams | Kafka |
+|---------|--------------|-------|
+| Setup | Já está no Redis | Cluster separado |
+| Throughput | ~100K msg/s | ~1M+ msg/s |
+| Retention | Limitada pela memória | Disco (ilimitada) |
+| Consumer groups | ✓ | ✓ |
+| Ordering | Per-stream | Per-partition |
+| Ideal para | Volumes moderados, já usa Redis | Alto volume, event sourcing, replay |
+
+**Quando usar Streams**: se você já tem Redis e precisa de pub/sub com garantia de entrega e consumer groups. Quando o volume é baixo-moderado (menos de 100K msg/s) e não precisa de replay de longo prazo.
+
+---
+
+## Referencias e Fontes
+
+- **Redis Documentation** — https://redis.io/docs/ — Documentacao oficial do Redis, cobrindo comandos, estruturas de dados, persistencia e configuracao de cluster
+- **"Redis in Action"** — Josiah Carlson — Guia pratico sobre uso do Redis para caching, filas, sessoes e outros patterns de aplicacao
+- **"How to do distributed locking"** — Martin Kleppmann — Análise crítica do Redlock
+- **"Is Redlock safe?"** — Salvatore Sanfilippo — Resposta do criador do Redis

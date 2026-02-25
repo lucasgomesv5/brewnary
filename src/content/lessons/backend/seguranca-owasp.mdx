@@ -1034,3 +1034,155 @@ Referência rápida para code reviews focados em segurança:
 | Logging                 | Eventos de segurança logados? PII e secrets redactados?                                       |
 | Rate Limiting           | Endpoints sensíveis (login, reset, signup) com rate limit?                                    |
 | Error Handling          | Stack traces nunca expostas em produção?                                                      |
+
+---
+
+## Criptografia Aplicada
+
+Entender criptografia é essencial para um senior engineer — não para implementar algoritmos (use libraries!), mas para tomar decisões corretas sobre quais primitivas usar.
+
+### Criptografia Simétrica vs Assimétrica
+
+```
+Simétrica (mesma chave para encrypt e decrypt):
+  Alice ──[key]──encrypt──→ ciphertext ──[key]──decrypt──→ Bob
+  Rápida (~GB/s). Problema: como compartilhar a chave?
+
+Assimétrica (par de chaves: pública + privada):
+  Bob gera: (public_key, private_key)
+  Alice ──[Bob's public_key]──encrypt──→ ciphertext ──[Bob's private_key]──decrypt──→ Bob
+  Lenta (~MB/s). Resolve o key exchange. Usada para TLS handshake e assinaturas digitais.
+```
+
+| Tipo | Algoritmos | Velocidade | Use case |
+|------|-----------|-----------|----------|
+| Simétrica | AES-256-GCM, ChaCha20-Poly1305 | ~1-10 GB/s | Criptografia de dados em repouso e trânsito |
+| Assimétrica | RSA-2048+, Ed25519, ECDSA (P-256) | ~1-100 MB/s | Key exchange, assinaturas digitais, TLS |
+
+### Hashing
+
+Hash functions são **one-way**: dado o output, é inviável encontrar o input.
+
+```
+Uso correto de hashes:
+
+Para senhas:       bcrypt, argon2id, scrypt (LENTAS de propósito!)
+Para integridade:  SHA-256, SHA-3 (RÁPIDAS)
+Para HMAC:         HMAC-SHA256 (autenticação de mensagens)
+NUNCA para senhas: MD5, SHA-1, SHA-256 sem salt (rainbow tables!)
+```
+
+```typescript
+import { hash, verify } from 'argon2';
+
+// Hashing de senha com Argon2id (recomendado OWASP)
+const hashedPassword = await hash(password, {
+  type: 2,           // argon2id (resistente a side-channel + GPU attacks)
+  memoryCost: 65536,  // 64MB RAM (torna GPU attacks caros)
+  timeCost: 3,        // 3 iterações
+  parallelism: 4,     // 4 threads
+});
+
+// Verificação
+const isValid = await verify(hashedPassword, attemptedPassword);
+```
+
+### Key Derivation Functions (KDF)
+
+Derivam chaves criptográficas a partir de senhas ou material de baixa entropia:
+
+- **PBKDF2**: padrão NIST, simples, mas vulnerável a GPU attacks
+- **bcrypt**: resistente a GPU (usa RAM), padrão de facto para senhas
+- **argon2id**: state-of-the-art, resistente a GPU e side-channel attacks (recomendado)
+- **HKDF**: deriva múltiplas chaves a partir de uma master key (não para senhas)
+
+### TLS Handshake em Detalhe
+
+```
+TLS 1.3 Handshake (1-RTT):
+
+Client                                  Server
+  │                                       │
+  │─── ClientHello ──────────────────────→│
+  │    • supported cipher suites          │
+  │    • supported groups (curves)        │
+  │    • key_share (ECDHE public key)     │
+  │    • supported_versions: TLS 1.3     │
+  │                                       │
+  │←── ServerHello ──────────────────────│
+  │    • selected cipher suite            │
+  │    • key_share (server ECDHE key)     │
+  │←── EncryptedExtensions ──────────────│
+  │←── Certificate ──────────────────────│
+  │←── CertificateVerify ────────────────│  (assinatura digital)
+  │←── Finished ─────────────────────────│  (MAC do handshake)
+  │                                       │
+  │─── Finished ──────────────────────→  │  (MAC do handshake)
+  │                                       │
+  │←════ Application Data (encrypted) ══→│
+  │    AES-256-GCM ou ChaCha20-Poly1305  │
+```
+
+**Processo simplificado:**
+1. **Key Exchange**: ECDHE (Elliptic Curve Diffie-Hellman Ephemeral) gera shared secret
+2. **Authentication**: servidor prova identidade com certificado + assinatura digital
+3. **Key Derivation**: HKDF deriva chaves de sessão a partir do shared secret
+4. **Symmetric Encryption**: dados trafegam criptografados com AES-256-GCM
+
+**Forward Secrecy**: como ECDHE gera chaves efêmeras por sessão, comprometer a private key do servidor NÃO permite descriptografar sessões passadas. Cada sessão tem suas próprias chaves.
+
+### Criptografia em Repouso
+
+```typescript
+import { createCipheriv, createDecipheriv, randomBytes } from 'crypto';
+
+// AES-256-GCM: criptografia autenticada (confidencialidade + integridade)
+function encrypt(plaintext: string, key: Buffer): { ciphertext: string; iv: string; tag: string } {
+  const iv = randomBytes(12); // 96-bit IV para GCM
+  const cipher = createCipheriv('aes-256-gcm', key, iv);
+
+  let ciphertext = cipher.update(plaintext, 'utf8', 'base64');
+  ciphertext += cipher.final('base64');
+  const tag = cipher.getAuthTag().toString('base64');
+
+  return { ciphertext, iv: iv.toString('base64'), tag };
+}
+
+function decrypt(encrypted: { ciphertext: string; iv: string; tag: string }, key: Buffer): string {
+  const decipher = createDecipheriv(
+    'aes-256-gcm',
+    key,
+    Buffer.from(encrypted.iv, 'base64')
+  );
+  decipher.setAuthTag(Buffer.from(encrypted.tag, 'base64'));
+
+  let plaintext = decipher.update(encrypted.ciphertext, 'base64', 'utf8');
+  plaintext += decipher.final('utf8');
+  return plaintext;
+}
+
+// Chave de 256 bits (32 bytes) — NUNCA hardcode! Use KMS ou vault
+const key = randomBytes(32);
+const encrypted = encrypt('dados sensíveis do usuário', key);
+const decrypted = decrypt(encrypted, key);
+```
+
+### Resumo de Algoritmos Recomendados (2025)
+
+| Propósito | Recomendado | Evitar |
+|-----------|-------------|--------|
+| Criptografia simétrica | AES-256-GCM, ChaCha20-Poly1305 | AES-ECB, DES, 3DES, RC4 |
+| Hash para senhas | argon2id, bcrypt | MD5, SHA-1, SHA-256 (sem salt) |
+| Hash para integridade | SHA-256, SHA-3, BLAKE3 | MD5, SHA-1 |
+| Assinatura digital | Ed25519, ECDSA P-256 | RSA-1024, DSA |
+| Key exchange | X25519, ECDH P-256 | DH com grupos pequenos |
+| HMAC | HMAC-SHA256 | HMAC-MD5 |
+
+---
+
+## Referencias e Fontes
+
+- **OWASP Top 10** — https://owasp.org/www-project-top-ten/ — Lista das 10 vulnerabilidades mais criticas em aplicacoes web, atualizada periodicamente
+- **OWASP Cheat Sheet Series** — https://cheatsheetseries.owasp.org/ — Colecao de guias praticos de seguranca cobrindo autenticacao, criptografia, input validation e mais
+- **"Serious Cryptography"** — Jean-Philippe Aumasson — Guia prático de criptografia para engenheiros
+- **"Cryptography Engineering"** — Ferguson, Schneier, Kohno — Design e implementação de sistemas criptográficos

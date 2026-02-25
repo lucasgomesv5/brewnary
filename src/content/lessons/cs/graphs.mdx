@@ -2,7 +2,7 @@
 title: "Graphs (Grafos)"
 description: "Definição formal, representações, BFS, DFS, shortest path, MST, ciclos, SCCs e aplicações reais em redes, mapas e dependency resolution"
 track: "cs"
-order: 12
+order: 9
 section: "Estruturas de Dados"
 priority: "high"
 tags: ["grafos", "BFS", "DFS", "dijkstra", "topological-sort", "estruturas-de-dados", "adjacency-list", "shortest-path"]
@@ -896,3 +896,12 @@ O CFG (Control Flow Graph) de um programa é um dígrafo onde cada nó é um bas
 5. **Islands Count (LeetCode #200):** Dada uma grid m×n de '1' (terra) e '0' (água), conte o número de ilhas. Cada célula é um vértice conectado aos 4 vizinhos adjacentes — isso é BFS/DFS em um grafo implícito.
 
 6. **Course Schedule (LeetCode #207 / #210):** Dados n cursos e pré-requisitos como pares [a, b] significando "para fazer a, precisa de b", determine se é possível completar todos os cursos (detecção de ciclo) e retorne uma ordem válida (topological sort).
+
+---
+
+## Referências
+
+- **Introduction to Algorithms (CLRS)** — Cormen, Leiserson, Rivest, Stein. Capítulo 22 (Elementary Graph Algorithms — BFS, DFS), Capítulo 23 (MST), Capítulo 24 (Single-Source Shortest Paths — Dijkstra, Bellman-Ford), Capítulo 25 (All-Pairs — Floyd-Warshall), Capítulo 26 (Maximum Flow)
+- **Algorithms** — Robert Sedgewick & Kevin Wayne. Capítulo 4 (Graphs — undirected, directed, MST, shortest paths)
+- **Algorithm Design** — Jon Kleinberg & Eva Tardos. Capítulos 3-7 para aplicações de grafos em network flow e matching
+- **"Depth-First Search and Linear Graph Algorithms"** — Robert Tarjan, 1972. O paper seminal sobre SCCs e DFS

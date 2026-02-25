@@ -865,3 +865,11 @@ npx clinic flame -- node app.js
 ```
 
 O Event Loop é elegante na sua simplicidade: uma única thread que nunca espera, delegando todo trabalho bloqueante para o kernel ou para threads auxiliares. Dominar seus mecanismos internos - fases, prioridades de microtasks, thread pool, e estratégias de mitigação de starvation - é o que separa um desenvolvedor Node.js que "funciona" de um que constrói sistemas resilientes e performáticos em escala de produção.
+
+---
+
+## Referencias e Fontes
+
+- **Node.js Event Loop Documentation** — https://nodejs.org/en/guides/event-loop-timers-and-nexttick — Documentacao oficial explicando as fases do Event Loop, timers e nextTick
+- **libuv Documentation** — https://docs.libuv.org — Documentacao da biblioteca que implementa o Event Loop e operacoes assincronas do Node.js
+- **"Node.js Design Patterns"** — Mario Casciaro, Luciano Mammino — Referencia essencial sobre patterns assincronos, Event Loop e arquitetura de aplicacoes Node.js

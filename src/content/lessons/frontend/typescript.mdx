@@ -2,11 +2,11 @@
 title: "TypeScript"
 description: "Domine TypeScript: interfaces, generics, utility types e discriminated unions"
 track: "frontend"
-order: 11
+order: 7
 section: "TypeScript"
 priority: "high"
 tags: ["typescript", "tipos", "generics", "interfaces"]
-prerequisites: ["closures"]
+prerequisites: ["javascript-core"]
 keyTakeaways:
   - "TypeScript não é opcional em 2025+ — tipos são documentação viva que o compilador verifica"
   - "Generics permitem criar tipos reutilizáveis que recebem parâmetros de tipo"
@@ -944,3 +944,145 @@ function createUser(input: unknown): Result<User, z.ZodError> {
   return ok(user);
 }
 ```
+
+---
+
+## Type-Level Programming
+
+TypeScript permite computação no nível de tipos — tipos que geram outros tipos recursivamente.
+
+### Tipos Recursivos
+
+```typescript
+// Deep Readonly: torna todas as propriedades (inclusive nested) readonly
+type DeepReadonly<T> = T extends object
+  ? { readonly [K in keyof T]: DeepReadonly<T[K]> }
+  : T;
+
+type Config = DeepReadonly<{
+  db: { host: string; port: number };
+  features: { darkMode: boolean };
+}>;
+// Config.db.host é readonly — não pode ser reatribuído
+
+// DeepPartial: torna tudo nested como optional
+type DeepPartial<T> = T extends object
+  ? { [K in keyof T]?: DeepPartial<T[K]> }
+  : T;
+
+// Path types: extrair todas as paths possíveis de um objeto
+type Path<T, Prefix extends string = ""> = T extends object
+  ? {
+      [K in keyof T & string]: K | `${K}.${Path<T[K], "">}`;
+    }[keyof T & string]
+  : never;
+
+type UserPaths = Path<{ name: string; address: { street: string; city: string } }>;
+// "name" | "address" | "address.street" | "address.city"
+```
+
+### Branded Types
+
+Pattern para criar tipos nominais — strings e números que são semanticamente diferentes.
+
+```typescript
+// Sem branded types: qualquer string pode ser usada como UserId ou Email
+type UserId_Bad = string;
+type Email_Bad = string;
+
+// Com branded types: incompatíveis por construção
+type Brand<T, B extends string> = T & { readonly __brand: B };
+
+type UserId = Brand<string, "UserId">;
+type Email = Brand<string, "Email">;
+type OrderId = Brand<string, "OrderId">;
+
+// Funções construtoras com validação
+function createUserId(id: string): UserId {
+  if (!id.startsWith("usr_")) throw new Error("Invalid user ID format");
+  return id as UserId;
+}
+
+function createEmail(email: string): Email {
+  if (!email.includes("@")) throw new Error("Invalid email");
+  return email as Email;
+}
+
+// Agora o compilador impede erros:
+function getUser(id: UserId): Promise<User> { /* ... */ }
+
+const userId = createUserId("usr_abc123");
+const email = createEmail("test@test.com");
+
+getUser(userId);   // ✓ OK
+// getUser(email);  // ✗ COMPILE ERROR: Email is not assignable to UserId
+// getUser("abc");  // ✗ COMPILE ERROR: string is not assignable to UserId
+```
+
+### Satisfies Operator
+
+`satisfies` verifica que uma expressão satisfaz um tipo sem alargar o tipo inferido.
+
+```typescript
+type Route = { path: string; component: string };
+type Routes = Record<string, Route>;
+
+// Com `as const`: perde a verificação de tipo
+// Com type annotation: perde o tipo literal
+// Com `satisfies`: melhor dos dois mundos!
+
+const routes = {
+  home: { path: "/", component: "HomePage" },
+  about: { path: "/about", component: "AboutPage" },
+  blog: { path: "/blog", component: "BlogPage" },
+} satisfies Routes;
+
+// routes.home.path é inferido como "/" (literal), não string
+// MAS: routes.invalid geraria erro se adicionado (precisa satisfazer Routes)
+
+// Comparação:
+// const x: Routes = { ... }     → x.home.path: string (perde literais)
+// const x = { ... } as Routes   → sem verificação (pode ter erros)
+// const x = { ... } satisfies Routes → x.home.path: "/" (mantém literais + verifica)
+```
+
+### Module Augmentation Avançado
+
+Extender tipos de bibliotecas de terceiros sem forkar:
+
+```typescript
+// Extender tipos do Express para adicionar user autenticado
+declare module "express-serve-static-core" {
+  interface Request {
+    user?: {
+      id: string;
+      email: string;
+      role: "admin" | "user";
+    };
+  }
+}
+
+// Extender tipos do processo Node.js para variáveis de ambiente
+declare global {
+  namespace NodeJS {
+    interface ProcessEnv {
+      DATABASE_URL: string;
+      JWT_SECRET: string;
+      NODE_ENV: "development" | "production" | "test";
+      PORT?: string;
+    }
+  }
+}
+
+// Agora process.env.DATABASE_URL é tipado como string (não string | undefined)
+// E process.env.TYPO geraria erro de compilação
+```
+
+---
+
+## Referencias e Fontes
+
+- **TypeScript Official Documentation** — https://www.typescriptlang.org/docs — Documentacao oficial com referencia completa do sistema de tipos, configuracao do compilador e guias de migracao
+- **"Programming TypeScript"** — Boris Cherny — Livro que cobre desde fundamentos ate padroes avancados de tipos, incluindo tipos condicionais, mapped types e type-level programming
+- **TypeScript Handbook** — https://www.typescriptlang.org/docs/handbook — Guia pratico e progressivo que ensina os conceitos fundamentais e avancados do TypeScript com exemplos aplicados
+- **Type Challenges** — https://github.com/type-challenges/type-challenges — Exercícios práticos de type-level programming

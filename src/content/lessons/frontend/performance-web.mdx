@@ -2,7 +2,7 @@
 title: "Performance Web"
 description: "Core Web Vitals e otimizações práticas para frontend performático"
 track: "frontend"
-order: 19
+order: 13
 section: "Qualidade e Performance"
 priority: "medium"
 tags: ["performance", "core-web-vitals", "code-splitting", "lazy-loading"]
@@ -779,3 +779,138 @@ Monitoramento:
   □ Performance budget no CI (Lighthouse score ≥ 90)
   □ Alertas para regressão de Core Web Vitals (CrUX)
 ```
+
+---
+
+## APIs Modernas de Performance
+
+### INP (Interaction to Next Paint) — Substituiu FID
+
+**FID** (First Input Delay) media apenas o delay da **primeira** interação. **INP** mede a responsividade de **todas** as interações durante toda a sessão — o valor reportado é o p98 (pior caso representativo).
+
+```
+Lifecycle de uma interação:
+
+│← Input Delay →│← Processing →│← Presentation Delay →│
+│ (event queue)  │ (handler)    │ (paint + composite)   │
+├────────────────┼──────────────┼───────────────────────┤
+[user clicks]    [handler runs]  [browser paints]       [frame displayed]
+
+INP = Input Delay + Processing Time + Presentation Delay
+
+Thresholds:
+  Good:           ≤ 200ms
+  Needs Improve:  200-500ms
+  Poor:           > 500ms
+```
+
+**Como otimizar INP:**
+1. **Reduzir Input Delay**: evitar Long Tasks que bloqueiam a main thread (yield com `scheduler.yield()`)
+2. **Reduzir Processing Time**: mover trabalho pesado para Web Workers, usar `requestAnimationFrame` para visual updates
+3. **Reduzir Presentation Delay**: evitar layout thrashing (leituras e escritas DOM intercaladas), minimizar DOM size
+
+```javascript
+// Medir INP programaticamente
+new PerformanceObserver((list) => {
+  for (const entry of list.getEntries()) {
+    // entry.duration = total interaction time (input delay + processing + presentation)
+    // entry.interactionId = agrupador de eventos relacionados (pointerdown + pointerup + click)
+    console.log(`INP candidate: ${entry.duration}ms`, entry.name, entry.target);
+  }
+}).observe({ type: 'event', buffered: true, durationThreshold: 16 });
+```
+
+### View Transitions API
+
+Animações nativas de transição entre páginas, sem JavaScript animation libraries.
+
+```javascript
+// MPA (Multi-Page Applications) — precisa de opt-in via meta tag
+// <meta name="view-transition" content="same-origin" />
+
+// SPA — usando document.startViewTransition()
+async function navigateTo(url) {
+  const response = await fetch(url);
+  const html = await response.text();
+
+  // O browser captura snapshot da página atual,
+  // aplica o novo DOM, e anima a transição entre os dois
+  document.startViewTransition(() => {
+    document.querySelector('main').innerHTML = html;
+  });
+}
+
+// CSS para customizar a transição
+// ::view-transition-old(root) { animation: fade-out 0.3s ease; }
+// ::view-transition-new(root) { animation: fade-in 0.3s ease; }
+
+// Morph animation: mesmo view-transition-name em ambas as páginas
+// .hero-image { view-transition-name: hero; }
+// O browser automaticamente anima a posição, tamanho e opacidade
+```
+
+**Integração com frameworks**: Astro suporta View Transitions nativamente. Next.js usa `next/navigation` com experimental view transitions.
+
+### Speculation Rules API
+
+**Pre-rendering** de páginas antes do usuário clicar — substituindo `<link rel="prefetch">` com controle mais granular.
+
+```html
+<script type="speculationrules">
+{
+  "prerender": [
+    {
+      "where": { "href_matches": "/products/*" },
+      "eagerness": "moderate"
+    }
+  ],
+  "prefetch": [
+    {
+      "where": { "href_matches": "/blog/*" },
+      "eagerness": "conservative"
+    }
+  ]
+}
+</script>
+
+<!--
+eagerness levels:
+  "immediate": pre-render logo quando a regra é adicionada
+  "eager": pre-render assim que um link matching é adicionado ao DOM
+  "moderate": pre-render após 200ms de hover (bom default!)
+  "conservative": pre-render apenas ao pointerdown (mousedown/touchstart)
+-->
+```
+
+**Benefício**: navegação instantânea (abaixo de 50ms) pois a página já está renderizada em background. Chrome DevTools → Application → Preloading mostra o status.
+
+### Long Animation Frames (LoAF)
+
+Nova API que substitui Long Tasks (50ms threshold) com informações mais detalhadas:
+
+```javascript
+// LoAF: Long Animation Frames (Chrome 123+)
+// Detecta frames que levaram > 50ms para processar
+new PerformanceObserver((list) => {
+  for (const entry of list.getEntries()) {
+    // entry.duration: duração total do frame
+    // entry.blockingDuration: tempo que bloqueou input
+    // entry.scripts: quais scripts contribuíram (com URL + function name!)
+    console.log(`LoAF: ${entry.duration}ms, blocking: ${entry.blockingDuration}ms`);
+    for (const script of entry.scripts) {
+      console.log(`  Script: ${script.sourceURL}:${script.sourceFunctionName} (${script.duration}ms)`);
+    }
+  }
+}).observe({ type: 'long-animation-frame', buffered: true });
+```
+
+**Por que LoAF > Long Tasks**: Long Tasks só reporta duração. LoAF reporta **quais scripts** causaram o bloqueio, **rendering time**, e **blocking duration** separadamente. Isso facilita enormemente o debugging de INP.
+
+---
+
+## Referencias e Fontes
+
+- **Web.dev — Core Web Vitals** — https://web.dev/vitals — Guias oficiais do Google sobre as metricas essenciais de performance web (LCP, FID/INP, CLS) e como otimiza-las
+- **"High Performance Browser Networking"** — Ilya Grigorik — Livro referencia sobre protocolos de rede, otimizacao de conexoes, caching e tudo que afeta a performance de aplicacoes web
+- **Lighthouse Documentation** — https://developer.chrome.com/docs/lighthouse — Documentacao da ferramenta de auditoria automatizada do Chrome para performance, acessibilidade e boas praticas
+- **MDN Performance API** — https://developer.mozilla.org/en-US/docs/Web/API/Performance_API — Referencia completa das APIs de performance do navegador para medicao precisa de metricas e timing de recursos

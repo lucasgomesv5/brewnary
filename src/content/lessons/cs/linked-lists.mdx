@@ -2,7 +2,7 @@
 title: "Linked Lists (Listas Ligadas)"
 description: "Estrutura de dados com alocação não-contígua onde cada nó aponta para o próximo — análise formal de operações, sentinel nodes, Floyd's cycle detection, LRU Cache e Skip Lists"
 track: "cs"
-order: 8
+order: 5
 section: "Estruturas de Dados"
 priority: "high"
 tags: ["linked-list", "estruturas-de-dados", "ponteiros", "nós", "cache", "skip-list"]
@@ -931,3 +931,12 @@ console.log(skipList.search(10)); // undefined
 5. **Maioria dos outros casos?** → Array. A cache locality geralmente domina a análise assintótica em dados reais.
 
 > **Princípio fundamental:** complexidade assintótica é um guia, não um veredito. Na prática, constantes importam — e o principal "constante oculto" das linked lists é o custo de cache misses. Meça, profile, e só então decida.
+
+---
+
+## Referências
+
+- **Introduction to Algorithms (CLRS)** — Cormen, Leiserson, Rivest, Stein. Capítulo 10 (Elementary Data Structures — linked lists, sentinels)
+- **Algorithms** — Robert Sedgewick & Kevin Wayne. Capítulo 1.3 (Bags, Queues, and Stacks — linked list implementations)
+- **"Skip Lists: A Probabilistic Alternative to Balanced Trees"** — William Pugh, 1990. O paper original que introduziu skip lists
+- **The Art of Computer Programming, Vol. 1** — Donald Knuth. Seção 2.2 (Linear Lists) para análise formal

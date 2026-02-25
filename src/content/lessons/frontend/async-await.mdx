@@ -2,11 +2,11 @@
 title: "Async/Await"
 description: "Entenda o event loop, Promises, async/await, e padrões avançados de programação assíncrona"
 track: "frontend"
-order: 10
+order: 6
 section: "JavaScript"
 priority: "high"
 tags: ["javascript", "async", "promises", "paralelismo"]
-prerequisites: ["closures"]
+prerequisites: ["javascript-core"]
 keyTakeaways:
   - "async/await é sugar syntax sobre Promises, que por sua vez é sugar syntax sobre callbacks"
   - "await pausa a execução da função, não do Event Loop"
@@ -1019,3 +1019,11 @@ const client = await ApiClient.create('https://api.example.com');
 | `for await...of` | Iteração assíncrona sequencial | Não paraleliza — cada yield espera o anterior |
 | `AbortController` | Cancelamento de fetch/operações | Verificar `signal.aborted` antes de operações longas |
 | Top-level await | Inicialização de módulos | Pode criar gargalos no module graph |
+
+---
+
+## Referencias e Fontes
+
+- **MDN Web Docs — Promises e async/await** — https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Statements/async_function — Documentacao oficial sobre Promises, async functions e o modelo de concorrencia do JavaScript
+- **"You Don't Know JS: Async & Performance"** — Kyle Simpson — Livro que explora em profundidade o event loop, callbacks, Promises, generators e padroes avancados de programacao assincrona
+- **Node.js Event Loop Documentation** — https://nodejs.org/en/docs/guides/event-loop-timers-and-nexttick — Documentacao oficial sobre o funcionamento interno do event loop, fases de execucao e microtasks no Node.js
