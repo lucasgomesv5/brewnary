@@ -61,7 +61,7 @@ function computeSteps(): ArrayCellStep[] {
     data: Array.from({ length: BUCKET_SIZE }, (_, i) => i),
     pointers: {},
     highlights: {},
-    description: 'Hash table populada! Lookup em O(1) amortizado.',
+    description: 'Hash table populada! Lookup em O(1) no caso médio.',
     codeLine: { js: 25, py: 25, cpp: 31 },
     extra: { Buckets: bucketToStr() },
   });

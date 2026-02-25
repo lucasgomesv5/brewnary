@@ -111,11 +111,11 @@ export default function QuickSort() {
       color="#2563EB"
       eli5={`O Quick Sort escolhe um elemento (pivô) e reorganiza a lista: tudo menor que o pivô vai para a esquerda, tudo maior para a direita. Depois aplica o mesmo processo recursivamente em cada lado.
 
-A partição é feita in-place, sem memória extra significativa. Dois ponteiros percorrem a lista — um buscando elementos maiores que o pivô (da esquerda) e outro buscando menores (da direita). Quando ambos encontram, trocam.
+A partição (Lomuto, usada aqui) escolhe o último elemento como pivô e mantém um ponteiro i. Percorre da esquerda: se o elemento é ≤ pivô, avança i e troca. No final, coloca o pivô na posição i+1. Alternativa: partição de Hoare usa dois ponteiros das pontas opostas (geralmente mais eficiente).
 
 No caso médio é O(n log n), mas no pior caso (pivô sempre o menor ou maior) degrada para O(n²). A escolha do pivô importa: mediana de três, pivô aleatório ou outros métodos ajudam a evitar o pior caso.
 
-Na prática é mais rápido que o Merge Sort para a maioria das entradas — por isso é o sort padrão em C (qsort) e na maioria das implementações de Arrays.sort. Não é estável, então elementos iguais podem trocar de posição relativa.`}
+Na prática é mais rápido que o Merge Sort para a maioria das entradas — por isso muitas linguagens o usam como base para seus sorts (como Introsort em C++ std::sort). Não é estável, então elementos iguais podem trocar de posição relativa.`}
       codeView={<AlgorithmCodeView codes={ALGORITHM_CODES['quick-sort']} color="#2563EB" highlightedLines={step.codeLine} />}
     >
       <SortingVisualizer step={step} maxValue={maxValue} />

@@ -91,7 +91,7 @@ export default function PrefixSumVisualizer() {
 
 Sem prefix sum, calcular a soma de um intervalo custa O(n) — percorre todos os elementos. Se houver muitas consultas (queries), o custo total seria O(n × q). Com prefix sum, cai para O(n + q).
 
-A construção é simples: prefix[0] = arr[0], e para cada i > 0, prefix[i] = prefix[i-1] + arr[i]. A soma do intervalo [l, r] é prefix[r] - prefix[l-1] porque os termos antes de l se cancelam na subtração.
+Nesta implementação usamos a convenção com offset: prefix[0] = 0, e para cada i, prefix[i+1] = prefix[i] + arr[i]. A soma do intervalo [l, r] é prefix[r+1] - prefix[l] — essa convenção evita tratar l=0 como caso especial.
 
 Variações: prefix sum 2D (para matrizes), difference array (operação inversa — aplica incrementos em intervalos em O(1)), e prefix XOR. É uma técnica de pré-processamento que aparece em muitos problemas de competição e em sistemas reais (tabelas de agregação, OLAP).`}
       codeView={<AlgorithmCodeView codes={ALGORITHM_CODES['prefix-sum']} color="#F59E0B" highlightedLines={step.codeLine} />}

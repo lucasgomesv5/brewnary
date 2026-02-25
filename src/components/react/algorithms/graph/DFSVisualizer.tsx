@@ -135,7 +135,7 @@ export default function DFSVisualizer() {
 
 Funcionamento: começa por um nó, escolhe um vizinho não-visitado e repete. Quando chega num nó sem vizinhos não-visitados, volta para o anterior e tenta outro caminho. Continua até visitar tudo acessível.
 
-Diferença do BFS: o DFS não garante o menor caminho, mas usa menos memória — armazena apenas o caminho atual (O(h) onde h é a profundidade), enquanto o BFS pode armazenar um nível inteiro (O(w) onde w é a largura).
+Diferença do BFS: o DFS não garante o menor caminho, mas usa menos memória em árvores — armazena o caminho atual (O(h) onde h é a profundidade). Em grafos gerais com ciclos, DFS precisa de um set de visitados O(V). BFS pode armazenar um nível inteiro (O(w) onde w é a largura).
 
 Complexidade: O(V + E), mesma do BFS. A diferença é na ordem de visitação e no uso de memória.
 

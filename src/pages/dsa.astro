@@ -553,11 +553,11 @@ const sections: Section[] = [
     complexity: 'Geralmente O(n log n) com sort + O(n) scan',
     diagram: `  Problema: Interval Scheduling — máximo de atividades não-conflitantes
 
-  Atividades (ordenadas por fim):
+  Atividades (ordenadas por tempo de fim):
   ──────────────────────────────────► tempo
+  ├─C─┤
   ├──A──┤
     ├────B────┤
-  ├─C─┤
         ├──D──┤
               ├──E──┤
                   ├──F──┤
@@ -566,10 +566,12 @@ const sections: Section[] = [
   Greedy: sempre escolha a atividade que termina mais cedo
 
   Passo 1: Escolhe C (termina primeiro)     [C]
-  Passo 2: D não conflita com C → escolhe D [C, D]
-  Passo 3: E conflita com D → pula
-  Passo 4: F não conflita com D → escolhe F [C, D, F]
-  Passo 5: G não conflita com F → escolhe G [C, D, F, G]
+  Passo 2: A conflita com C → pula
+  Passo 3: B conflita com C → pula
+  Passo 4: D não conflita com C → escolhe D [C, D]
+  Passo 5: E conflita com D → pula
+  Passo 6: F não conflita com D → escolhe F [C, D, F]
+  Passo 7: G não conflita com F → escolhe G [C, D, F, G]
 
   Resultado: 4 atividades (ótimo!)
 
@@ -618,7 +620,7 @@ const sections: Section[] = [
       { title: 'Merge Intervals', slug: 'merge-intervals', difficulty: 'medium', hint: 'Ordene por start. Se current.start <= last.end: merge (max dos ends)' },
       { title: 'Insert Interval', slug: 'insert-interval', difficulty: 'medium', hint: 'Adicione antes, merge overlaps no meio, adicione depois. Três fases' },
       { title: 'Non-overlapping Intervals', slug: 'non-overlapping-intervals', difficulty: 'medium', hint: 'Greedy: ordene por end. Conte conflitos (keep o que termina antes)' },
-      { title: 'Meeting Rooms II', slug: 'meeting-rooms-ii', difficulty: 'medium', hint: 'Min-heap de end times. Para cada meeting: se start >= heap top, pop. Sempre push. Heap size = rooms' },
+      { title: 'Minimum Number of Arrows to Burst Balloons', slug: 'minimum-number-of-arrows-to-burst-balloons', difficulty: 'medium', hint: 'Ordene por end. Se balloon.start > arrow, nova flecha. Senão, já estoura' },
     ],
     lessonHref: '/trilha/cs/busca-e-ordenacao',
   },
@@ -659,7 +661,7 @@ const sections: Section[] = [
       { title: 'Reverse Bits', slug: 'reverse-bits', difficulty: 'easy', hint: 'Extraia cada bit (n & 1), shift no resultado, shift no n. 32 iterações' },
       { title: 'Missing Number', slug: 'missing-number', difficulty: 'easy', hint: 'XOR de 0..n com todos os elementos. Duplicados cancelam, sobra o faltante' },
     ],
-    lessonHref: '/trilha/cs/big-o-notation',
+    lessonHref: '/trilha/cs/fundamentos-matematicos',
   },
   {
     id: 'graph-advanced',
@@ -675,9 +677,10 @@ const sections: Section[] = [
     └─┬─┘     └───┘  │    Ordem topológica:
       │               ▼    [0, 1, 2, 3] ou [0, 2, 1, 3]
       │             ┌───┐
-      └────────────►│ 3 │  ► Só funciona em DAGs (sem ciclos)
-    ┌───┐           └───┘  ► Kahn: BFS com in-degree count
-    │ 2 │────────────►┘    ► DFS: post-order reverso
+      │        ┌───►│ 3 │  ► Só funciona em DAGs (sem ciclos)
+      ▼        │    └───┘  ► Kahn: BFS com in-degree count
+    ┌───┐      │           ► DFS: post-order reverso
+    │ 2 │──────┘
     └───┘
 
   Union-Find (Disjoint Sets):
@@ -692,9 +695,9 @@ const sections: Section[] = [
     problems: [
       { title: 'Course Schedule II', slug: 'course-schedule-ii', difficulty: 'medium', hint: 'Topological sort (Kahn\'s BFS): comece pelos nós com in-degree 0' },
       { title: 'Redundant Connection', slug: 'redundant-connection', difficulty: 'medium', hint: 'Union-Find: adicione arestas uma a uma. Se find(u) == find(v), é redundante' },
-      { title: 'Number of Connected Components', slug: 'number-of-connected-components-in-an-undirected-graph', difficulty: 'medium', hint: 'Union-Find ou DFS. Conte quantos roots distintos existem' },
+      { title: 'Number of Provinces', slug: 'number-of-provinces', difficulty: 'medium', hint: 'Union-Find ou DFS na adjacency matrix. Conte quantos roots/componentes distintos existem' },
       { title: 'Network Delay Time', slug: 'network-delay-time', difficulty: 'medium', hint: 'Dijkstra com min-heap. Retorne o max dos tempos mínimos' },
-      { title: 'Alien Dictionary', slug: 'alien-dictionary', difficulty: 'hard', hint: 'Compare palavras adjacentes para extrair arestas. Topological sort no grafo de caracteres' },
+      { title: 'Find Eventual Safe States', slug: 'find-eventual-safe-states', difficulty: 'medium', hint: 'Topological sort reverso: nós terminais são safe. Remova arestas de trás pra frente (ou DFS com 3 cores)' },
     ],
     lessonHref: '/trilha/cs/graphs',
   },
