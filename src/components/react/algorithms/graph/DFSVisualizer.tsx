@@ -52,6 +52,7 @@ function computeSteps(): GraphStep[] {
     queue: ['A'],
     description: 'Início: A adicionado à pilha',
     edges: [],
+    codeLine: { js: 4, py: 4, cpp: 12 },
   });
 
   while (stack.length > 0) {
@@ -65,6 +66,7 @@ function computeSteps(): GraphStep[] {
       queue: [...stack],
       description: `Visitando ${current} (retirado da pilha)`,
       edges: [...visitedEdges],
+      codeLine: { js: 12, py: 13, cpp: 21 },
     });
 
     const neighbors = (ADJ[current] || []).slice().reverse();
@@ -85,6 +87,7 @@ function computeSteps(): GraphStep[] {
           queue: [...stack],
           description: `${neighbor} adicionado à pilha (vizinho de ${current})`,
           edges: [...visitedEdges],
+          codeLine: { js: 18, py: 19, cpp: 29 },
         });
       }
     }
@@ -96,6 +99,7 @@ function computeSteps(): GraphStep[] {
     queue: [],
     description: 'DFS concluída! Todos os nós foram visitados.',
     edges: [...visitedEdges],
+    codeLine: { js: 1, py: 1, cpp: 7 },
   });
 
   return steps;
@@ -136,7 +140,7 @@ Diferença do BFS: o DFS não garante o menor caminho, mas usa menos memória �
 Complexidade: O(V + E), mesma do BFS. A diferença é na ordem de visitação e no uso de memória.
 
 Aplicações: detecção de ciclos, ordenação topológica, resolver labirintos, encontrar componentes fortemente conectados (Tarjan, Kosaraju), e verificar se um grafo é bipartido.`}
-      codeView={<AlgorithmCodeView codes={ALGORITHM_CODES['dfs']} color="#EF4444" />}
+      codeView={<AlgorithmCodeView codes={ALGORITHM_CODES['dfs']} color="#EF4444" highlightedLines={step.codeLine} />}
     >
       <GraphVisualizer nodes={NODES} edges={EDGES} step={step} color="#EF4444" />
     </AlgorithmShell>

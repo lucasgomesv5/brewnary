@@ -52,6 +52,7 @@ function computeSteps(): GraphStep[] {
     queue: ['A'],
     description: 'Início: A adicionado à fila',
     edges: [],
+    codeLine: { js: 4, py: 6, cpp: 12 },
   });
 
   while (queue.length > 0) {
@@ -65,6 +66,7 @@ function computeSteps(): GraphStep[] {
       queue: [...queue],
       description: `Visitando ${current} (retirado da fila)`,
       edges: [...visitedEdges],
+      codeLine: { js: 12, py: 15, cpp: 21 },
     });
 
     for (const neighbor of ADJ[current] || []) {
@@ -81,6 +83,7 @@ function computeSteps(): GraphStep[] {
           queue: [...queue],
           description: `${neighbor} adicionado à fila (vizinho de ${current})`,
           edges: [...visitedEdges],
+          codeLine: { js: 18, py: 21, cpp: 27 },
         });
       }
     }
@@ -92,6 +95,7 @@ function computeSteps(): GraphStep[] {
     queue: [],
     description: 'BFS concluída! Todos os nós foram visitados.',
     edges: [...visitedEdges],
+    codeLine: { js: 1, py: 3, cpp: 7 },
   });
 
   return steps;
@@ -132,7 +136,7 @@ Propriedade fundamental: o BFS encontra o caminho mais curto (em número de ares
 Complexidade: O(V + E), onde V é o número de vértices e E o número de arestas. Cada nó e cada aresta são processados uma vez.
 
 Aplicações: menor caminho em grafos não-ponderados, busca em redes sociais (graus de separação), web crawlers, detecção de componentes conectados, e Level Order Traversal em árvores.`}
-      codeView={<AlgorithmCodeView codes={ALGORITHM_CODES['bfs']} color="#F59E0B" />}
+      codeView={<AlgorithmCodeView codes={ALGORITHM_CODES['bfs']} color="#F59E0B" highlightedLines={step.codeLine} />}
     >
       <GraphVisualizer nodes={NODES} edges={EDGES} step={step} color="#F59E0B" />
     </AlgorithmShell>

@@ -14,7 +14,7 @@ function computeSteps(arr: number[]): AlgorithmStep[] {
   const data = [...arr];
   const sortedFlags = new Set<number>();
 
-  steps.push({ data: [...data], highlights: {}, description: 'Array inicial' });
+  steps.push({ data: [...data], highlights: {}, description: 'Array inicial', codeLine: { js: 1, py: 1, cpp: 32 } });
 
   function partition(low: number, high: number) {
     const pivot = data[high];
@@ -22,6 +22,7 @@ function computeSteps(arr: number[]): AlgorithmStep[] {
       data: [...data],
       highlights: { [high]: 'pivot' },
       description: `Pivô escolhido: ${pivot} (posição ${high})`,
+      codeLine: { js: 14, py: 16, cpp: 3 },
     });
 
     let i = low - 1;
@@ -31,6 +32,7 @@ function computeSteps(arr: number[]): AlgorithmStep[] {
         data: [...data],
         highlights: hl,
         description: `Comparando ${data[j]} com pivô ${pivot}`,
+        codeLine: { js: 19, py: 21, cpp: 8 },
       });
 
       if (data[j] <= pivot) {
@@ -41,6 +43,7 @@ function computeSteps(arr: number[]): AlgorithmStep[] {
             data: [...data],
             highlights: { [i]: 'swapping', [j]: 'swapping', [high]: 'pivot' },
             description: `Trocando ${data[j]} e ${data[i]}`,
+            codeLine: { js: 22, py: 24, cpp: 11 },
           });
         }
       }
@@ -53,6 +56,7 @@ function computeSteps(arr: number[]): AlgorithmStep[] {
       data: [...data],
       highlights: hl,
       description: `Pivô ${pivot} na posição final ${i + 1}`,
+      codeLine: { js: 27, py: 27, cpp: 18 },
     });
 
     return i + 1;
@@ -72,7 +76,7 @@ function computeSteps(arr: number[]): AlgorithmStep[] {
 
   const allSorted: Record<number, 'sorted'> = {};
   for (let k = 0; k < data.length; k++) allSorted[k] = 'sorted';
-  steps.push({ data: [...data], highlights: allSorted, description: 'Ordenação concluída!' });
+  steps.push({ data: [...data], highlights: allSorted, description: 'Ordenação concluída!', codeLine: { js: 9, py: 12, cpp: 41 } });
 
   return steps;
 }
@@ -112,7 +116,7 @@ A partição é feita in-place, sem memória extra significativa. Dois ponteiros
 No caso médio é O(n log n), mas no pior caso (pivô sempre o menor ou maior) degrada para O(n²). A escolha do pivô importa: mediana de três, pivô aleatório ou outros métodos ajudam a evitar o pior caso.
 
 Na prática é mais rápido que o Merge Sort para a maioria das entradas — por isso é o sort padrão em C (qsort) e na maioria das implementações de Arrays.sort. Não é estável, então elementos iguais podem trocar de posição relativa.`}
-      codeView={<AlgorithmCodeView codes={ALGORITHM_CODES['quick-sort']} color="#2563EB" />}
+      codeView={<AlgorithmCodeView codes={ALGORITHM_CODES['quick-sort']} color="#2563EB" highlightedLines={step.codeLine} />}
     >
       <SortingVisualizer step={step} maxValue={maxValue} />
     </AlgorithmShell>

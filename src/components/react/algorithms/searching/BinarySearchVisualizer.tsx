@@ -11,6 +11,7 @@ interface SearchStep {
   target: number;
   found: boolean | null;
   description: string;
+  codeLine?: Record<'js' | 'py' | 'cpp', number>;
 }
 
 function generateSortedArray(): number[] {
@@ -35,6 +36,7 @@ function computeSteps(arr: number[]): SearchStep[] {
     target,
     found: null,
     description: `Buscando ${target} no array ordenado`,
+    codeLine: { js: 2, py: 2, cpp: 2 },
   });
 
   let low = 0;
@@ -50,6 +52,7 @@ function computeSteps(arr: number[]): SearchStep[] {
       target,
       found: null,
       description: `mid=${mid}, valor=${arr[mid]}. Comparando com ${target}`,
+      codeLine: { js: 8, py: 9, cpp: 10 },
     });
 
     if (arr[mid] === target) {
@@ -61,6 +64,7 @@ function computeSteps(arr: number[]): SearchStep[] {
         target,
         found: true,
         description: `Encontrado! ${target} está na posição ${mid}`,
+        codeLine: { js: 12, py: 13, cpp: 14 },
       });
       return steps;
     } else if (arr[mid] < target) {
@@ -72,6 +76,7 @@ function computeSteps(arr: number[]): SearchStep[] {
         target,
         found: null,
         description: `${arr[mid]} < ${target}, descartando metade esquerda`,
+        codeLine: { js: 15, py: 16, cpp: 17 },
       });
       low = mid + 1;
     } else {
@@ -83,6 +88,7 @@ function computeSteps(arr: number[]): SearchStep[] {
         target,
         found: null,
         description: `${arr[mid]} > ${target}, descartando metade direita`,
+        codeLine: { js: 18, py: 19, cpp: 20 },
       });
       high = mid - 1;
     }
@@ -96,6 +102,7 @@ function computeSteps(arr: number[]): SearchStep[] {
     target,
     found: false,
     description: `${target} não encontrado no array`,
+    codeLine: { js: 21, py: 22, cpp: 22 },
   });
   return steps;
 }
@@ -134,7 +141,7 @@ Cada comparação elimina metade dos elementos restantes. Por isso a complexidad
 Pré-requisito fundamental: a lista precisa estar ordenada. Se não estiver, primeiro ordene (O(n log n)) ou use outra estrutura.
 
 Variações importantes: lower_bound (primeiro elemento ≥ alvo), upper_bound (primeiro elemento > alvo), e busca em espaço contínuo (bisection method). É a base para entender árvores binárias de busca, B-trees e muitas otimizações em bancos de dados.`}
-      codeView={<AlgorithmCodeView codes={ALGORITHM_CODES['binary-search']} color="#10B981" />}
+      codeView={<AlgorithmCodeView codes={ALGORITHM_CODES['binary-search']} color="#10B981" highlightedLines={step.codeLine} />}
     >
       <div className="py-4">
         <div className="mb-4 text-center">

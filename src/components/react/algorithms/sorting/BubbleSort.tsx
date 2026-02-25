@@ -14,7 +14,7 @@ function computeSteps(arr: number[]): AlgorithmStep[] {
   const data = [...arr];
   const n = data.length;
 
-  steps.push({ data: [...data], highlights: {}, description: 'Array inicial' });
+  steps.push({ data: [...data], highlights: {}, description: 'Array inicial', codeLine: { js: 1, py: 1, cpp: 1 } });
 
   for (let i = 0; i < n - 1; i++) {
     for (let j = 0; j < n - 1 - i; j++) {
@@ -22,6 +22,7 @@ function computeSteps(arr: number[]): AlgorithmStep[] {
         data: [...data],
         highlights: { [j]: 'comparing', [j + 1]: 'comparing' },
         description: `Comparando ${data[j]} e ${data[j + 1]}`,
+        codeLine: { js: 11, py: 8, cpp: 7 },
       });
 
       if (data[j] > data[j + 1]) {
@@ -30,6 +31,7 @@ function computeSteps(arr: number[]): AlgorithmStep[] {
           data: [...data],
           highlights: { [j]: 'swapping', [j + 1]: 'swapping' },
           description: `Trocando ${data[j + 1]} e ${data[j]}`,
+          codeLine: { js: 13, py: 10, cpp: 11 },
         });
       }
     }
@@ -40,12 +42,13 @@ function computeSteps(arr: number[]): AlgorithmStep[] {
       data: [...data],
       highlights: sorted,
       description: `Posição ${n - 1 - i} definida`,
+      codeLine: { js: 7, py: 4, cpp: 3 },
     });
   }
 
   const allSorted: Record<number, 'sorted'> = {};
   for (let k = 0; k < n; k++) allSorted[k] = 'sorted';
-  steps.push({ data: [...data], highlights: allSorted, description: 'Ordenação concluída!' });
+  steps.push({ data: [...data], highlights: allSorted, description: 'Ordenação concluída!', codeLine: { js: 18, py: 12, cpp: 14 } });
 
   return steps;
 }
@@ -83,7 +86,7 @@ export default function BubbleSort() {
 Por que é O(n²)? No pior caso (lista invertida), cada passada move apenas um elemento para o lugar certo. São n passadas, cada uma percorrendo até n elementos. Para listas pequenas funciona bem, mas para milhares de itens fica lento.
 
 Na prática quase nunca é usado em produção — Merge Sort e Quick Sort são muito mais eficientes. Mas o Bubble Sort é útil para entender o conceito de ordenação por comparação e a ideia de invariante de loop: após k passadas, os k maiores elementos já estão na posição correta.`}
-      codeView={<AlgorithmCodeView codes={ALGORITHM_CODES['bubble-sort']} color="#8B5CF6" />}
+      codeView={<AlgorithmCodeView codes={ALGORITHM_CODES['bubble-sort']} color="#8B5CF6" highlightedLines={step.codeLine} />}
     >
       <SortingVisualizer step={step} maxValue={maxValue} />
     </AlgorithmShell>

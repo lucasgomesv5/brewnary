@@ -13,7 +13,7 @@ function computeSteps(arr: number[]): AlgorithmStep[] {
   const steps: AlgorithmStep[] = [];
   const data = [...arr];
 
-  steps.push({ data: [...data], highlights: {}, description: 'Array inicial' });
+  steps.push({ data: [...data], highlights: {}, description: 'Array inicial', codeLine: { js: 1, py: 1, cpp: 33 } });
 
   function merge(left: number, mid: number, right: number) {
     const hl: Record<number, 'comparing'> = {};
@@ -22,6 +22,7 @@ function computeSteps(arr: number[]): AlgorithmStep[] {
       data: [...data],
       highlights: hl,
       description: `Merge: posições ${left} a ${right} (divisão em ${mid})`,
+      codeLine: { js: 14, py: 14, cpp: 1 },
     });
 
     const leftArr = data.slice(left, mid + 1);
@@ -42,6 +43,7 @@ function computeSteps(arr: number[]): AlgorithmStep[] {
         data: [...data],
         highlights: { [k]: 'swapping' },
         description: `Posicionando ${data[k]} na posição ${k}`,
+        codeLine: { js: 20, py: 19, cpp: 17 },
       });
       k++;
     }
@@ -52,6 +54,7 @@ function computeSteps(arr: number[]): AlgorithmStep[] {
         data: [...data],
         highlights: { [k]: 'swapping' },
         description: `Copiando ${data[k]} da metade esquerda`,
+        codeLine: { js: 30, py: 28, cpp: 29 },
       });
       i++;
       k++;
@@ -63,6 +66,7 @@ function computeSteps(arr: number[]): AlgorithmStep[] {
         data: [...data],
         highlights: { [k]: 'swapping' },
         description: `Copiando ${data[k]} da metade direita`,
+        codeLine: { js: 30, py: 29, cpp: 30 },
       });
       j++;
       k++;
@@ -74,6 +78,7 @@ function computeSteps(arr: number[]): AlgorithmStep[] {
       data: [...data],
       highlights: sorted,
       description: `Subarray ${left}-${right} ordenado`,
+      codeLine: { js: 11, py: 11, cpp: 43 },
     });
   }
 
@@ -90,7 +95,7 @@ function computeSteps(arr: number[]): AlgorithmStep[] {
 
   const allSorted: Record<number, 'sorted'> = {};
   for (let k = 0; k < data.length; k++) allSorted[k] = 'sorted';
-  steps.push({ data: [...data], highlights: allSorted, description: 'Ordenação concluída!' });
+  steps.push({ data: [...data], highlights: allSorted, description: 'Ordenação concluída!', codeLine: { js: 11, py: 11, cpp: 43 } });
 
   return steps;
 }
@@ -130,7 +135,7 @@ A etapa de merge é a chave: com duas sublistas já ordenadas, basta comparar o 
 Complexidade: sempre O(n log n), independente da entrada. O log n vem dos níveis de divisão (dividir n ao meio repetidamente) e o n vem do merge em cada nível. A desvantagem é usar O(n) de memória extra para as sublistas temporárias.
 
 É estável (mantém a ordem relativa de elementos iguais) e previsível — por isso é a base do TimSort, usado no Python e Java.`}
-      codeView={<AlgorithmCodeView codes={ALGORITHM_CODES['merge-sort']} color="#EC4899" />}
+      codeView={<AlgorithmCodeView codes={ALGORITHM_CODES['merge-sort']} color="#EC4899" highlightedLines={step.codeLine} />}
     >
       <SortingVisualizer step={step} maxValue={maxValue} />
     </AlgorithmShell>
