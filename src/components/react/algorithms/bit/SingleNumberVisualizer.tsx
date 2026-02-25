@@ -28,8 +28,8 @@ function computeSteps(nums: number[]): BitStep[] {
     }
 
     steps.push({
-      binary: result.toString(2),
-      decimal: result,
+      binary: prev.toString(2),
+      decimal: prev,
       operation: `${prev} XOR ${nums[i]}`,
       highlightedBits: changedBits,
       description: `resultado ^= ${nums[i]} → ${prev} ^ ${nums[i]} = ${result}`,

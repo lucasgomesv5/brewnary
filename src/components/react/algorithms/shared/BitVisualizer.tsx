@@ -13,7 +13,7 @@ export default function BitVisualizer({ step, color = '#8B5CF6' }: Props) {
       <div className="flex flex-col items-center gap-3">
         <div>
           <div className="mb-1 text-center text-[10px] text-[var(--color-text-muted)]">
-            {step.decimal} em binário
+            {step.extra ? `Acumulador: ${step.decimal}` : `${step.decimal} em binário`}
           </div>
           <div className="flex gap-1">
             {bits.map((bit, i) => {
@@ -48,7 +48,7 @@ export default function BitVisualizer({ step, color = '#8B5CF6' }: Props) {
         {step.extra?.binary2 && (
           <div>
             <div className="mb-1 text-center text-[10px] text-[var(--color-text-muted)]">
-              {step.extra.decimal2} em binário
+              XOR com: {step.extra.decimal2}
             </div>
             <div className="flex gap-1">
               {step.extra.binary2.padStart(8, '0').split('').map((bit, i) => (

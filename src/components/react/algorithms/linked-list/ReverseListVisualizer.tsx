@@ -79,11 +79,17 @@ function computeSteps(values: number[]): LinkedListStep[] {
     });
   }
 
+  const reversedNodes = [...nodes].reverse();
+  const reversedArrows: [string, string][] = [];
+  for (let i = 0; i < reversedNodes.length - 1; i++) {
+    reversedArrows.push([reversedNodes[i].id, reversedNodes[i + 1].id]);
+  }
+
   steps.push({
-    nodes: [...nodes],
-    arrows: [...arrows],
-    pointers: { head: nodes[nodes.length - 1].id },
-    highlights: Object.fromEntries(nodes.map((n) => [n.id, 'reversed'])),
+    nodes: reversedNodes,
+    arrows: reversedArrows,
+    pointers: { head: reversedNodes[0].id },
+    highlights: Object.fromEntries(reversedNodes.map((n) => [n.id, 'reversed'])),
     description: `Lista invertida: ${[...values].reverse().join(' → ')}`,
     codeLine: { js: 18, py: 17, cpp: 23 },
   });

@@ -24,6 +24,15 @@ export default function LinkedListVisualizer({ step, color = '#8B5CF6' }: Props)
   return (
     <div className="py-2">
       <svg viewBox={`0 0 ${svgWidth} ${svgHeight}`} className="mx-auto w-full max-w-lg">
+        <defs>
+          <marker id="arrowhead" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+            <polygon points="0 0, 8 3, 0 6" fill="var(--color-text-muted)" />
+          </marker>
+          <marker id="arrowhead-colored" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
+            <polygon points="0 0, 8 3, 0 6" fill={color} />
+          </marker>
+        </defs>
+
         {step.arrows.map(([fromId, toId], i) => {
           const fromIdx = step.nodes.findIndex((n) => n.id === fromId);
           const toIdx = step.nodes.findIndex((n) => n.id === toId);
@@ -42,7 +51,7 @@ export default function LinkedListVisualizer({ step, color = '#8B5CF6' }: Props)
                   fill="none"
                   stroke={color}
                   strokeWidth={1.5}
-                  markerEnd="url(#arrowhead)"
+                  markerEnd="url(#arrowhead-colored)"
                 />
               ) : (
                 <line
@@ -58,12 +67,6 @@ export default function LinkedListVisualizer({ step, color = '#8B5CF6' }: Props)
             </g>
           );
         })}
-
-        <defs>
-          <marker id="arrowhead" markerWidth="8" markerHeight="6" refX="8" refY="3" orient="auto">
-            <polygon points="0 0, 8 3, 0 6" fill="var(--color-text-muted)" />
-          </marker>
-        </defs>
 
         {step.nodes.map((node, i) => {
           const x = 20 + i * (nodeWidth + gap);
