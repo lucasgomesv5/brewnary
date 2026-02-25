@@ -2,6 +2,7 @@
 import { ViewTransitions } from 'astro:transitions';
 import { getCollection } from 'astro:content';
 import SearchPalette from '../components/react/SearchPalette';
+import Analytics from '../components/react/Analytics';
 import { toSlug } from '../lib/tracks';
 import '../styles/global.css';
 
@@ -124,6 +125,7 @@ const searchItems = allLessons
   </head>
   <body class="min-h-screen bg-[var(--color-bg)] text-[var(--color-text)]">
     <SearchPalette client:idle items={searchItems} />
+    <Analytics client:idle />
     <slot />
   </body>
 </html>
